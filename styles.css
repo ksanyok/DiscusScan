@@ -28,6 +28,9 @@ body{
   background-size: 1800px 900px, 1800px 900px, auto;
   background-repeat:no-repeat;
   color:var(--text);
+
+  /* layout: make page a column so footer appears after content and doesn't overlay inputs */
+  display:flex; flex-direction:column; min-height:100vh;
 }
 body::before{
   content:""; position:fixed; left:-15%; top:-20%; width:70vw; height:60vh; z-index:0; pointer-events:none;
@@ -232,6 +235,9 @@ body.auth{ display:flex; align-items:center; justify-content:center; min-height:
 
 /* Raise content above animated background */
 .topbar, main.container { position: relative; z-index: 1; }
+
+/* Make main content grow so footer stays at bottom on short pages */
+main.container{ flex:1 0 auto; }
 
 /* --- Scope row (inline switches) --- */
 .scope-row{
