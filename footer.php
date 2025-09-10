@@ -25,42 +25,43 @@ try {
 }
 ?>
 <!-- Footer: regular document flow footer (not fixed) -->
-<footer id="app-footer" class="glass">
+<footer id="app-footer" class="glass site-footer" role="contentinfo" aria-label="Site footer" data-version="<?= htmlspecialchars($localVersion) ?>">
   <div class="container footer-inner">
 
-    <div style="display:flex;align-items:center;gap:12px;min-width:220px">
-      <div class="logo-pill">BRS</div>
-      <div>
-        <div style="font-weight:700;letter-spacing:0.01em;color:#eaf0ff">BuyReadySite</div>
-        <div style="font-size:13px;color:rgba(234,240,255,0.78);display:flex;gap:8px;align-items:center">
-          <div class="pill" style="font-size:12px;padding:4px 8px">DiscusScan</div>
+    <div class="footer-top">
+      <div class="brand-block">
+        <div class="logo-pill" aria-hidden="true">BRS</div>
+        <div class="brand-text">
+          <div class="brand-name">BuyReadySite</div>
+          <div class="brand-sub"><span class="pill">DiscusScan</span></div>
         </div>
       </div>
-    </div>
 
-    <div style="flex:1 1 480px;min-width:260px;text-align:center;color:rgba(234,240,255,0.9)">
-      <div style="font-size:13px;opacity:0.95">Мониторинг упоминаний — автоматические сканы форумов и сайтов с AI‑фильтрацией и классификацией.</div>
-      <div style="margin-top:6px;font-size:13px;opacity:0.8">v<?= htmlspecialchars($localVersion) ?>
+      <div class="footer-center">
+        <div class="footer-desc">Мониторинг упоминаний — автоматические сканы форумов и сайтов с AI‑фильтрацией и классификацией.</div>
+        <div class="footer-version" aria-live="polite"> 
+          <span class="version">v<?= htmlspecialchars($localVersion) ?></span>
+          <?php if ($updateAvailable): ?>
+            <span class="version-badge">Новее: v<?= htmlspecialchars($latestVersion) ?></span>
+          <?php endif; ?>
+        </div>
+      </div>
+
+      <div class="footer-actions">
+        <a href="https://aiseo.buyreadysite.com/" target="_blank" rel="noopener" class="btn small" aria-label="AI SEO AutoOptimize Pro">AI SEO AutoOptimize Pro</a>
+        <a href="https://aiwizard.buyreadysite.com/" target="_blank" rel="noopener" class="btn small" aria-label="AI Content Wizard">AI Content Wizard</a>
+        <a href="/support" class="btn small btn-ghost" aria-label="Support">Поддержка</a>
+
         <?php if ($updateAvailable): ?>
-          <span class="pill" style="margin-left:10px;font-weight:700;color:#042;background:linear-gradient(90deg,#7fffd4,#baf7d0);">Новее: v<?= htmlspecialchars($latestVersion) ?></span>
+          <a href="/update.php" class="btn small update-btn pulse" title="Обновить до v<?= htmlspecialchars($latestVersion) ?>" aria-label="Обновить до версии <?= htmlspecialchars($latestVersion) ?>">Обновить до v<?= htmlspecialchars($latestVersion) ?></a>
         <?php endif; ?>
       </div>
     </div>
 
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;min-width:260px">
-      <a href="https://aiseo.buyreadysite.com/" target="_blank" rel="noopener" class="btn small">AI SEO AutoOptimize Pro</a>
-      <a href="https://aiwizard.buyreadysite.com/" target="_blank" rel="noopener" class="btn small">AI Content Wizard</a>
-      <a href="/support" class="btn small btn-ghost">Поддержка</a>
-
-      <?php if ($updateAvailable): ?>
-        <a href="/update.php" class="btn small update-btn">Обновить до v<?= htmlspecialchars($latestVersion) ?></a>
-      <?php endif; ?>
-    </div>
-
   </div>
   <div class="footer-credits container">
-    <div style="font-size:12px;opacity:0.8">© <?= date('Y') ?> BuyReadySite — All rights reserved.</div>
-    <div style="font-size:12px;opacity:0.75">Made with ❤ for web monitoring</div>
+    <div class="credits-left">© <?= date('Y') ?> BuyReadySite — All rights reserved.</div>
+    <div class="credits-right">Made with ❤ for web monitoring</div>
   </div>
 </footer>
 </body>

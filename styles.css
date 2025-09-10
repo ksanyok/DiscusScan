@@ -146,7 +146,10 @@ label{ display:flex; flex-direction:column; gap:6px; font-size:14px; color:#cfdb
 .btn.primary{ border-color:transparent }
 .btn.small{ padding:6px 10px; border-radius:10px; font-size:13px }
 .btn-ghost{ background:transparent; color:var(--text); border:1px solid var(--border); box-shadow:none }
-.update-btn{ background:linear-gradient(90deg,#5b8cff,#7ea2ff); color:#022; font-weight:800; margin-left:6px }
+.update-btn{ background:linear-gradient(90deg,#5b8cff,#7ea2ff); color:#022; font-weight:800; margin-left:6px; box-shadow:0 8px 30px rgba(91,140,255,0.12); padding:10px 14px; border-radius:12px; border:0; transition: transform .18s ease, box-shadow .18s ease, background-position .6s ease; background-size:200% 100%; display:inline-flex; align-items:center; gap:8px }
+.update-btn:hover{ transform:translateY(-3px); box-shadow:0 18px 48px rgba(91,140,255,0.18); background-position:100% 0 }
+.update-btn.pulse{ animation:pulse 2.8s infinite; }
+@keyframes pulse{ 0%{ box-shadow:0 8px 30px rgba(91,140,255,0.10); transform:translateY(0)} 50%{ box-shadow:0 20px 48px rgba(91,140,255,0.18); transform:translateY(-3px)} 100%{ box-shadow:0 8px 30px rgba(91,140,255,0.10); transform:translateY(0)} }
 
 .alert{ padding:10px 12px; border-radius:10px; margin:10px 0; background:#16233f; border:1px solid var(--border) }
 .alert.success{ border-color:#1f7a49; color:#b8ffd7 }
@@ -239,17 +242,42 @@ body.auth{ align-items:center; justify-content:center; min-height:100vh }
 .topbar, main.container { position: relative; z-index: 1; }
 
 /* Make main content grow so footer stays at bottom on short pages */
-main.container{ flex:1 0 auto; padding-bottom:18px; }
+main.container{ flex:1 0 auto; padding-bottom:14px; }
 
-/* Footer styling: keep footer out of flow but non-fixed, match main container width and spacing */
-#app-footer{ flex-shrink:0; width:100%; box-sizing:border-box; margin-top:12px; }
-#app-footer .footer-inner{ max-width:1200px; margin:0 auto; padding:18px 16px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; justify-content:space-between }
+/* Footer styling: compact, modern, with subtle floating decoration */
+#app-footer{ flex-shrink:0; width:100%; box-sizing:border-box; margin-top:20px; position:relative; overflow:visible; padding:18px 0 0; /* more breathing room */
+  border-top:1px solid rgba(255,255,255,0.04);
+  backdrop-filter: blur(10px) saturate(140%);
+  background: linear-gradient(180deg, rgba(10,14,28,0.45), rgba(8,12,24,0.25));
+}
+#app-footer::before{
+  content:""; position:absolute; left:-18%; right:-18%; top:-60%; height:260px; pointer-events:none;
+  background: radial-gradient(closest-side, rgba(91,140,255,0.14), transparent 60%);
+  filter: blur(34px); transform-origin:center; opacity:0.95; animation:floatFooter 20s ease-in-out infinite alternate; z-index:0;
+}
+#app-footer .footer-inner{ max-width:1200px; margin:0 auto; padding:18px 26px 10px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; justify-content:space-between; position:relative; z-index:1; animation:fadeUp .6s ease both }
 #app-footer .footer-top{ width:100%; }
-#app-footer .footer-credits{ border-top:1px solid rgba(255,255,255,0.03); padding:10px 16px; max-width:1200px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap }
-#app-footer, #app-footer *{ transition: none !important; }
+#app-footer .footer-credits{ border-top:1px solid rgba(255,255,255,0.03); padding:12px 20px; max-width:1200px; margin:8px auto 0; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; position:relative; z-index:1 }
 
-/* Ensure footer buttons match header container width on small screens */
-@media (max-width:1200px){ #app-footer .footer-inner, #app-footer .footer-credits{ padding-left:12px; padding-right:12px } }
+/* Footer links and version */
+#app-footer .footer-links{ display:flex; gap:12px; align-items:center }
+#app-footer .footer-links a{ color:var(--muted); font-size:13px; text-decoration:none; padding:8px 10px; border-radius:10px }
+#app-footer .footer-links a:hover{ color:var(--link-hover) }
+#app-footer .version{ font-weight:700; background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:8px 12px; border-radius:12px; font-size:13px; color:var(--muted); display:inline-flex; align-items:center; gap:8px }
+
+/* Logo pill: circular badge with subtle movement */
+.logo-pill{ width:56px; height:56px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:800; color:#021026; background:linear-gradient(135deg,#7ea2ff,#5b8cff); box-shadow:0 8px 28px rgba(91,140,255,0.12); flex:0 0 56px; transition:transform .35s ease; }
+.logo-pill:hover{ transform: translateY(-4px) scale(1.03) }
+.logo-pill.small{ width:44px; height:44px; font-size:14px }
+
+/* subtle fade up for footer content */
+@keyframes fadeUp{ from{ opacity:0; transform:translateY(6px)} to{ opacity:1; transform:none } }
+
+/* small badge for newest version label */
+.version-badge{ font-size:12px; font-weight:800; padding:6px 8px; border-radius:999px; color:#032; background:linear-gradient(90deg,#baf7d0,#7fffd4); }
+
+/* mobile tweaks */
+@media (max-width:700px){ #app-footer .footer-inner{ padding-left:12px; padding-right:12px; gap:10px } .logo-pill{ display:inline-flex } }
 
 /* --- Scope row (inline switches) --- */
 .scope-row{
