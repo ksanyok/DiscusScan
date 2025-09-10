@@ -6,7 +6,7 @@ $latestVersion = $localVersion;
 $updateAvailable = false;
 try {
     // Fetch remote version file from GitHub
-    $remoteContent = @file_get_contents('https://raw.githubusercontent.com/oleksandr/DiscusScan/main/version.php');
+    $remoteContent = @file_get_contents('https://raw.githubusercontent.com/ksanyok/DiscusScan/main/version.php');
     if ($remoteContent && preg_match("/APP_VERSION\s*=\s*['\"]([\d\.]+)['\"]/i", $remoteContent, $m)) {
         $latestVersion = $m[1];
         $updateAvailable = version_compare($latestVersion, $localVersion, '>');
@@ -29,7 +29,7 @@ try {
     <div style="text-align: center;">
       <p style="font-size: 14px; opacity: 0.8;">
         v<?= htmlspecialchars($localVersion) ?> • Developed by
-        <a href="https://github.com/oleksandr/DiscusScan" style="text-decoration: underline; color: #7fffd4;" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/ksanyok/DiscusScan" style="text-decoration: underline; color: #7fffd4;" target="_blank" rel="noopener">GitHub</a>
         <?php if ($updateAvailable): ?>
           <span style="margin-left: 8px; font-size: 12px; color: #7fffd4;">
             <a href="update.php" style="text-decoration: underline;" title="Новая версия доступна">Обновить до v<?= htmlspecialchars($latestVersion) ?></a>
@@ -42,7 +42,7 @@ try {
     <!-- Links -->
     <div style="justify-self: end;">
       <div style="display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px;">
-        <a href="https://github.com/oleksandr/DiscusScan" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); text-decoration: none; color: white; transition: background 0.2s;">
+        <a href="https://github.com/ksanyok/DiscusScan" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); text-decoration: none; color: white; transition: background 0.2s;">
           <span style="width: 8px; height: 8px; border-radius: 50%; background: #2ecc71;"></span>
           <span>GitHub Repo</span>
         </a>

@@ -53,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
             // 3) Include db.php and call pdo() to create tables
             // 4) Create admin user
             try {
-                $repoUrl = 'https://github.com/oleksandr/DiscusScan/archive/refs/heads/main.zip';
+                $repoUrl = 'https://github.com/ksanyok/DiscusScan/archive/refs/heads/main.zip';
                 $tmpZip = sys_get_temp_dir() . '/discuscan_repo.zip';
                 $downloaded = false;
 
@@ -119,33 +119,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
                     }
                 }
 
-                // Always include db.php and run schema creation
-                include_once __DIR__ . '/db.php';
-                try {
-                    $pdo = pdo(); // installs schema and ensures defaults
-                    // create admin user if not exists (override default if provided)
-                    if ($admin_user) {
-                        $stmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE username = ?');
-                        $stmt->execute([$admin_user]);
-                        if ((int)$stmt->fetchColumn() === 0) {
-                            $stmt = $pdo->prepare('INSERT INTO users (username, pass_hash) VALUES (?, ?)');
-                            $stmt->execute([$admin_user, password_hash($admin_pass, PASSWORD_DEFAULT)]);
+                // diagnostics for db.php include and pdo() availability
+                if (!file_exists(__DIR__ . '/db.php')) {
+                    $errors[] = 'Файл db.php не найден в директории приложения: ' . __DIR__;
+                } else {
+                    // record existing user functions to detect changes after include
+                    $beforeFuncs = get_defined_functions()['user'] ?? [];
+                    $incOk = @include_once __DIR__ . '/db.php';
+                    if ($incOk === false) {
+                        $errors[] = 'Не удалось включить db.php (include_once вернул false)';
+                    } elseif (!function_exists('pdo')) {
+                        $afterFuncs = get_defined_functions()['user'] ?? [];
+                        $new = array_values(array_diff($afterFuncs, $beforeFuncs));
+                        $errors[] = 'Функция pdo() не определена после включения db.php. Новые функции из включённого файла: ' . implode(', ', array_slice($new, 0, 20));
+                        $sz = @filesize(__DIR__ . '/db.php') ?: 0;
+                        $errors[] = 'Размер файла db.php: ' . $sz . ' байт. Проверьте, не пустой ли файл и корректно ли начинается с "<?php".';
+                    } else {
+                        try {
+                            $pdo = pdo(); // installs schema and ensures defaults
+                            // create admin user if not exists (override default if provided)
+                            if ($admin_user) {
+                                $stmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE username = ?');
+                                $stmt->execute([$admin_user]);
+                                if ((int)$stmt->fetchColumn() === 0) {
+                                    $stmt = $pdo->prepare('INSERT INTO users (username, pass_hash) VALUES (?, ?)');
+                                    $stmt->execute([$admin_user, password_hash($admin_pass, PASSWORD_DEFAULT)]);
+                                }
+                            }
+                            $success = true;
+
+                            // Try to delete installer.php itself
+                            try { @unlink(__FILE__); } catch (Throwable $e) { /* ignore */ }
+                            $selfDeleted = !file_exists(__FILE__);
+
+                            if (!$downloaded) {
+                                $output[] = 'Не удалось скачать репозиторий автоматически. Приложение установлено локально, но файлы не были обновлены.';
+                            } elseif (!$copiedAnything) {
+                                $output[] = 'Архив скачан, но файлы не скопированы (возможно структура архива изменилась).';
+                            }
+
+                        } catch (Throwable $e) {
+                            $errors[] = 'Ошибка при применении схемы: ' . $e->getMessage();
                         }
                     }
-                    $success = true;
-
-                    // Try to delete installer.php itself
-                    try { @unlink(__FILE__); } catch (Throwable $e) { /* ignore */ }
-                    $selfDeleted = !file_exists(__FILE__);
-
-                    if (!$downloaded) {
-                        $output[] = 'Не удалось скачать репозиторий автоматически. Приложение установлено локально, но файлы не были обновлены.';
-                    } elseif (!$copiedAnything) {
-                        $output[] = 'Архив скачан, но файлы не скопированы (возможно структура архива изменилась).';
-                    }
-
-                } catch (Throwable $e) {
-                    $errors[] = 'Ошибка при применении схемы: ' . $e->getMessage();
                 }
 
             } catch (Throwable $e) {
