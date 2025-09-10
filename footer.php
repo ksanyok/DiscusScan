@@ -28,7 +28,7 @@ if ($cached) {
     if ($data!==false && $code>=200 && $code<400) $remoteContent = $data;
   }
   if ($remoteContent === false) $remoteContent = @file_get_contents($remoteRawUrl);
-  if ($remoteContent && preg_match('/APP_VERSION\s*=\s*["\']([\d\.]+)["\']/', $remoteContent,$m)) {
+  if ($remoteContent && !$latestVersion && preg_match('/define\s*\(\s*[\'\"]APP_VERSION[\'\"]\s*,\s*[\'\"]([\d\.]+)[\'\"]\s*\)/i', $remoteContent, $m)) {
     $latestVersion = $m[1];
     @file_put_contents($cacheFile, json_encode(['version'=>$latestVersion,'checked_at'=>$now]));
   }
@@ -36,10 +36,9 @@ if ($cached) {
 $updateAvailable = version_compare($latestVersion, $localVersion, '>');
 ?>
 <footer id="app-footer">
-  <div class="footer-inner" style="gap:20px;">
-    <!-- Left: Service name + version -->
-    <div class="footer-service" style="gap:10px;">
-      <div class="footer-logo" aria-hidden="true">DS</div>
+  <div class="footer-inner">
+    <div class="footer-service">
+      <img src="logo.svg" alt="DiscusScan" class="logo-icon--footer" loading="lazy" width="34" height="34">
       <div>
         <div class="service-name">DiscusScan <span class="service-version">v<?=htmlspecialchars($localVersion)?></span></div>
         <div class="footer-company" style="margin-top:4px;">Последнее обновление: <?=$lastUpdateDate?></div>
