@@ -152,6 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
                 $errors[] = 'Ошибка установки: ' . $e->getMessage();
             }
         }
+    }
 }
 ?>
 <!doctype html>
