@@ -15,17 +15,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update'])) {
     exec('git pull origin main 2>&1', $output, $return_var);
 
     if ($return_var === 0) {
-        // Run migrations to apply new DB schema
-        $migrateOut = [];
-        $migrateRv = 0;
-        // Prefer PHP CLI if available
-        exec(PHP_BINARY . ' ' . escapeshellarg(__DIR__ . '/migrate.php') . ' 2>&1', $migrateOut, $migrateRv);
-
-        if ($migrateRv === 0) {
+        // Apply migrations inline by initializing PDO (install_schema + ensure_defaults)
+        try {
+            include_once __DIR__ . '/db.php';
+            $pdo = pdo(); // will create tables and ensure defaults
             $message = 'Обновление успешно выполнено. Миграции применены.';
             $success = true;
-        } else {
-            $message = 'Обновление выполнено, но миграции завершились с ошибкой:\n' . implode("\n", $migrateOut);
+        } catch (Throwable $e) {
+            $message = 'Обновление выполнено, но применение миграций завершилось с ошибкой: ' . $e->getMessage();
         }
     } else {
         $message = 'Ошибка при обновлении: ' . implode("\n", $output);
@@ -68,7 +65,7 @@ $localVersion = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
     <button type="submit" name="update" class="btn primary">Запустить обновление (git pull)</button>
   </form>
 
-  <p><small>Это выполнит git pull из репозитория, затем запустит migrate.php для применения изменений в базе данных. Убедитесь, что у сервера есть доступ к git и PHP CLI.</small></p>
+  <p><small>Это выполнит git pull из репозитория, затем применит необходимые изменения в базе данных. Убедитесь, что у сервера есть доступ к git и права на запись в директорию приложения.</small></p>
 
   <section style="margin-top:18px;">
     <details class="card glass">
@@ -76,7 +73,7 @@ $localVersion = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
       <div class="content">
         <ul>
           <li>Если на сервере нет доступа к git, загрузите архив с GitHub и распакуйте его в папку приложения.</li>
-          <li>Миграции автоматически создают отсутствующие таблицы и добавляют дефолтного пользователя, если это требуется.</li>
+          <li>Обновление автоматически попытается применить необходимые изменения в базе данных.</li>
           <li>Если после обновления вы видите ошибки доступа к файлам, проверьте права и владельца.</li>
         </ul>
       </div>

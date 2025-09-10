@@ -47,25 +47,111 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
         if ($w === false) {
             $errors[] = 'Не удалось записать файл .env. Проверьте права на директорию.';
         } else {
-            // Attempt to run migrations and create admin user
-            $cmd = PHP_BINARY . ' ' . escapeshellarg(__DIR__ . '/migrate.php') . ' --create-user=' . escapeshellarg($admin_user . ':' . $admin_pass);
-            exec($cmd . ' 2>&1', $output, $rv);
+            // Instead of calling migrate.php externally, perform install steps here:
+            // 1) Try to download latest files from GitHub (main branch zip)
+            // 2) Extract and copy files into current directory (don't overwrite .env or installer.php)
+            // 3) Include db.php and call pdo() to create tables
+            // 4) Create admin user
+            try {
+                $repoUrl = 'https://github.com/oleksandr/DiscusScan/archive/refs/heads/main.zip';
+                $tmpZip = sys_get_temp_dir() . '/discuscan_repo.zip';
+                $downloaded = false;
 
-            if ($rv === 0) {
-                $success = true;
-                // Try to delete installer.php itself (works on Unix-like systems)
-                try {
-                    if (@unlink(__FILE__)) {
-                        $selfDeleted = true;
+                // Try curl if available
+                if (function_exists('curl_version')) {
+                    $ch = curl_init($repoUrl);
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+                    $data = curl_exec($ch);
+                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    curl_close($ch);
+                    if ($data !== false && $httpCode >= 200 && $httpCode < 400) {
+                        file_put_contents($tmpZip, $data);
+                        $downloaded = true;
                     }
-                } catch (Throwable $e) {
-                    // ignore
+                } else {
+                    $data = @file_get_contents($repoUrl);
+                    if ($data !== false) {
+                        file_put_contents($tmpZip, $data);
+                        $downloaded = true;
+                    }
                 }
-            } else {
-                $errors[] = 'Миграции завершились с ошибкой: ' . implode("\n", $output);
+
+                $copiedAnything = false;
+                if ($downloaded && class_exists('ZipArchive')) {
+                    $za = new ZipArchive();
+                    if ($za->open($tmpZip) === true) {
+                        $extractDir = sys_get_temp_dir() . '/discuscan_unpack_' . bin2hex(random_bytes(6));
+                        mkdir($extractDir, 0755, true);
+                        $za->extractTo($extractDir);
+                        $za->close();
+
+                        // find extracted top-level folder
+                        $dirs = glob($extractDir . '/*', GLOB_ONLYDIR);
+                        $srcRoot = $dirs[0] ?? $extractDir;
+
+                        // recursive copy excluding .env and installer.php and .git
+                        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($srcRoot, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST);
+                        foreach ($it as $item) {
+                            $rel = substr($item->getPathname(), strlen($srcRoot) + 1);
+                            if ($rel === '' || $rel === false) continue;
+                            // skip .env and installer
+                            if (strpos($rel, '.env') === 0) continue;
+                            if (strpos($rel, 'installer.php') === 0) continue;
+                            if (strpos($rel, '.git') === 0) continue;
+
+                            $target = __DIR__ . '/' . $rel;
+                            if ($item->isDir()) {
+                                if (!is_dir($target)) @mkdir($target, 0755, true);
+                            } else {
+                                @copy($item->getPathname(), $target);
+                                $copiedAnything = true;
+                            }
+                        }
+
+                        // cleanup
+                        @unlink($tmpZip);
+                        // remove extracted temp dir recursively
+                        $ri = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($extractDir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+                        foreach ($ri as $f) { if ($f->isFile()) @unlink($f->getPathname()); else @rmdir($f->getPathname()); }
+                        @rmdir($extractDir);
+                    }
+                }
+
+                // Always include db.php and run schema creation
+                include_once __DIR__ . '/db.php';
+                try {
+                    $pdo = pdo(); // installs schema and ensures defaults
+                    // create admin user if not exists (override default if provided)
+                    if ($admin_user) {
+                        $stmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE username = ?');
+                        $stmt->execute([$admin_user]);
+                        if ((int)$stmt->fetchColumn() === 0) {
+                            $stmt = $pdo->prepare('INSERT INTO users (username, pass_hash) VALUES (?, ?)');
+                            $stmt->execute([$admin_user, password_hash($admin_pass, PASSWORD_DEFAULT)]);
+                        }
+                    }
+                    $success = true;
+
+                    // Try to delete installer.php itself
+                    try { @unlink(__FILE__); } catch (Throwable $e) { /* ignore */ }
+                    $selfDeleted = !file_exists(__FILE__);
+
+                    if (!$downloaded) {
+                        $output[] = 'Не удалось скачать репозиторий автоматически. Приложение установлено локально, но файлы не были обновлены.';
+                    } elseif (!$copiedAnything) {
+                        $output[] = 'Архив скачан, но файлы не скопированы (возможно структура архива изменилась).';
+                    }
+
+                } catch (Throwable $e) {
+                    $errors[] = 'Ошибка при применении схемы: ' . $e->getMessage();
+                }
+
+            } catch (Throwable $e) {
+                $errors[] = 'Ошибка установки: ' . $e->getMessage();
             }
         }
-    }
 }
 ?>
 <!doctype html>
