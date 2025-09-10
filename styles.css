@@ -268,81 +268,45 @@ main.container{ flex:1 0 auto; padding-bottom:14px; }
 
 /* Footer (compact, no horizontal overflow) */
 #app-footer{position:relative;width:100%;margin-top:16px;padding:12px 0;border-top:1px solid rgba(255,255,255,0.14);backdrop-filter:blur(8px) saturate(130%);background:linear-gradient(180deg,rgba(10,14,28,.38),rgba(8,12,24,.18));overflow:hidden;flex-shrink:0}
-#app-footer::before{content:"";position:absolute;inset:auto 0 -40px 0;height:160px;pointer-events:none;background:radial-gradient(60% 60% at 50% 120%,rgba(91,140,255,.14),transparent 60%);filter:blur(26px)}
+#app-footer::before{content:"";position:absolute;left:0;right:0;bottom:-40px;height:160px;pointer-events:none;background:radial-gradient(60% 60% at 50% 120%,rgba(91,140,255,.14),transparent 60%);filter:blur(26px)}
 #app-footer .footer-inner{max-width:1400px;margin:0 auto;padding:12px 22px;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:32px;width:100%}
 @media (max-width:1000px){#app-footer .footer-inner{grid-template-columns:1fr;gap:20px;text-align:center}.footer-links-right{justify-content:center}}
 .footer-service{display:flex;align-items:center;gap:12px}
-.footer-service .service-name{display:flex;align-items:center;gap:6px;font-weight:700;font-size:18px;letter-spacing:.4px}
-.footer-service .service-version{font-size:12px;font-weight:600;padding:4px 8px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px}
+.logo-stack{flex-direction:column;align-items:flex-start;gap:8px;display:flex}
+@media (max-width:1000px){.logo-stack{align-items:center}}
 .footer-company{font-size:13px;line-height:1.3;color:var(--muted)}
 .footer-company strong{color:#dff;font-weight:700}
 .footer-links-right{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
-.footer-links-right a,.update-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,0.05);border:1px solid var(--border);font-size:13px;text-decoration:none;color:#eaf0ff;position:relative}
-.footer-links-right a:hover,.update-pill:hover{background:rgba(255,255,255,0.09)}
-/* Coral accents reuse variable */
-.update-pill{background:var(--grad-coral);color:#3a1f16;font-weight:700;border:0;box-shadow:0 10px 30px rgba(255,107,107,.35)}
+.footer-links-right a,.update-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,0.05);border:1px solid var(--border);font-size:13px;text-decoration:none;color:#eaf0ff}
+.footer-links-right a:hover,.update-pill:hover{background:rgba(255,255,255,.09)}
+.update-pill{background:var(--grad-coral);color:#3a1f16;font-weight:700;border:0;box-shadow:0 10px 30px rgba(255,107,107,.35);cursor:pointer}
 .update-pill:hover{transform:translateY(-2px);box-shadow:0 16px 42px rgba(255,107,107,.45)}
-.footer-logo{position:relative;width:48px;height:48px;border-radius:14px;background:var(--grad-coral);display:grid;place-items:center;font-weight:800;font-size:16px;letter-spacing:.4px;color:#241313;overflow:hidden;box-shadow:0 6px 18px -4px rgba(255,107,107,.5),inset 0 1px 0 rgba(255,255,255,.08)}
-.footer-logo::before{content:"";position:absolute;inset:0;background:conic-gradient(from 0deg,rgba(255,255,255,.18),transparent 40%,rgba(255,255,255,.28) 60%,transparent 80%,rgba(255,255,255,.18));mix-blend-mode:overlay;animation:spin 9s linear infinite}
-.footer-logo::after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}
-@keyframes spin{to{transform:rotate(360deg)}}
-#brand-type{min-height:1.3em;font-weight:700;font-size:22px;background:linear-gradient(90deg,#ffd1c4,#ff9f85,#ffd1c4);-webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:.04em;text-shadow:0 0 10px rgba(255,140,120,.25);position:relative}
-#brand-type::after{content:"|";margin-left:2px;opacity:.75;animation:blink 1.1s steps(1) infinite}
-@keyframes blink{50%{opacity:0}}
-@media (prefers-reduced-motion:reduce){#brand-type::after{animation:none;opacity:.55}.footer-logo::before{animation:none}}
 .footer-bottom{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid rgba(255,255,255,.08);padding-top:8px;font-size:12px;color:var(--muted)}
 @media (max-width:600px){.footer-bottom{flex-direction:column;gap:4px}}
-/* Remove deprecated duplicated selectors */
-.footer-right{display:none !important}
-/* Version badge unify */
-.ver-badge{display:inline-flex;align-items:center;padding:4px 8px;font-size:11px;font-weight:600;margin-left:10px;border-radius:8px;background:var(--grad-coral);color:#1a0f13;box-shadow:0 4px 14px -2px rgba(255,107,107,.45)}
-.logo-icon--footer{height:34px;width:auto;margin-right:10px}
+.footer-right{display:none}
+/* Stack tweaks after logo swap */
+.footer-service .service-name{display:flex;align-items:center;gap:6px}
+
+/* Utility */
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0 0 0 0)!important;white-space:nowrap!important;border:0!important}
+
+/* Brand animated text (single source) */
+#brand-type{min-height:1.4em;font-weight:700;font-size:22px;background:linear-gradient(90deg,#ffd1c4,#ff8d72,#ffd1c4);-webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:.04em;text-shadow:0 0 10px rgba(255,140,120,.28);position:relative}
+#brand-type::after{content:"|";margin-left:2px;opacity:.75;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){#brand-type::after{animation:none;opacity:.55}}
+
+/* Version badge */
+.ver-badge{display:inline-flex;align-items:center;padding:4px 8px;font-size:11px;font-weight:600;border-radius:8px;background:var(--grad-coral);color:#1a0f13;box-shadow:0 4px 14px -2px rgba(255,107,107,.45)}
+
+/* Header logo sizing */
+.logo-icon{display:block;height:40px;width:auto}
+.logo-icon--header.xl{height:56px;max-height:56px}
+@media (max-width:700px){.logo-icon--header.xl{height:44px}}
+
+/* Footer small logo */
+.logo-icon--footer{height:34px;width:auto}
 @media (max-width:700px){.logo-icon--footer{height:30px}}
-/* END consolidated footer */
-
-/* --- Scope row (inline switches) --- */
-.scope-row{
-  display:grid;
-  grid-template-columns: repeat(3, minmax(0,1fr));
-  gap:14px;
-  align-items:stretch;
-  margin:6px 0 14px;
-}
-@media (max-width:1000px){ .scope-row{ grid-template-columns: repeat(2, minmax(0,1fr)); } }
-@media (max-width:640px){ .scope-row{ grid-template-columns: 1fr; } }
-
-.switch-card{
-  display:flex; flex-direction:column; align-items:center; gap:10px;
-  padding:12px 14px; min-width:0; border:1px solid var(--border);
-  border-radius:14px; background:#0f1733; box-shadow:var(--shadow);
-}
-.switch-title{ font-weight:600; color:#fff }
-.switch-sub{ color:var(--muted); font-size:12px; display:flex; align-items:center; gap:8px }
-.select-compact{ width:100%; padding:6px 10px; font-size:14px; border-radius:10px; background:#0f1733; border:1px solid var(--border); color:#fff }
-
-/* Pretty toggle inside card (smaller) */
-.switch-card .switch{
-  appearance:none; -webkit-appearance:none; outline:none;
-  width:40px; height:24px; border-radius:999px;
-  background:#0f1733; border:1px solid var(--border);
-  position:relative; cursor:pointer; transition:.2s ease;
-}
-.switch-card .switch::after{
-  content:""; position:absolute; top:3px; left:3px;
-  width:18px; height:18px; border-radius:50%;
-  background:#dbe6ff; box-shadow:0 1px 2px rgba(0,0,0,.35), inset 0 -1px 0 rgba(0,0,0,.2);
-  transition:transform .2s ease, background .2s ease;
-}
-.switch-card .switch:hover{ box-shadow:0 0 0 3px rgba(91,140,255,.15) }
-.switch-card .switch:checked{
-  background:var(--grad-primary);
-  border-color:transparent;
-}
-.switch-card .switch:checked::after{ transform:translateX(16px); background:#fff }
-
-@media (max-width:980px){
-  .switch-card{ min-width:0 }
-}
 
 /* Reset list markers inside settings to avoid random dot before switches */
 .settings-form *::marker{ content:"" }
@@ -350,67 +314,3 @@ main.container{ flex:1 0 auto; padding-bottom:14px; }
 .settings-form hr{ border:0; border-top:1px solid var(--border); margin:12px 0; }
 
 .logo-pill{ width:56px; height:56px; border-radius:12px; background:var(--grad-primary); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:18px; box-shadow:0 8px 24px rgba(91,140,255,0.12) }
-
-/* === Animated footer logo & layout refresh === */
-#app-footer .footer-inner{display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:28px;}
-@media (max-width:900px){ #app-footer .footer-inner{grid-template-columns:1fr; text-align:center} #app-footer .footer-right{justify-content:center} }
-.footer-brand{display:flex; align-items:center; gap:16px}
-.footer-logo{position:relative; width:54px; height:54px; border-radius:16px; background:var(--grad-coral); display:grid; place-items:center; font-weight:900; font-size:18px; letter-spacing:.5px; color:#042; overflow:hidden; box-shadow:0 8px 28px rgba(16,185,129,.25), inset 0 1px 0 rgba(255,255,255,.08);}
-.footer-logo::before,.footer-logo::after{content:""; position:absolute; inset:0; border-radius:inherit;}
-.footer-logo::before{background:conic-gradient(from 0deg, rgba(255,255,255,.15), transparent 40%, rgba(255,255,255,.25) 60%, transparent 80%, rgba(255,255,255,.15)); mix-blend-mode:overlay; animation:spin 9s linear infinite;}
-.footer-logo::after{box-shadow:inset 0 0 0 1px rgba(255,255,255,.15), 0 0 0 1px rgba(255,255,255,.1);}
-@keyframes spin{to{transform:rotate(360deg)}}
-#brand-type{min-height:1.4em; font-weight:700; font-size:22px; background:linear-gradient(90deg,#baf7d0,#7fffd4,#baf7d0); -webkit-background-clip:text; background-clip:text; color:transparent; position:relative; letter-spacing:.04em; text-shadow:0 0 10px rgba(16,185,129,.25);} 
-#brand-type::after{content:"|"; margin-left:2px; opacity:.75; animation:blink 1.1s steps(1) infinite} 
-@keyframes blink{50%{opacity:0}}
-@media (prefers-reduced-motion:reduce){ #brand-type::after{animation:none; opacity:.55} .footer-logo::before{animation:none} }
-.footer-center{font-size:12px; line-height:1.35; color:var(--muted)}
-.footer-right{display:none}
-.footer-links-right{display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end}
-.footer-links-right a, .update-pill{display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:10px; background:rgba(255,255,255,0.05); border:1px solid var(--border); font-size:13px; text-decoration:none; color:#eaf0ff}
-.footer-links-right a:hover, .update-pill:hover{background:rgba(255,255,255,0.09)}
-.update-pill{background:var(--grad-coral); color:#032b18; font-weight:700; border:0; cursor:pointer; box-shadow:0 10px 30px rgba(255,107,107,.35);} 
-.update-pill:hover{transform:translateY(-2px); box-shadow:0 16px 42px rgba(255,107,107,.45);} 
-.footer-meta{margin-top:6px; font-size:11px; opacity:.65}
-/* Align bottom line to span full width when stacked */
-#app-footer .footer-bottom{grid-column:1/-1; margin-top:12px;}
-
-/* --- footer spacing & icons override (append) --- */
-#app-footer .footer-inner{gap:24px;}
-.footer-links-right a{position:relative; display:inline-flex; align-items:center; gap:6px;}
-.footer-links-right a svg{width:16px; height:16px; display:block; opacity:.9}
-.footer-links-right a:hover svg{opacity:1}
-/* Compact service block spacing */
-.footer-service{gap:10px}
-.service-name{display:flex; align-items:center; gap:8px}
-
-/* --- Coral theme overrides & responsive logo adjustments --- */
-:root{ --accent-coral-start:#ff6b6b; --accent-coral-end:#ff8d72; }
-/* Version badge */
-.ver-badge{display:inline-flex; align-items:center; padding:4px 8px; font-size:11px; font-weight:600; margin-left:10px; border-radius:8px; background:var(--grad-coral); color:#1a0f13; box-shadow:0 4px 14px -2px rgba(255,107,107,.45);}
-/* Header logo image */
-.logo-icon{display:block; height:40px; width:auto;}
-.logo-icon--header{max-height:44px;}
-@media (max-width:700px){ .logo-icon--header{height:34px;} .ver-badge{margin-left:6px;} }
-/* Footer smaller logo */
-.logo-icon--footer{height:34px; width:auto; margin-right:10px;}
-@media (max-width:700px){ .logo-icon--footer{height:30px;} }
-/* Replace previous green gradients with coral */
-.footer-logo, .update-pill, .update-btn, .logo-badge-lg{background:var(--grad-coral) !important;}
-.footer-logo, .logo-badge-lg{box-shadow:0 6px 18px -4px rgba(255,107,107,.55), 0 0 0 1px rgba(255,255,255,.08) !important;}
-.update-pill{color:#3a1f16 !important; box-shadow:0 10px 30px rgba(255,107,107,.35) !important;}
-.update-pill:hover{box-shadow:0 16px 42px rgba(255,107,107,.45) !important;}
-/* Remove old green text color in footer company brand */
-#brand-type{background:linear-gradient(90deg,#ffd1c4,#ff9f85,#ffd1c4); text-shadow:0 0 10px rgba(255,140,120,.25);} 
-/* Adjust footer spacing after logo swap */
-.footer-service{gap:12px;}
-.footer-service .service-name{display:flex; align-items:center; gap:6px;}
-
-/* Header bigger logo variant */
-.logo-icon--header.xl{height:56px;max-height:56px;width:auto;}
-@media (max-width:700px){.logo-icon--header.xl{height:44px;max-height:44px;}}
-/* Footer version badge (без текста сервиса) */
-.service-version-badge{display:inline-flex;align-items:center;padding:4px 10px;font-size:12px;font-weight:600;border-radius:10px;background:var(--grad-coral);color:#1a0f13;box-shadow:0 4px 12px -2px rgba(255,107,107,.4);}
-/* Restore brand-type gradient (убираем коралловую полосу) */
-#brand-type{background:linear-gradient(90deg,#baf7d0,#7fffd4,#baf7d0);-webkit-background-clip:text;background-clip:text;color:transparent;min-height:1.4em;font-weight:700;font-size:22px;letter-spacing:.04em;text-shadow:0 0 10px rgba(16,185,129,.25);} 
-/* Remove later duplicate coral override if present */
