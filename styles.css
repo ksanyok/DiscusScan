@@ -68,7 +68,7 @@ a:hover{ color:var(--link-hover) }
 .table a:hover{ border-bottom-color:transparent }
 
 /* Layout */
-.container{ max-width:94%; margin:24px auto; padding:0 16px}
+.container{ max-width:1200px; width:100%; margin:24px auto; padding:0 22px}
 .cards{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:16px}
 @media (max-width:1024px){ .cards{grid-template-columns:repeat(2,1fr)} }
 @media (max-width:640px){ .cards{grid-template-columns:1fr} }
@@ -145,6 +145,8 @@ label{ display:flex; flex-direction:column; gap:6px; font-size:14px; color:#cfdb
 .btn:hover{ transform: translateY(-1px) }
 .btn.primary{ border-color:transparent }
 .btn.small{ padding:6px 10px; border-radius:10px; font-size:13px }
+.btn-ghost{ background:transparent; color:var(--text); border:1px solid var(--border); box-shadow:none }
+.update-btn{ background:linear-gradient(90deg,#5b8cff,#7ea2ff); color:#022; font-weight:800; margin-left:6px }
 
 .alert{ padding:10px 12px; border-radius:10px; margin:10px 0; background:#16233f; border:1px solid var(--border) }
 .alert.success{ border-color:#1f7a49; color:#b8ffd7 }
@@ -156,8 +158,8 @@ label{ display:flex; flex-direction:column; gap:6px; font-size:14px; color:#cfdb
 .table th{ position:sticky; top:0; backdrop-filter:blur(6px); background:#131d3aee; font-weight:600; border-top:1px solid transparent }
 .ellipsis{ max-width:480px; overflow:hidden; text-overflow:ellipsis }
 
-/* Auth */
-body.auth{ display:flex; align-items:center; justify-content:center; min-height:100vh }
+/* Auth pages: keep page a column but center the auth card; do not reset display to avoid breaking site layout */
+body.auth{ align-items:center; justify-content:center; min-height:100vh }
 .auth-card{ width:440px; max-width:94vw; padding:26px; border-radius:var(--radius); border:1px solid var(--border) }
 .muted{ color:var(--muted); font-size:13px }
 
@@ -237,7 +239,17 @@ body.auth{ display:flex; align-items:center; justify-content:center; min-height:
 .topbar, main.container { position: relative; z-index: 1; }
 
 /* Make main content grow so footer stays at bottom on short pages */
-main.container{ flex:1 0 auto; }
+main.container{ flex:1 0 auto; padding-bottom:18px; }
+
+/* Footer styling: keep footer out of flow but non-fixed, match main container width and spacing */
+#app-footer{ flex-shrink:0; width:100%; box-sizing:border-box; margin-top:12px; }
+#app-footer .footer-inner{ max-width:1200px; margin:0 auto; padding:18px 16px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; justify-content:space-between }
+#app-footer .footer-top{ width:100%; }
+#app-footer .footer-credits{ border-top:1px solid rgba(255,255,255,0.03); padding:10px 16px; max-width:1200px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap }
+#app-footer, #app-footer *{ transition: none !important; }
+
+/* Ensure footer buttons match header container width on small screens */
+@media (max-width:1200px){ #app-footer .footer-inner, #app-footer .footer-credits{ padding-left:12px; padding-right:12px } }
 
 /* --- Scope row (inline switches) --- */
 .scope-row{
@@ -287,3 +299,5 @@ main.container{ flex:1 0 auto; }
 .settings-form *::marker{ content:"" }
 .settings-form ul, .settings-form ol{ list-style:none; margin:0; padding:0 }
 .settings-form hr{ border:0; border-top:1px solid var(--border); margin:12px 0; }
+
+.logo-pill{ width:56px; height:56px; border-radius:12px; background:linear-gradient(135deg,#5b8cff,#7ea2ff); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:18px; box-shadow:0 8px 24px rgba(91,140,255,0.12) }
