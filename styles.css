@@ -244,40 +244,28 @@ body.auth{ align-items:center; justify-content:center; min-height:100vh }
 /* Make main content grow so footer stays at bottom on short pages */
 main.container{ flex:1 0 auto; padding-bottom:14px; }
 
-/* Footer styling: compact, modern, with subtle floating decoration */
-#app-footer{ flex-shrink:0; width:100%; box-sizing:border-box; margin-top:20px; position:relative; overflow:visible; padding:18px 0 0; /* more breathing room */
-  border-top:1px solid rgba(255,255,255,0.04);
-  backdrop-filter: blur(10px) saturate(140%);
-  background: linear-gradient(180deg, rgba(10,14,28,0.45), rgba(8,12,24,0.25));
-}
-#app-footer::before{
-  content:""; position:absolute; left:-18%; right:-18%; top:-60%; height:260px; pointer-events:none;
-  background: radial-gradient(closest-side, rgba(91,140,255,0.14), transparent 60%);
-  filter: blur(34px); transform-origin:center; opacity:0.95; animation:floatFooter 20s ease-in-out infinite alternate; z-index:0;
-}
-#app-footer .footer-inner{ max-width:1200px; margin:0 auto; padding:18px 26px 10px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; justify-content:space-between; position:relative; z-index:1; animation:fadeUp .6s ease both }
-#app-footer .footer-top{ width:100%; }
-#app-footer .footer-credits{ border-top:1px solid rgba(255,255,255,0.03); padding:12px 20px; max-width:1200px; margin:8px auto 0; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; position:relative; z-index:1 }
+/* Footer (compact, no horizontal overflow) */
+#app-footer{position:relative; width:100%; margin-top:16px; padding:12px 0; border-top:1px solid rgba(255,255,255,0.14); backdrop-filter: blur(8px) saturate(130%); background: linear-gradient(180deg, rgba(10,14,28,0.38), rgba(8,12,24,0.18)); overflow:hidden}
+#app-footer::before{content:""; position:absolute; left:0; right:0; bottom:-40px; height:160px; pointer-events:none; background:radial-gradient(60% 60% at 50% 120%, rgba(91,140,255,0.14), transparent 60%); filter:blur(26px)}
+#app-footer .footer-inner{max-width:1100px; margin:0 auto; padding:10px 16px; display:flex; flex-direction:column; gap:10px}
+#app-footer .brand-wrap{display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap}
+#app-footer .brand-text{display:flex; flex-direction:column; line-height:1.1}
+#app-footer .brand-name{font-weight:800; font-size:18px; letter-spacing:.2px}
+#app-footer .brand-sub{color:var(--muted); font-size:12px}
+#app-footer .version-pill{font-weight:700; font-size:12px; padding:6px 8px; border-radius:10px; color:#bfe; background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03)); border:1px solid var(--border)}
+#app-footer .footer-links{display:flex; flex-wrap:wrap; gap:10px; align-items:center}
+#app-footer .footer-links a{color:#eaf0ff; text-decoration:none; font-size:13px; padding:6px 8px; border-radius:10px; background:rgba(255,255,255,0.04); border:1px solid var(--border)}
+#app-footer .footer-links a:hover{background:rgba(255,255,255,0.08)}
+#app-footer .footer-links .muted-link{color:var(--muted); background:transparent}
+#app-footer .footer-bottom{display:flex; align-items:center; justify-content:space-between; gap:10px; border-top:1px solid rgba(255,255,255,0.08); padding-top:8px; font-size:12px; color:var(--muted)}
 
-/* Footer links and version */
-#app-footer .footer-links{ display:flex; gap:12px; align-items:center }
-#app-footer .footer-links a{ color:var(--muted); font-size:13px; text-decoration:none; padding:8px 10px; border-radius:10px }
-#app-footer .footer-links a:hover{ color:var(--link-hover) }
-#app-footer .version{ font-weight:700; background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:8px 12px; border-radius:12px; font-size:13px; color:var(--muted); display:inline-flex; align-items:center; gap:8px }
+/* Footer logo badge (matches screenshot) */
+.logo-badge{width:40px; height:40px; border-radius:12px; display:grid; place-items:center; font-weight:900; font-size:16px; letter-spacing:.3px; color:#031528; background:linear-gradient(135deg,#34d399,#059669); box-shadow:0 6px 20px rgba(16,185,129,.25), inset 0 1px 0 rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.08); transform:translateZ(0); animation:badgeFloat 6s ease-in-out infinite}
+.logo-badge:hover{transform:translateY(-2px)}
+@keyframes badgeFloat{ 0%{ transform: translateY(0)} 50%{ transform: translateY(-3px)} 100%{ transform: translateY(0)} }
 
-/* Logo pill: circular badge with subtle movement */
-.logo-pill{ width:56px; height:56px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:800; color:#021026; background:linear-gradient(135deg,#7ea2ff,#5b8cff); box-shadow:0 8px 28px rgba(91,140,255,0.12); flex:0 0 56px; transition:transform .35s ease; }
-.logo-pill:hover{ transform: translateY(-4px) scale(1.03) }
-.logo-pill.small{ width:44px; height:44px; font-size:14px }
-
-/* subtle fade up for footer content */
-@keyframes fadeUp{ from{ opacity:0; transform:translateY(6px)} to{ opacity:1; transform:none } }
-
-/* small badge for newest version label */
-.version-badge{ font-size:12px; font-weight:800; padding:6px 8px; border-radius:999px; color:#032; background:linear-gradient(90deg,#baf7d0,#7fffd4); }
-
-/* mobile tweaks */
-@media (max-width:700px){ #app-footer .footer-inner{ padding-left:12px; padding-right:12px; gap:10px } .logo-pill{ display:inline-flex } }
+/* Reduce excessive footer margins on small screens */
+@media (max-width:700px){ #app-footer .footer-inner{padding-left:12px; padding-right:12px} }
 
 /* --- Scope row (inline switches) --- */
 .scope-row{
