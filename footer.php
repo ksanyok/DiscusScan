@@ -28,26 +28,26 @@ if ($remoteContent && preg_match('/APP_VERSION\s*=\s*["\']([\d\.]+)["\']/', $rem
 ?>
 <footer id="app-footer">
   <div class="footer-inner">
-    <!-- Brand left -->
-    <div class="footer-brand">
+    <!-- Left: Service name + version -->
+    <div class="footer-service">
       <div class="footer-logo" aria-hidden="true">DS</div>
       <div>
-        <div id="brand-type" aria-label="DiscusScan"></div>
-        <div class="footer-meta">Мониторинг ссылок</div>
+        <div class="service-name">DiscusScan <span class="service-version">v<?=htmlspecialchars($localVersion)?></span></div>
+        <div class="footer-company">Последнее обновление: <?=$lastUpdateDate?></div>
+        <?php if ($updateAvailable): ?>
+          <div style="margin-top:4px"><a class="update-pill" href="/update.php" title="Обновить до v<?=htmlspecialchars($latestVersion)?>">Обновить → v<?=htmlspecialchars($latestVersion)?></a></div>
+        <?php endif; ?>
       </div>
     </div>
 
-    <!-- Center info -->
-    <div class="footer-center">
-      <div>v<?= htmlspecialchars($localVersion) ?><?php if($updateAvailable): ?> → доступна v<?= htmlspecialchars($latestVersion) ?><?php endif; ?></div>
-      <div>Последнее обновление: <?= $lastUpdateDate ?></div>
+    <!-- Center: Animated company brand -->
+    <div style="text-align:center;">
+      <div id="brand-type" aria-label="BuyReadySite"></div>
+      <div class="footer-company">Разработано компанией <strong>BuyReadySite.com</strong></div>
     </div>
 
-    <!-- Right links / actions -->
-    <div class="footer-right">
-      <?php if ($updateAvailable): ?>
-        <a class="update-pill" href="/update.php" title="Обновить до v<?= htmlspecialchars($latestVersion) ?>">Обновить v<?= htmlspecialchars($latestVersion) ?></a>
-      <?php endif; ?>
+    <!-- Right: Links -->
+    <div class="footer-links-right">
       <a href="https://buyreadysite.com/" target="_blank" rel="noopener">BuyReadySite</a>
       <a href="https://aiwizard.buyreadysite.com/" target="_blank" rel="noopener">AI Content Wizard</a>
       <a href="https://aiseo.buyreadysite.com/" target="_blank" rel="noopener">AI SEO Pro</a>
@@ -55,25 +55,11 @@ if ($remoteContent && preg_match('/APP_VERSION\s*=\s*["\']([\d\.]+)["\']/', $rem
       <a href="/support" class="muted-link">Поддержка</a>
     </div>
 
-    <!-- Bottom line spans full width -->
-    <div class="footer-bottom">
-      <div>© <?= date('Y') ?> DiscusScan</div>
-      <div>Все права защищены</div>
+    <div class="footer-bottom" style="grid-column:1/-1;">
+      <div>© <?=date('Y')?> DiscusScan • All rights reserved.</div>
+      <div>BuyReadySite</div>
     </div>
   </div>
 
-  <script>
-  (function(){
-    const el = document.getElementById('brand-type'); if(!el) return;
-    const target = el.getAttribute('aria-label')||'DiscusScan';
-    const glyphs = '▮░▒▓█ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
-    let i=-1, timer=null; const STEP=120, PAUSE=5000;
-    function frame(){ i++; if(i>=target.length){ el.textContent=target; clearInterval(timer); setTimeout(start, PAUSE); return; }
-      let out=''; for(let k=0;k<target.length;k++){ out += (k<=i)? target[k] : glyphs[(Math.random()*glyphs.length)|0]; }
-      el.textContent=out; }
-    function start(){ try{ if(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches){ el.textContent=target; return; } }catch(e){}
-      i=-1; if(timer) clearInterval(timer); timer=setInterval(frame, STEP); }
-    start();
-  })();
-  </script>
+  <script>(function(){const el=document.getElementById('brand-type');if(!el)return;const t=el.getAttribute('aria-label')||'BuyReadySite';const g='▮░▒▓█BRSDUYAEIOT1234567890';let i=-1,T=null;const STEP=110,PAUSE=5200;function frame(){i++;if(i>=t.length){el.textContent=t;clearInterval(T);setTimeout(start,PAUSE);return;}let out='';for(let k=0;k<t.length;k++){out+=(k<=i)?t[k]:g[(Math.random()*g.length)|0];}el.textContent=out;}function start(){try{if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches){el.textContent=t;return;}}catch(e){}i=-1;if(T)clearInterval(T);T=setInterval(frame,STEP);}start();})();</script>
 </footer>
