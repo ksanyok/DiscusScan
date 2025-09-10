@@ -43,7 +43,7 @@ $updateAvailable = version_compare($latestVersion, $localVersion, '>');
     <div class="footer-service" aria-label="DiscusScan version">
       <img src="logo.svg" alt="DiscusScan" class="logo-icon--footer" loading="lazy" width="40" height="40">
       <div>
-        <div class="service-version"><span class="ver-badge" style="margin-left:0;">v<?=htmlspecialchars($localVersion)?></span><span class="sr-only">Текущая версия приложения</span></div>
+        <div class="service-version"><span class="ver-badge" style="margin-left:0;">v<?=htmlspecialchars($localVersion)?></span><span class="sr-only">Текущая версия</span></div>
         <div class="footer-company" style="margin-top:4px;">Последнее обновление: <?=$lastUpdateDate?></div>
         <?php if ($updateAvailable): ?>
           <div style="margin-top:6px"><a class="update-pill" href="/update.php" title="Доступно обновление до v<?=htmlspecialchars($latestVersion)?>">Обновить → v<?=htmlspecialchars($latestVersion)?></a></div>

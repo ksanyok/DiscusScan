@@ -10,7 +10,6 @@ function nav_active($file){ return basename($_SERVER['PHP_SELF']) === $file ? 'a
       <a href="index.php" class="brand-link" aria-label="DiscusScan">
         <img src="logo.svg" alt="DiscusScan" class="logo-icon logo-icon--header xl" loading="lazy">
         <span class="ver-badge">v<?=$version?></span>
-        <span class="sr-only">DiscusScan</span>
       </a>
     </div>
     <nav>
