@@ -1,0 +1,275 @@
+:root{
+  --bg:#0b1020;
+  --card:#121a33cc;
+  --glass:#1a2447aa;
+  --text:#eaf0ff;
+  --muted:#9fb2ff;
+  --pri:#5b8cff;
+  --pri-2:#7ea2ff;
+  --link:#8fb7ff;
+  --link-hover:#cfe0ff;
+  --ok:#2ecc71;
+  --bad:#ff6b6b;
+  --border:rgba(255,255,255,0.08);
+  --radius:18px;
+  --radius-sm:12px;
+  --shadow:0 6px 24px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.03);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  position:relative;
+  margin:0; padding:0; font:16px/1.5 Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;
+  background:
+    radial-gradient(1200px 600px at 20% -10%, #283d85 0%, transparent 50%),
+    radial-gradient(1200px 600px at 80% -10%, #1c8fd1 0%, transparent 50%),
+    var(--bg);
+  background-attachment: fixed, fixed, fixed; /* фон фиксирован при скролле */
+  background-size: 1800px 900px, 1800px 900px, auto;
+  background-repeat:no-repeat;
+  color:var(--text);
+}
+body::before{
+  content:""; position:fixed; left:-15%; top:-20%; width:70vw; height:60vh; z-index:0; pointer-events:none;
+  background: radial-gradient(closest-side, rgba(91,140,255,.32), transparent 70%);
+  filter: blur(60px);
+  animation: float1 30s ease-in-out infinite alternate;
+}
+body::after{
+  content:""; position:fixed; right:-10%; bottom:-20%; width:65vw; height:55vh; z-index:0; pointer-events:none;
+  background: radial-gradient(closest-side, rgba(28,143,209,.30), transparent 70%);
+  filter: blur(70px);
+  animation: float2 36s ease-in-out infinite alternate;
+}
+@keyframes float1{ from{ transform: translate3d(-5%, -5%, 0) scale(1);} to{ transform: translate3d(8%, 6%, 0) scale(1.1);} }
+@keyframes float2{ from{ transform: translate3d(6%, 4%, 0) scale(1);} to{ transform: translate3d(-8%, -6%, 0) scale(1.12);} }
+
+/* Topbar */
+.topbar{
+  position:sticky; top:0; z-index:5;
+  display:flex; align-items:center; justify-content:space-between;
+  padding:14px 24px; border-bottom:1px solid var(--border);
+  backdrop-filter:saturate(160%) blur(10px);
+  background:linear-gradient(180deg, rgba(16,24,48,.7), rgba(16,24,48,.4));
+}
+.topbar .brand{font-weight:700; letter-spacing:.3px}
+.topbar nav a{
+  color:var(--muted); text-decoration:none; margin-left:16px; padding:6px 10px; border-radius:10px;
+}
+.topbar nav a.active, .topbar nav a:hover{ color:#fff; background:rgba(255,255,255,0.08)}
+
+/* Links */
+a{ color:var(--link) }
+a:hover{ color:var(--link-hover) }
+.table a{ text-decoration:none; border-bottom:1px dashed rgba(255,255,255,.25) }
+.table a:hover{ border-bottom-color:transparent }
+
+/* Layout */
+.container{ max-width:94%; margin:24px auto; padding:0 16px}
+.cards{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:16px}
+@media (max-width:1024px){ .cards{grid-template-columns:repeat(2,1fr)} }
+@media (max-width:640px){ .cards{grid-template-columns:1fr} }
+
+.card{
+  background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02)), var(--card);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow);
+  padding:16px;
+}
+.glass{
+  background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03)), var(--glass);
+  backdrop-filter:saturate(140%) blur(10px);
+}
+.card-title{ font-weight:600; margin-bottom:8px; color:#fff; opacity:.95 }
+.metric{ font-size:28px; font-weight:700 }
+
+.actions{ display:flex; align-items:center; gap:16px; margin-bottom:20px}
+.hint{ color:var(--muted); font-size:13px}
+
+/* Grid split */
+.grid{ display:grid; gap:16px; grid-template-columns:2fr 3fr}
+@media (max-width:1100px){ .grid{grid-template-columns:1fr} }
+
+.row{ display:flex; gap:10px }
+.stack{ display:flex; flex-direction:column; gap:10px }
+.grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
+@media (max-width:700px){ .grid-2{ grid-template-columns:1fr } }
+
+input, select, textarea{
+  width:100%; padding:10px 12px; color:#fff; background:#0f1733;
+  border:1px solid var(--border); border-radius:12px; outline:none;
+}
+label{ display:flex; flex-direction:column; gap:6px; font-size:14px; color:#cfdbff }
+
+.checkbox{ display:flex; align-items:center; gap:12px; font-size:14px; color:#cfdbff }
+
+/* Switch (pretty checkbox) */
+.checkbox input[type=checkbox]{
+  appearance:none; -webkit-appearance:none; outline:none;
+  width:44px; height:26px; border-radius:999px;
+  background:#0f1733; border:1px solid var(--border);
+  position:relative; cursor:pointer; transition:.2s ease;
+  flex:0 0 44px;
+}
+.checkbox input[type=checkbox]::after{
+  content:""; position:absolute; top:3px; left:3px;
+  width:18px; height:18px; border-radius:50%;
+  background:#dbe6ff; box-shadow:0 1px 2px rgba(0,0,0,.35), inset 0 -1px 0 rgba(0,0,0,.2);
+  transition:transform .2s ease, background .2s ease;
+}
+.checkbox input[type=checkbox]:hover{ box-shadow:0 0 0 3px rgba(91,140,255,.15) }
+.checkbox input[type=checkbox]:checked{
+  background:linear-gradient(135deg, var(--pri), var(--pri-2));
+  border-color:transparent;
+}
+.checkbox input[type=checkbox]:checked::after{ transform:translateX(18px); background:#fff }
+.checkbox small{ color:var(--muted) }
+
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  padding:10px 14px; border-radius:12px; border:1px solid var(--border);
+  color:#fff; background:#1a254a; cursor:pointer; text-decoration:none;
+}
+.btn:hover{ background:#223061 }
+.btn.primary{ background:linear-gradient(135deg, var(--pri), var(--pri-2)); border-color:transparent }
+.btn.small{ padding:6px 10px; border-radius:10px; font-size:13px }
+
+.alert{ padding:10px 12px; border-radius:10px; margin:10px 0; background:#16233f; border:1px solid var(--border) }
+.alert.success{ border-color:#1f7a49; color:#b8ffd7 }
+.alert.danger{ border-color:#8b2b2b; color:#ffc9c9 }
+
+.table-wrap{ width:100%; overflow-x:auto; overflow-y:auto; border:1px solid var(--border); border-radius:12px; max-height:65vh }
+.table{ width:100%; border-collapse:separate; border-spacing:0 }
+.table th, .table td{ white-space:nowrap; text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top }
+.table th{ position:sticky; top:0; backdrop-filter:blur(6px); background:#131d3aee; font-weight:600; border-top:1px solid transparent }
+.ellipsis{ max-width:480px; overflow:hidden; text-overflow:ellipsis }
+
+/* Auth */
+body.auth{ display:flex; align-items:center; justify-content:center; min-height:100vh }
+.auth-card{ width:400px; max-width:92vw; padding:22px; border-radius:var(--radius); border:1px solid var(--border) }
+.muted{ color:var(--muted); font-size:13px }
+
+/* Forms specifics */
+.add-form input[type=url]{ flex:1 }
+.settings-form code{ background:#0f1733; padding:2px 6px; border-radius:6px }
+
+/* Small UI helpers */
+.pill{ display:inline-block; padding:2px 8px; border-radius:999px; background:#0f1733; border:1px solid var(--border); font-weight:600; font-size:12px }
+.muted-inline{ color:var(--muted); font-size:12px }
+
+/* Domains view tweaks */
+.domains .left{ min-width:280px }
+.domains .table td .ellipsis{ max-width:520px }
+.domains .table th, .domains .table td{ padding:6px 8px }
+.domains .col-status{ width:70px }
+.domains .col-actions{ width:100px }
+.domains .table .btn.small{ white-space:nowrap }
+#top-domains{ margin-top:12px; margin-bottom: 12px; }
+.grid.domains{ grid-template-columns: minmax(360px, 420px) 1fr; align-items:start }
+
+/* Fixed layout for links table so nothing overflows */
+.table-links{ table-layout:fixed }
+.cut{ display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.table-links .col-views{ width:68px; text-align:right }
+.table-links td.col-views{ text-align:right }
+
+/* Responsive column hiding to keep the table within the viewport */
+.hide-md{ display:table-cell }
+.hide-sm{ display:table-cell }
+@media (max-width:1500px){
+  .hide-md{ display:none }
+}
+@media (max-width:820px){
+  .hide-sm{ display:none }
+}
+
+@media (max-width:1100px){
+  .table-wrap{ max-height:none }
+}
+
+/* Compact dates cell to avoid overflow and allow 2-line layout */
+.dates{ font-size:12px; color:var(--muted); line-height:1.15; white-space:normal }
+
+/* Accordion (details) used for Sources block on the dashboard */
+.accordion summary{ list-style:none; cursor:pointer; padding:0 }
+.accordion summary::-webkit-details-marker{ display:none }
+.accordion > .content{ margin-top:12px }
+
+/* Full-width helper for dashboard lists section */
+#lists .card{ width:100% }
+
+/* --- Top domains chips --- */
+#top-domains .chips{ display:flex; gap:10px; flex-wrap:wrap }
+.chip{
+  display:inline-flex; align-items:center; gap:8px;
+  padding:8px 10px; border-radius:999px; background:#0f1733;
+  border:1px solid var(--border); text-decoration:none; color:#fff;
+}
+.chip:hover{ background:#16233f }
+.chip-host{ max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.chip-count{ font-weight:700; background:#13214a; padding:2px 8px; border-radius:999px; border:1px solid var(--border) }
+.btn-link{ color:var(--link); text-decoration:none; border-bottom:1px dashed rgba(255,255,255,.25) }
+.btn-link:hover{ color:var(--link-hover); border-bottom-color:transparent }
+
+/* Tighter rows for links table to keep within viewport */
+.table-links th, .table-links td{ padding:6px 8px }
+
+/* More explicit accordion indicator */
+.accordion summary{ position:relative; padding-left:18px }
+.accordion summary::after{
+  content:'▸'; position:absolute; left:0; top:0; line-height:1.2; opacity:.8;
+}
+.accordion[open] summary::after{ content:'▾' }
+
+/* Raise content above animated background */
+.topbar, main.container { position: relative; z-index: 1; }
+
+/* --- Scope row (inline switches) --- */
+.scope-row{
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0,1fr));
+  gap:14px;
+  align-items:stretch;
+  margin:6px 0 14px;
+}
+@media (max-width:1000px){ .scope-row{ grid-template-columns: repeat(2, minmax(0,1fr)); } }
+@media (max-width:640px){ .scope-row{ grid-template-columns: 1fr; } }
+
+.switch-card{
+  display:flex; flex-direction:column; align-items:center; gap:10px;
+  padding:12px 14px; min-width:0; border:1px solid var(--border);
+  border-radius:14px; background:#0f1733; box-shadow:var(--shadow);
+}
+.switch-title{ font-weight:600; color:#fff }
+.switch-sub{ color:var(--muted); font-size:12px; display:flex; align-items:center; gap:8px }
+.select-compact{ width:100%; padding:6px 10px; font-size:14px; border-radius:10px; background:#0f1733; border:1px solid var(--border); color:#fff }
+
+/* Pretty toggle inside card (smaller) */
+.switch-card .switch{
+  appearance:none; -webkit-appearance:none; outline:none;
+  width:40px; height:24px; border-radius:999px;
+  background:#0f1733; border:1px solid var(--border);
+  position:relative; cursor:pointer; transition:.2s ease;
+}
+.switch-card .switch::after{
+  content:""; position:absolute; top:3px; left:3px;
+  width:18px; height:18px; border-radius:50%;
+  background:#dbe6ff; box-shadow:0 1px 2px rgba(0,0,0,.35), inset 0 -1px 0 rgba(0,0,0,.2);
+  transition:transform .2s ease, background .2s ease;
+}
+.switch-card .switch:hover{ box-shadow:0 0 0 3px rgba(91,140,255,.15) }
+.switch-card .switch:checked{
+  background:linear-gradient(135deg, var(--pri), var(--pri-2));
+  border-color:transparent;
+}
+.switch-card .switch:checked::after{ transform:translateX(16px); background:#fff }
+
+@media (max-width:980px){
+  .switch-card{ min-width:0 }
+}
+
+/* Reset list markers inside settings to avoid random dot before switches */
+.settings-form *::marker{ content:"" }
+.settings-form ul, .settings-form ol{ list-style:none; margin:0; padding:0 }
+.settings-form hr{ border:0; border-top:1px solid var(--border); margin:12px 0; }
