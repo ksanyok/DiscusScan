@@ -115,15 +115,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
     .card .muted{color:var(--muted)}
 
     /* Form controls: larger, higher contrast */
-    input[type=text], input[type=password], input[name], input[type=url] {
-      width:100%;padding:14px 16px;border-radius:12px;border:1px solid var(--border);background:rgba(10,16,32,0.65);color:var(--text);font-size:15px;transition:box-shadow .18s ease,border-color .18s ease,transform .08s ease;backdrop-filter: blur(6px);
+    /* Improved: lighter inputs and responsive sizing to avoid overflow */
+    .card input[type=text], .card input[type=password], .card input[name], .card input[type=url], .card select, .card textarea {
+      box-sizing: border-box;
+      width:100%;
+      padding:14px 16px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.035); /* lighter than before to improve contrast */
+      color:var(--text);
+      font-size:15px;
+      transition: box-shadow .18s ease, border-color .18s ease, transform .06s ease;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
     }
-    input::placeholder{ color: rgba(230,240,255,0.45) }
-    input:focus{ outline:none; border-color:transparent; box-shadow:0 8px 30px rgba(91,140,255,0.16); transform:translateY(-1px) }
+    .card input::placeholder, .card textarea::placeholder{ color: rgba(230,240,255,0.55) }
+    .card input:focus, .card textarea:focus, .card select:focus{
+      outline:none;
+      border-color: transparent;
+      box-shadow: 0 12px 36px rgba(91,140,255,0.16);
+      transform: translateY(-1px);
+      background: rgba(255,255,255,0.045);
+    }
 
-    label{ display:block; font-size:13px; color:var(--muted); margin-bottom:6px }
-    .row{ display:flex; gap:12px }
-    .col{ flex:1 }
+    /* Ensure rows wrap and columns can shrink to prevent overflow */
+    .row{ display:flex; gap:12px; flex-wrap:wrap }
+    .col{ flex:1 1 0; min-width:0 }
 
     .btn{ padding:12px 16px;border-radius:12px;border:none;background:linear-gradient(135deg,var(--accent-start),var(--accent-end)); color:#022; font-weight:700; cursor:pointer; box-shadow:0 8px 24px rgba(91,140,255,0.12) }
     .btn:active{ transform:translateY(1px) }
