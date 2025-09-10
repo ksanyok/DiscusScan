@@ -7,8 +7,8 @@ function nav_active($file){ return basename($_SERVER['PHP_SELF']) === $file ? 'a
 <header class="topbar glass">
   <div class="app-shell">
     <div class="brand">
-      <a href="index.php" class="brand-link" aria-label="DiscusScan dashboard">
-        <img src="logo.svg" alt="DiscusScan" class="logo-icon logo-icon--header" loading="lazy">
+      <a href="index.php" class="brand-link" aria-label="DiscusScan">
+        <img src="logo.svg" alt="DiscusScan" class="logo-icon logo-icon--header xl" loading="lazy">
         <span class="ver-badge">v<?=$version?></span>
         <span class="sr-only">DiscusScan</span>
       </a>

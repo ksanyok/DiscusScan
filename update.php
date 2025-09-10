@@ -14,7 +14,26 @@ if (!is_dir($dataDir)) @mkdir($dataDir, 0755, true);
 $message = '';
 $success = false;
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update'])) {
+include_once __DIR__ . '/version.php';
+$localVersionEarly = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
+$remoteRawVersionUrl = "https://raw.githubusercontent.com/$repoOwner/$repoName/$branch/version.php";
+$skipUpdate = false; $remoteVersionFound = null;
+function fetch_remote_version($url){
+    $content = false; $ver = null;
+    if (function_exists('curl_init')) { $ch=curl_init($url); curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>true,CURLOPT_TIMEOUT=>8]); $d=curl_exec($ch); $c=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch); if($d!==false && $c>=200 && $c<400) $content=$d; }
+    if ($content===false) $content=@file_get_contents($url);
+    if ($content && preg_match('/define\s*\(\s*["\']APP_VERSION["\']\s*,\s*["\']([\d\.]+)["\']\s*\)/i',$content,$m)) $ver=$m[1];
+    return $ver;
+}
+if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['update'])) {
+    $remoteVersionFound = fetch_remote_version($remoteRawVersionUrl);
+    if ($remoteVersionFound && version_compare($remoteVersionFound, $localVersionEarly, '<=' ) && empty($_POST['force'])) {
+        $message = 'Нет новой версии (локальная v'.$localVersionEarly.', удалённая v'.($remoteVersionFound ?: '—').'). Обновление отменено.';
+        $skipUpdate = true;
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update']) && !$skipUpdate) {
     $output = [];
     $successMsg = '';
     if (is_dir(__DIR__ . '/.git')) {

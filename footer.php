@@ -28,22 +28,25 @@ if ($cached) {
     if ($data!==false && $code>=200 && $code<400) $remoteContent = $data;
   }
   if ($remoteContent === false) $remoteContent = @file_get_contents($remoteRawUrl);
-  if ($remoteContent && !$latestVersion && preg_match('/define\s*\(\s*[\'\"]APP_VERSION[\'\"]\s*,\s*[\'\"]([\d\.]+)[\'\"]\s*\)/i', $remoteContent, $m)) {
-    $latestVersion = $m[1];
-    @file_put_contents($cacheFile, json_encode(['version'=>$latestVersion,'checked_at'=>$now]));
+  if ($remoteContent) {
+    if (preg_match('/APP_VERSION\s*=\s*["\']([\d\.]+)["\']/', $remoteContent,$m) ||
+        preg_match('/define\s*\(\s*["\']APP_VERSION["\']\s*,\s*["\']([\d\.]+)["\']\s*\)/i', $remoteContent,$m)) {
+      $latestVersion = $m[1];
+      @file_put_contents($cacheFile, json_encode(['version'=>$latestVersion,'checked_at'=>$now]));
+    }
   }
 }
 $updateAvailable = version_compare($latestVersion, $localVersion, '>');
 ?>
 <footer id="app-footer">
   <div class="footer-inner">
-    <div class="footer-service">
-      <img src="logo.svg" alt="DiscusScan" class="logo-icon--footer" loading="lazy" width="34" height="34">
+    <div class="footer-service" aria-label="DiscusScan version">
+      <img src="logo.svg" alt="DiscusScan" class="logo-icon--footer" loading="lazy" width="40" height="40">
       <div>
-        <div class="service-name">DiscusScan <span class="service-version">v<?=htmlspecialchars($localVersion)?></span></div>
+        <div class="service-version"><span class="ver-badge" style="margin-left:0;">v<?=htmlspecialchars($localVersion)?></span><span class="sr-only">Текущая версия приложения</span></div>
         <div class="footer-company" style="margin-top:4px;">Последнее обновление: <?=$lastUpdateDate?></div>
         <?php if ($updateAvailable): ?>
-          <div style="margin-top:6px"><a class="update-pill" href="/update.php" title="Обновить до v<?=htmlspecialchars($latestVersion)?>">Обновить → v<?=htmlspecialchars($latestVersion)?></a></div>
+          <div style="margin-top:6px"><a class="update-pill" href="/update.php" title="Доступно обновление до v<?=htmlspecialchars($latestVersion)?>">Обновить → v<?=htmlspecialchars($latestVersion)?></a></div>
         <?php endif; ?>
       </div>
     </div>
