@@ -68,7 +68,7 @@ a:hover{ color:var(--link-hover) }
 .table a:hover{ border-bottom-color:transparent }
 
 /* Layout */
-.container{ max-width:1200px; width:100%; margin:24px auto; padding:0 22px}
+.container{ max-width:1400px; width:100%; margin:24px auto; padding:0 22px}
 .cards{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:16px}
 @media (max-width:1024px){ .cards{grid-template-columns:repeat(2,1fr)} }
 @media (max-width:640px){ .cards{grid-template-columns:1fr} }
