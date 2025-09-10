@@ -75,24 +75,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
   <title>Установка — DiscusScan</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
-    /* Self-contained installer styles */
-    :root{--bg:#0f1724;--card:#0f1728;--muted:#9aa4b2;--accent:#5b8cff;--glass:rgba(255,255,255,0.03)}
-    html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;background:linear-gradient(180deg,#071025 0%,#07142a 100%);color:#e6eef8}
-    .container{max-width:900px;margin:36px auto;padding:16px}
-    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:12px;padding:18px;box-shadow:0 6px 24px rgba(2,6,23,0.6)}
-    .top{display:flex;align-items:center;gap:12px}
-    .logo{width:48px;height:48px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#7ea2ff);display:flex;align-items:center;justify-content:center;font-weight:700}
-    label{display:block;font-size:13px;margin-bottom:6px;color:var(--muted)}
-    input[type=text],input[type=password],input[name]{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit}
-    .row{display:flex;gap:12px}
-    .col{flex:1}
-    .muted{color:var(--muted);font-size:13px}
-    .btn{padding:10px 14px;border-radius:8px;border:none;background:var(--accent);color:#012;text-transform:none;cursor:pointer}
-    .alert{padding:10px;border-radius:8px;margin-bottom:12px}
-    .alert.error{background:rgba(255,60,60,0.12);color:#ffb3b3}
-    .alert.success{background:rgba(40,200,120,0.12);color:#bff7cf}
-    .result{white-space:pre-wrap;font-family:monospace;font-size:13px;color:#cfe7ff}
-    footer{margin-top:12px;text-align:center;color:var(--muted);font-size:12px}
+    /* Modern installer theme aligned with main styles.css */
+    :root{
+      --bg:#071025;
+      --accent-start:#5b8cff;
+      --accent-end:#7ea2ff;
+      --card:linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+      --glass:rgba(255,255,255,0.03);
+      --text:#eaf0ff;
+      --muted:#9fb2ff;
+      --border:rgba(255,255,255,0.06);
+      --radius:16px;
+      --shadow:0 10px 40px rgba(2,6,23,0.6);
+    }
+
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+
+    /* Animated gradient + floating blobs (visually consistent with main styles) */
+    body{
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(91,140,255,0.18) 0%, transparent 45%),
+        radial-gradient(1200px 600px at 90% -10%, rgba(28,143,209,0.14) 0%, transparent 50%),
+        var(--bg);
+      background-attachment: fixed, fixed, fixed;
+      background-size: 1600px 800px, 1600px 800px, auto;
+    }
+    body::before, body::after{ content:""; position:fixed; z-index:0; pointer-events:none; filter:blur(70px); }
+    body::before{ left:-15%; top:-20%; width:70vw; height:60vh; background: radial-gradient(closest-side, rgba(91,140,255,0.32), transparent 70%); animation: float1 30s ease-in-out infinite alternate; }
+    body::after{ right:-10%; bottom:-20%; width:65vw; height:55vh; background: radial-gradient(closest-side, rgba(28,143,209,0.30), transparent 70%); animation: float2 36s ease-in-out infinite alternate; }
+    @keyframes float1{ from{ transform: translate3d(-5%, -5%, 0) scale(1);} to{ transform: translate3d(8%, 6%, 0) scale(1.08);} }
+    @keyframes float2{ from{ transform: translate3d(6%, 4%, 0) scale(1);} to{ transform: translate3d(-8%, -6%, 0) scale(1.1);} }
+
+    .container{max-width:920px;margin:40px auto;padding:18px;position:relative;z-index:1}
+    .card{background:var(--card);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);border:1px solid var(--border)}
+
+    .top{display:flex;align-items:center;gap:14px}
+    .logo{width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,var(--accent-start),var(--accent-end));display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:18px}
+
+    .card .muted{color:var(--muted)}
+
+    /* Form controls: larger, higher contrast */
+    input[type=text], input[type=password], input[name], input[type=url] {
+      width:100%;padding:14px 16px;border-radius:12px;border:1px solid var(--border);background:rgba(10,16,32,0.65);color:var(--text);font-size:15px;transition:box-shadow .18s ease,border-color .18s ease,transform .08s ease;backdrop-filter: blur(6px);
+    }
+    input::placeholder{ color: rgba(230,240,255,0.45) }
+    input:focus{ outline:none; border-color:transparent; box-shadow:0 8px 30px rgba(91,140,255,0.16); transform:translateY(-1px) }
+
+    label{ display:block; font-size:13px; color:var(--muted); margin-bottom:6px }
+    .row{ display:flex; gap:12px }
+    .col{ flex:1 }
+
+    .btn{ padding:12px 16px;border-radius:12px;border:none;background:linear-gradient(135deg,var(--accent-start),var(--accent-end)); color:#022; font-weight:700; cursor:pointer; box-shadow:0 8px 24px rgba(91,140,255,0.12) }
+    .btn:active{ transform:translateY(1px) }
+
+    .alert{ padding:12px;border-radius:10px;margin:10px 0;background:rgba(0,0,0,0.25);border:1px solid var(--border) }
+    .alert.error{ background: linear-gradient(180deg, rgba(255,40,40,0.06), rgba(255,40,40,0.03)); color:#ffd7d7 }
+    .alert.success{ background: linear-gradient(180deg, rgba(24,180,110,0.06), rgba(24,180,110,0.03)); color:#dfffe8 }
+
+    .result{ white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size:13px; color:#cfe7ff }
+
+    footer{ margin-top:18px; text-align:center; color:var(--muted); font-size:13px }
+
+    /* Responsive tweaks */
+    @media (max-width:820px){ .row{flex-direction:column} .top{gap:10px} .logo{width:48px;height:48px} }
   </style>
 </head>
 <body>
