@@ -249,8 +249,23 @@ body.auth{ align-items:center; justify-content:center; min-height:100vh }
 main.container{ flex:1 0 auto; padding-bottom:14px; }
 
 /* Footer (compact, no horizontal overflow) */
-#app-footer{position:relative; width:100%; margin-top:16px; padding:12px 0; border-top:1px solid rgba(255,255,255,0.14); backdrop-filter: blur(8px) saturate(130%); background: linear-gradient(180deg, rgba(10,14,28,0.38), rgba(8,12,24,0.18)); overflow:hidden}
+#app-footer{position:relative; width:100%; margin-top:16px; padding:12px 0; border-top:1px solid rgba(255,255,255,0.14); backdrop-filter: blur(8px) saturate(130%); background: linear-gradient(180deg, rgba(10,14,28,0.38), rgba(8,12,24,0.18)); overflow:hidden; flex-shrink:0}
 #app-footer::before{content:""; position:absolute; left:0; right:0; bottom:-40px; height:160px; pointer-events:none; background:radial-gradient(60% 60% at 50% 120%, rgba(91,140,255,0.14), transparent 60%); filter:blur(26px)}
+/* ---- Footer unified layout fix ---- */
+#app-footer .footer-inner{
+  max-width:1400px;
+  margin:0 auto;
+  padding:12px 22px;
+  display:grid;
+  grid-template-columns:auto 1fr auto;
+  align-items:center;
+  gap:40px;
+  width:100%;
+}
+@media (max-width:1000px){
+  #app-footer .footer-inner{grid-template-columns:1fr; text-align:center; gap:22px}
+  .footer-links-right{justify-content:center}
+}
 /* Reuse container width for footer */
 #app-footer .footer-inner{max-width:1400px;}
 /* Footer new grid (service/version | animated company | links) */
