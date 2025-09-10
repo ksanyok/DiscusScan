@@ -287,6 +287,14 @@ main.container{ flex:1 0 auto; padding-bottom:14px; }
 /* Stack tweaks after logo swap */
 .footer-service .service-name{display:flex;align-items:center;gap:6px}
 
+/* Footer icon buttons: ensure consistent icon size and visibility */
+.footer-links-right .icon-btn{display:inline-flex;align-items:center;gap:8px;line-height:1;font-weight:500}
+.footer-links-right .icon-btn .i{width:16px;height:16px;flex:0 0 16px;display:block;stroke:currentColor;fill:none;stroke-width:2}
+.footer-links-right .icon-btn svg{width:100%;height:100%;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+/* Fallback if SVG missing */
+.footer-links-right .icon-btn:not(:has(svg))::before{content:"•";display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.7;margin-right:4px}
+/* End footer icon normalization */
+
 /* Utility */
 .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0 0 0 0)!important;white-space:nowrap!important;border:0!important}
 
@@ -319,8 +327,8 @@ main.container{ flex:1 0 auto; padding-bottom:14px; }
 .scope-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;width:100%;margin:8px 0 18px}
 @media (max-width:1000px){.scope-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:700px){.scope-row{grid-template-columns:1fr}}
-.switch-card{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:#0f1733;box-shadow:var(--shadow);min-width:0;position:relative}
-.switch-card:hover{border-color:rgba(255,255,255,.18)}
+.switch-card{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:14px 16px;border:1px solid rgba(255,255,255,.12);border-radius:14px;background:#0f1733;box-shadow:var(--shadow);min-width:0;position:relative}
+.switch-card:hover{border-color:rgba(255,255,255,.2)}
 .switch-card .switch-title{font-weight:600;font-size:14px;color:#fff;width:100%}
 .switch-card .switch-sub{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:8px;width:100%}
 /* Toggle */
