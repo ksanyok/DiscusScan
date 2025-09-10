@@ -48,15 +48,7 @@ if ($activeSource) {
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">🔎 Мониторинг</div>
-  <nav>
-    <a href="index.php">Дашборд</a>
-    <a href="sources.php" class="active">Домены</a>
-    <a href="settings.php">Настройки</a>
-    <a href="auth.php?logout=1">Выход</a>
-  </nav>
-</header>
+<?php include 'header.php'; ?>
 
 <main class="container">
   <section class="grid domains">
@@ -113,5 +105,6 @@ if ($activeSource) {
     </div>
   </section>
 </main>
+<?php include 'footer.php'; ?>
 </body>
 </html>

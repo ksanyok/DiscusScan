@@ -70,14 +70,7 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">⚙️ Настройки</div>
-  <nav>
-    <a href="index.php">Дашборд</a>
-    <a href="settings.php" class="active">Настройки</a>
-    <a href="auth.php?logout=1">Выход</a>
-  </nav>
-</header>
+<?php include 'header.php'; ?>
 
 <main class="container">
   <div class="card glass">
@@ -159,5 +152,6 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
     </form>
   </div>
 </main>
+<?php include 'footer.php'; ?>
 </body>
 </html>

@@ -1,17 +1,22 @@
 <?php
 // db.php — подключение к БД, авто-создание таблиц, настройки, логирование
 
-// --- БАЗОВЫЕ НАСТРОЙКИ БД (измени под себя) ---
-const DB_HOST = 'topbit.mysql.tools';
-const DB_NAME = 'topbit_monitor';
-const DB_USER = 'topbit_monitor';
-const DB_PASS = '(766hxMXd~';
-const DB_CHARSET = 'utf8mb4';
+// If a local config exists, include it (config.php should define DB_* constants using define())
+if (file_exists(__DIR__ . '/config.php')) {
+    include __DIR__ . '/config.php';
+}
+
+// --- БАЗОВЫЕ НАСТРОЙКИ БД (можно переопределить в config.php) ---
+if (!defined('DB_HOST')) define('DB_HOST', 'topbit.mysql.tools');
+if (!defined('DB_NAME')) define('DB_NAME', 'topbit_monitor');
+if (!defined('DB_USER')) define('DB_USER', 'topbit_monitor');
+if (!defined('DB_PASS')) define('DB_PASS', '(766hxMXd~');
+if (!defined('DB_CHARSET')) define('DB_CHARSET', 'utf8mb4');
 
 // --- ЛОГИРОВАНИЕ ---
-const LOG_DIR = __DIR__ . '/logs';
-const APP_LOG = LOG_DIR . '/app.log';
-const PHP_ERR_LOG = LOG_DIR . '/php-errors.log';
+if (!defined('LOG_DIR')) define('LOG_DIR', __DIR__ . '/logs');
+if (!defined('APP_LOG')) define('APP_LOG', LOG_DIR . '/app.log');
+if (!defined('PHP_ERR_LOG')) define('PHP_ERR_LOG', LOG_DIR . '/php-errors.log');
 
 // Создаём папку logs и настраиваем error_log
 if (!is_dir(LOG_DIR)) { @mkdir(LOG_DIR, 0775, true); }
@@ -48,7 +53,7 @@ function pdo(): PDO {
     } catch (Throwable $e) {
         app_log('error', 'db', 'DB connection failed', ['error' => $e->getMessage()]);
         http_response_code(500);
-        die('DB connection failed. Check db.php settings.');
+        die('DB connection failed. Check db.php/settings or config.php.');
     }
     install_schema($pdo);
     ensure_defaults($pdo);

@@ -84,15 +84,7 @@ $cronUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://'
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">🔎 Мониторинг</div>
-  <nav>
-    <a href="index.php" class="active">Дашборд</a>
-    <a href="sources.php">Домены</a>
-    <a href="settings.php">Настройки</a>
-    <a href="auth.php?logout=1">Выход</a>
-  </nav>
-</header>
+<?php include 'header.php'; ?>
 
 <main class="container">
   <section class="cards">
@@ -213,5 +205,6 @@ $cronUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://'
     </div>
   </section>
 </main>
+<?php include 'footer.php'; ?>
 </body>
 </html>
