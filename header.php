@@ -15,7 +15,6 @@
     <a href="index.php" class="active">Дашборд</a>
     <a href="sources.php">Домены</a>
     <a href="settings.php">Настройки</a>
-    <a href="update.php">Обновление</a>
     <a href="auth.php?logout=1">Выход</a>
   </nav>
 </header>

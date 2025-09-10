@@ -5,62 +5,59 @@ $localVersion = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
 $latestVersion = $localVersion;
 $updateAvailable = false;
 try {
-    // Fetch remote version file from GitHub
+    // Fetch remote version file from the official repo for updates
     $remoteContent = @file_get_contents('https://raw.githubusercontent.com/ksanyok/DiscusScan/main/version.php');
     if ($remoteContent && preg_match("/APP_VERSION\s*=\s*['\"]([\d\.]+)['\"]/i", $remoteContent, $m)) {
         $latestVersion = $m[1];
         $updateAvailable = version_compare($latestVersion, $localVersion, '>');
     }
 } catch (Exception $e) {
-    // Fail silently if unable to fetch remote version
+    // fail silently
 }
 ?>
-<footer class="card glass" style="margin-top: 24px; padding: 24px; background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03)), rgba(26,36,71,.8); backdrop-filter: saturate(140%) blur(10px);">
-  <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 24px; align-items: center;">
-    <!-- Brand -->
-    <div style="display: flex; align-items: center; gap: 12px;">
-      <div style="width: 48px; height: 48px; border-radius: 12px; background: linear-gradient(135deg, #2ecc71, #27ae60); display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; box-shadow: 0 4px 12px rgba(46,204,113,.4);">DS</div>
-      <div style="line-height: 1.2;">
-        <div style="font-family: monospace; font-size: 20px; letter-spacing: 0.06em; background: linear-gradient(90deg, #baf7d0, #7fffd4); -webkit-background-clip: text; background-clip: text; color: transparent;">DiscusScan</div>
+<footer id="app-footer" style="position:fixed;left:0;right:0;bottom:0;z-index:9999;background:linear-gradient(180deg,rgba(3,8,22,0.9),rgba(6,12,30,0.92));color:rgba(255,255,255,0.95);">
+  <div style="max-width:1200px;margin:0 auto;padding:18px 20px;display:flex;flex-wrap:wrap;align-items:center;gap:12px;justify-content:space-between">
+    <!-- Brand block -->
+    <div style="display:flex;align-items:center;gap:12px;min-width:220px">
+      <div style="position:relative;width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,#10b981,#047857);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:18px;box-shadow:0 6px 20px rgba(4,120,87,0.24)">
+        <span style="font-family:monospace">BRS</span>
+        <span style="position:absolute;inset:0;border-radius:12px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.04)"></span>
+      </div>
+      <div>
+        <div style="font-weight:700">BuyReadySite — DiscusScan</div>
+        <div style="font-size:12px;opacity:0.75">v<?= htmlspecialchars($localVersion) ?><?php if ($updateAvailable): ?> <span style="color:#7fffd4;font-weight:700;margin-left:8px">• Новая v<?= htmlspecialchars($latestVersion) ?> доступна</span><?php endif; ?></div>
       </div>
     </div>
 
-    <!-- Center: version + credits -->
-    <div style="text-align: center;">
-      <p style="font-size: 14px; opacity: 0.8;">
-        v<?= htmlspecialchars($localVersion) ?> • Developed by
-        <a href="https://github.com/ksanyok/DiscusScan" style="text-decoration: underline; color: #7fffd4;" target="_blank" rel="noopener">GitHub</a>
-        <?php if ($updateAvailable): ?>
-          <span style="margin-left: 8px; font-size: 12px; color: #7fffd4;">
-            <a href="update.php" style="text-decoration: underline;" title="Новая версия доступна">Обновить до v<?= htmlspecialchars($latestVersion) ?></a>
-          </span>
-        <?php endif; ?>
-      </p>
-      <p style="font-size: 12px; opacity: 0.7;">Updated 10 сентября 2025</p>
+    <!-- Center: promo / description -->
+    <div style="flex:1 1 440px;min-width:260px;text-align:center;padding:4px 12px;color:rgba(255,255,255,0.88)">
+      <div style="font-size:13px;opacity:0.9">Мониторинг упоминаний — автоматические сканы форумов и сайтов. Интеграция с AI для фильтрации и классификации результатов.</div>
     </div>
 
-    <!-- Links -->
-    <div style="justify-self: end;">
-      <div style="display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px;">
-        <a href="https://github.com/ksanyok/DiscusScan" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); text-decoration: none; color: white; transition: background 0.2s;">
-          <span style="width: 8px; height: 8px; border-radius: 50%; background: #2ecc71;"></span>
-          <span>GitHub Repo</span>
-        </a>
-        <a href="settings.php" style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); text-decoration: none; color: white; transition: background 0.2s;">
-          <span>⚙️</span>
-          <span>Настройки</span>
-        </a>
-        <a href="auth.php?logout=1" style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); text-decoration: none; color: white; transition: background 0.2s;">
-          <span>🚪</span>
-          <span>Выход</span>
-        </a>
-      </div>
+    <!-- Right: promos + update action -->
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-self:end">
+      <a href="https://aiseo.buyreadysite.com/" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.04);color:#fff;text-decoration:none;font-size:13px">AI SEO AutoOptimize Pro</a>
+      <a href="https://aiwizard.buyreadysite.com/" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.04);color:#fff;text-decoration:none;font-size:13px">AI Content Wizard</a>
+      <a href="/support" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.03);color:#fff;text-decoration:none;font-size:13px">Поддержка</a>
+
+      <?php if ($updateAvailable): ?>
+        <a href="/update.php" style="margin-left:6px;padding:10px 14px;border-radius:10px;background:linear-gradient(90deg,#10b981,#34d399);color:#022;font-weight:700;text-decoration:none;box-shadow:0 8px 28px rgba(16,185,129,0.12);">Обновить до v<?= htmlspecialchars($latestVersion) ?></a>
+      <?php endif; ?>
     </div>
   </div>
 
-  <!-- Bottom line -->
-  <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 12px; opacity: 0.6; display: flex; justify-content: space-between; align-items: center;">
-    <div>© <?= date('Y') ?> DiscusScan — All rights reserved.</div>
-    <div>Made with ❤ for web monitoring</div>
+  <div style="border-top:1px solid rgba(255,255,255,0.04);padding:10px 20px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+    <div style="font-size:12px;opacity:0.8">© <?= date('Y') ?> BuyReadySite — All rights reserved.</div>
+    <div style="font-size:12px;opacity:0.75">Made with ❤ for web monitoring</div>
   </div>
+
+  <style>
+    /* small responsive tweaks */
+    @media (max-width:820px){
+      #app-footer div[style*="flex:1 1 440px"]{order:3}
+      #app-footer div[style*="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-self:end"]{order:2}
+    }
+  </style>
 </footer>
+</body>
+</html>
