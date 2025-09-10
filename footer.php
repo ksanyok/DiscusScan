@@ -5,7 +5,6 @@ $localVersion = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
 $latestVersion = $localVersion;
 $updateAvailable = false;
 try {
-    // Try fetching remote version file from GitHub (raw). Use file_get_contents, fall back to curl.
     $remoteUrl = 'https://raw.githubusercontent.com/ksanyok/DiscusScan/main/version.php';
     $remoteContent = @file_get_contents($remoteUrl);
     if ($remoteContent === false && function_exists('curl_version')) {
@@ -21,48 +20,70 @@ try {
         $updateAvailable = version_compare($latestVersion, $localVersion, '>');
     }
 } catch (Exception $e) {
-    // ignore network issues silently
+    // silent
 }
 ?>
-<!-- Footer: regular document flow footer (not fixed) -->
-<footer id="app-footer" class="glass site-footer" role="contentinfo" aria-label="Site footer" data-version="<?= htmlspecialchars($localVersion) ?>">
-  <div class="container footer-inner">
-
-    <div class="footer-top">
-      <div class="brand-block">
-        <div class="logo-pill" aria-hidden="true">BRS</div>
-        <div class="brand-text">
-          <div class="brand-name">BuyReadySite</div>
-          <div class="brand-sub"><span class="pill">DiscusScan</span></div>
+<footer id="app-footer" data-version="<?= htmlspecialchars($localVersion) ?>">
+  <div class="footer-shell">
+    <div class="footer-grid">
+      <!-- Brand -->
+      <div class="footer-brand">
+        <div class="footer-logo" aria-hidden="true">
+          <span class="logo-core">BRS</span>
+          <span class="logo-ring"></span>
+        </div>
+        <div class="brand-typing">
+          <span id="brsType" aria-label="BuyReadySite"></span>
         </div>
       </div>
 
+      <!-- Version / Credits -->
       <div class="footer-center">
-        <div class="footer-desc">Мониторинг упоминаний — автоматические сканы форумов и сайтов с AI‑фильтрацией и классификацией.</div>
-        <div class="footer-version" aria-live="polite"> 
-          <span class="version">v<?= htmlspecialchars($localVersion) ?></span>
+        <p class="version-line">
+          <span class="ver">v<?= htmlspecialchars($localVersion) ?></span>
+          • Developed by <a href="https://BuyReadySite.com" target="_blank" rel="noopener">BuyReadySite.com</a>
           <?php if ($updateAvailable): ?>
-            <span class="version-badge">Новее: v<?= htmlspecialchars($latestVersion) ?></span>
+            <span class="upd"><a href="/update.php" title="Новая версия доступна">Обновить до v<?= htmlspecialchars($latestVersion) ?></a></span>
           <?php endif; ?>
-        </div>
+        </p>
+        <p class="updated-at">Последнее обновление интерфейса: 28 июля 2025</p>
       </div>
 
+      <!-- Promo / Actions -->
       <div class="footer-actions">
-        <a href="https://aiseo.buyreadysite.com/" target="_blank" rel="noopener" class="btn small" aria-label="AI SEO AutoOptimize Pro">AI SEO AutoOptimize Pro</a>
-        <a href="https://aiwizard.buyreadysite.com/" target="_blank" rel="noopener" class="btn small" aria-label="AI Content Wizard">AI Content Wizard</a>
-        <a href="/support" class="btn small btn-ghost" aria-label="Support">Поддержка</a>
-
+        <a href="https://aiseo.buyreadysite.com/" target="_blank" rel="noopener" class="chip glow">AI SEO AutoOptimize Pro</a>
+        <a href="https://aiwizard.buyreadysite.com/" target="_blank" rel="noopener" class="chip">AI Content Wizard</a>
+        <a href="/support" class="chip ghost">Поддержка</a>
         <?php if ($updateAvailable): ?>
-          <a href="/update.php" class="btn small update-btn pulse" title="Обновить до v<?= htmlspecialchars($latestVersion) ?>" aria-label="Обновить до версии <?= htmlspecialchars($latestVersion) ?>">Обновить до v<?= htmlspecialchars($latestVersion) ?></a>
+          <a href="/update.php" class="chip update pulse">Update v<?= htmlspecialchars($latestVersion) ?></a>
         <?php endif; ?>
       </div>
     </div>
 
+    <div class="footer-bottom">
+      <div>© <?= date('Y') ?> BuyReadySite — All rights reserved.</div>
+      <div class="love">Made with ❤ for web monitoring</div>
+    </div>
   </div>
-  <div class="footer-credits container">
-    <div class="credits-left">© <?= date('Y') ?> BuyReadySite — All rights reserved.</div>
-    <div class="credits-right">Made with ❤ for web monitoring</div>
-  </div>
+
+  <script>
+  (function(){
+    const el = document.getElementById('brsType'); if(!el) return;
+    const target = (el.getAttribute('aria-label')||'BuyReadySite');
+    const glyphs = '01▮░▒▓█ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const STEP_MS = 140; const PAUSE_MS = 5200; let reveal=-1, timer=null;
+    function frame(){
+      reveal++; if(reveal >= target.length){ el.textContent = target; clearInterval(timer); setTimeout(start, PAUSE_MS); return; }
+      let out=''; for(let i=0;i<target.length;i++){ out += (i<=reveal)? target[i] : glyphs[(Math.random()*glyphs.length)|0]; }
+      el.textContent = out;
+    }
+    function start(){
+      try{ if(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches){ el.textContent=target; return; } }catch(e){}
+      reveal=-1; if(timer) clearInterval(timer); timer=setInterval(frame, STEP_MS);
+    }
+    start();
+  })();
+  </script>
 </footer>
 </body>
 </html>
