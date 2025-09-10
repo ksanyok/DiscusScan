@@ -23,7 +23,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update'])) {
         }
     } else {
         // Not a git repo — download ZIP from GitHub and unpack
-        $repoUrl = 'https://github.com/ksanyok/DiscusScan/archive/refs/heads/main.zip';
+        $repoUrl = 'https://github.com/oleksandr/DiscusScan/archive/refs/heads/main.zip';
         $tmpZip = sys_get_temp_dir() . '/discuscan_update_' . bin2hex(random_bytes(6)) . '.zip';
         $downloaded = false;
         // Try curl then file_get_contents
