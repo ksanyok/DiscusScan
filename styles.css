@@ -317,3 +317,26 @@ main.container{ flex:1 0 auto; padding-bottom:14px; }
 .settings-form hr{ border:0; border-top:1px solid var(--border); margin:12px 0; }
 
 .logo-pill{ width:56px; height:56px; border-radius:12px; background:linear-gradient(135deg,#5b8cff,#7ea2ff); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:18px; box-shadow:0 8px 24px rgba(91,140,255,0.12) }
+
+/* === Animated footer logo & layout refresh === */
+#app-footer .footer-inner{display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:28px;}
+@media (max-width:900px){ #app-footer .footer-inner{grid-template-columns:1fr; text-align:center} #app-footer .footer-right{justify-content:center} }
+.footer-brand{display:flex; align-items:center; gap:16px}
+.footer-logo{position:relative; width:54px; height:54px; border-radius:16px; background:linear-gradient(135deg,#34d399,#059669); display:grid; place-items:center; font-weight:900; font-size:18px; letter-spacing:.5px; color:#042; overflow:hidden; box-shadow:0 8px 28px rgba(16,185,129,.25), inset 0 1px 0 rgba(255,255,255,.08);}
+.footer-logo::before,.footer-logo::after{content:""; position:absolute; inset:0; border-radius:inherit;}
+.footer-logo::before{background:conic-gradient(from 0deg, rgba(255,255,255,.15), transparent 40%, rgba(255,255,255,.25) 60%, transparent 80%, rgba(255,255,255,.15)); mix-blend-mode:overlay; animation:spin 9s linear infinite;}
+.footer-logo::after{box-shadow:inset 0 0 0 1px rgba(255,255,255,.15), 0 0 0 1px rgba(255,255,255,.1);}
+@keyframes spin{to{transform:rotate(360deg)}}
+#brand-type{min-height:1.4em; font-weight:700; font-size:22px; background:linear-gradient(90deg,#baf7d0,#7fffd4,#baf7d0); -webkit-background-clip:text; background-clip:text; color:transparent; position:relative; letter-spacing:.04em; text-shadow:0 0 10px rgba(16,185,129,.25);} 
+#brand-type::after{content:"|"; margin-left:2px; opacity:.75; animation:blink 1.1s steps(1) infinite} 
+@keyframes blink{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){ #brand-type::after{animation:none; opacity:.55} .footer-logo::before{animation:none} }
+.footer-center{font-size:12px; line-height:1.35; color:var(--muted)}
+.footer-right{display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end}
+.footer-right a, .update-pill{display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:12px; background:rgba(255,255,255,0.05); border:1px solid var(--border); font-size:13px; color:#eaf0ff; text-decoration:none; position:relative;}
+.footer-right a:hover, .update-pill:hover{background:rgba(255,255,255,0.08)}
+.update-pill{background:linear-gradient(90deg,#34d399,#059669); color:#032b18; font-weight:700; border:0; cursor:pointer; box-shadow:0 10px 30px rgba(16,185,129,.25);} 
+.update-pill:hover{transform:translateY(-2px); box-shadow:0 16px 42px rgba(16,185,129,.35);} 
+.footer-meta{margin-top:6px; font-size:11px; opacity:.65}
+/* Align bottom line to span full width when stacked */
+#app-footer .footer-bottom{grid-column:1/-1; margin-top:12px;}
