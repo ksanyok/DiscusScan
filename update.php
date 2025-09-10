@@ -64,7 +64,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update'])) {
                     $ri = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($extractDir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
                     foreach ($ri as $f) { $f->isFile() ? @unlink($f->getPathname()) : @rmdir($f->getPathname()); }
                     @rmdir($extractDir);
-                    if ($copied) { $successMsg = "Файлы обновлены ($copied)."; $success = true; } else { $message = 'Архив распакован, но файлы не скопированы.'; }
+                    if ($copied) { 
+                        $successMsg = "Файлы обновлены ($copied)."; 
+                        $success = true; 
+                        // Clear cache and opcache
+                        clearstatcache();
+                        if (function_exists('opcache_reset')) @opcache_reset();
+                    } else { 
+                        $message = 'Архив распакован, но файлы не скопированы.'; 
+                    }
                 } else { $message = 'Не удалось открыть архив.'; }
             }
         }
@@ -79,13 +87,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update'])) {
 }
 
 include_once __DIR__ . '/version.php';
-$localVersion = defined('APP_VERSION') ? APP_VERSION : '0.0.0';
+// Заменяем чтение константы на парсинг файла, чтобы не зависеть от уже определённой APP_VERSION
+$versionFile = __DIR__ . '/version.php';
+$localVersion = '0.0.0';
+if (is_file($versionFile)) {
+  $rawV = @file_get_contents($versionFile);
+  if ($rawV && preg_match('/APP_VERSION\s*[,=]?\s*["\']([\d\.]+)["\']/', $rawV, $m)) {
+    $localVersion = $m[1];
+  } elseif (defined('APP_VERSION')) {
+    $localVersion = APP_VERSION; // fallback
+  }
+}
 ?>
 <!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <title>Обновление — DiscusScan</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
