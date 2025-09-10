@@ -9,23 +9,105 @@ $message = '';
 $success = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update'])) {
-    // Perform git pull
     $output = [];
-    $return_var = 0;
-    exec('git pull origin main 2>&1', $output, $return_var);
+    $successMsg = '';
+    // If this directory is a git working copy, do a git pull. Otherwise fall back to downloading the archive.
+    if (is_dir(__DIR__ . '/.git')) {
+        $cmd = 'git -C ' . escapeshellarg(__DIR__) . ' pull origin main 2>&1';
+        $ret = 0;
+        exec($cmd, $output, $ret);
+        if ($ret === 0) {
+            $successMsg = 'git pull выполнен успешно.';
+        } else {
+            $message = 'Ошибка при обновлении через git: ' . implode("\n", $output);
+        }
+    } else {
+        // Not a git repo — download ZIP from GitHub and unpack
+        $repoUrl = 'https://github.com/ksanyok/DiscusScan/archive/refs/heads/main.zip';
+        $tmpZip = sys_get_temp_dir() . '/discuscan_update_' . bin2hex(random_bytes(6)) . '.zip';
+        $downloaded = false;
+        // Try curl then file_get_contents
+        if (function_exists('curl_version')) {
+            $ch = curl_init($repoUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+            $data = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            if ($data !== false && $httpCode >= 200 && $httpCode < 400) {
+                file_put_contents($tmpZip, $data);
+                $downloaded = true;
+            } else {
+                $output[] = 'ZIP download failed, HTTP code: ' . ($httpCode ?? 'unknown');
+            }
+        } else {
+            $data = @file_get_contents($repoUrl);
+            if ($data !== false) {
+                file_put_contents($tmpZip, $data);
+                $downloaded = true;
+            } else {
+                $output[] = 'file_get_contents failed to download ZIP. enable allow_url_fopen or install curl.';
+            }
+        }
 
-    if ($return_var === 0) {
-        // Apply migrations inline by initializing PDO (install_schema + ensure_defaults)
+        $copied = false;
+        if ($downloaded) {
+            if (!class_exists('ZipArchive')) {
+                $output[] = 'ZipArchive не доступен в PHP, распаковка архива невозможна.';
+            } else {
+                $za = new ZipArchive();
+                if ($za->open($tmpZip) === true) {
+                    $extractDir = sys_get_temp_dir() . '/discuscan_unpack_' . bin2hex(random_bytes(6));
+                    mkdir($extractDir, 0755, true);
+                    $za->extractTo($extractDir);
+                    $za->close();
+
+                    // find extracted root
+                    $dirs = glob($extractDir . '/*', GLOB_ONLYDIR);
+                    $srcRoot = $dirs[0] ?? $extractDir;
+
+                    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($srcRoot, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST);
+                    foreach ($it as $item) {
+                        $rel = substr($item->getPathname(), strlen($srcRoot) + 1);
+                        if ($rel === '' || $rel === false) continue;
+                        // skip .env, installer and .git
+                        if (strpos($rel, '.env') === 0) continue;
+                        if (strpos($rel, 'installer.php') === 0) continue;
+                        if (strpos($rel, '.git') === 0) continue;
+
+                        $target = __DIR__ . '/' . $rel;
+                        if ($item->isDir()) {
+                            if (!is_dir($target)) @mkdir($target, 0755, true);
+                        } else {
+                            @copy($item->getPathname(), $target);
+                            $copied = true;
+                        }
+                    }
+
+                    // cleanup
+                    @unlink($tmpZip);
+                    $ri = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($extractDir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+                    foreach ($ri as $f) { if ($f->isFile()) @unlink($f->getPathname()); else @rmdir($f->getPathname()); }
+                    @rmdir($extractDir);
+
+                    if ($copied) $successMsg = 'Архив скачан и файлы обновлены.'; else $output[] = 'Архив распакован, но файлы не были скопированы.';
+                } else {
+                    $output[] = 'Не удалось открыть ZIP-архив.';
+                }
+            }
+        }
+    }
+
+    // If we have a success message or no fatal errors, try to run migrations (install_schema via pdo())
+    if ($successMsg || empty($message)) {
         try {
             include_once __DIR__ . '/db.php';
             $pdo = pdo(); // will create tables and ensure defaults
-            $message = 'Обновление успешно выполнено. Миграции применены.';
-            $success = true;
+            $message = ($successMsg ? $successMsg . ' ' : '') . 'Миграции применены.';
         } catch (Throwable $e) {
-            $message = 'Обновление выполнено, но применение миграций завершилось с ошибкой: ' . $e->getMessage();
+            $message = ($successMsg ? $successMsg . ' ' : '') . 'Обновление выполнено, но применение миграций завершилось с ошибкой: ' . $e->getMessage();
         }
-    } else {
-        $message = 'Ошибка при обновлении: ' . implode("\n", $output);
     }
 }
 
