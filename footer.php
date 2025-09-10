@@ -40,25 +40,23 @@ $updateAvailable = version_compare($latestVersion, $localVersion, '>');
 ?>
 <footer id="app-footer">
   <div class="footer-inner">
-    <div class="footer-service" aria-label="DiscusScan version" style="gap:14px;">
-      <div style="display:flex;align-items:center;gap:10px;">
+    <div class="footer-service" aria-label="DiscusScan version" style="gap:10px;flex-direction:column;align-items:flex-start;">
+      <div class="logo-line" style="display:flex;align-items:center;gap:10px;">
         <img src="logo.svg" alt="DiscusScan" class="logo-icon--footer" loading="lazy" width="34" height="34">
         <span class="ver-badge" style="margin:0;">v<?=htmlspecialchars($localVersion)?></span>
       </div>
+      <div class="last-update footer-company">Последнее обновление: <?=$lastUpdateDate?></div>
       <?php if ($updateAvailable): ?>
-        <a class="update-pill" href="/update.php" title="Доступно обновление до v<?=htmlspecialchars($latestVersion)?>">Обновить → v<?=htmlspecialchars($latestVersion)?></a>
+        <div class="update-wrap"><a class="update-pill" href="/update.php" title="Доступно обновление до v<?=htmlspecialchars($latestVersion)?>">Обновить → v<?=htmlspecialchars($latestVersion)?></a></div>
       <?php endif; ?>
-      <div class="footer-company" style="margin-top:2px;">Последнее обновление: <?=$lastUpdateDate?></div>
     </div>
 
-    <!-- Center: Animated company brand -->
-    <div style="text-align:center;">
+    <div class="brand-center" style="text-align:center;">
       <div id="brand-type" aria-label="BuyReadySite"></div>
       <div class="footer-company">Разработано компанией <strong>BuyReadySite.com</strong></div>
     </div>
 
-    <!-- Right: Links with icons -->
-    <div class="footer-links-right">
+    <div class="footer-links-right links-row">
       <a class="icon-btn" href="https://buyreadysite.com/" target="_blank" rel="noopener" title="BuyReadySite" aria-label="BuyReadySite">
         <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 6-9 6-9-6 9-6z"/><path d="M3 15l9 6 9-6"/></svg>
         <span>BuyReadySite</span>
@@ -78,6 +76,5 @@ $updateAvailable = version_compare($latestVersion, $localVersion, '>');
       <div>BuyReadySite</div>
     </div>
   </div>
-
   <script>(function(){const el=document.getElementById('brand-type');if(!el)return;const t=el.getAttribute('aria-label')||'BuyReadySite';const g='▮░▒▓█BRSDUYAEIOT1234567890';let i=-1,T=null;const STEP=110,PAUSE=5200;function frame(){i++;if(i>=t.length){el.textContent=t;clearInterval(T);setTimeout(start,PAUSE);return;}let out='';for(let k=0;k<t.length;k++){out+=(k<=i)?t[k]:g[(Math.random()*g.length)|0];}el.textContent=out;}function start(){try{if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches){el.textContent=t;return;}}catch(e){}i=-1;if(T)clearInterval(T);T=setInterval(frame,STEP);}start();})();</script>
 </footer>
