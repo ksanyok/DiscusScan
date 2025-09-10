@@ -24,17 +24,17 @@ try {
 <footer id="app-footer" class="footer-compact">
   <div class="footer-inner">
     <div class="brand-wrap">
-      <div class="logo-badge" aria-hidden="true">DS</div>
-      <div class="brand-text">
-        <div class="brand-name">DiscusScan</div>
-        <div class="brand-sub">forum & telegram monitoring</div>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div class="logo-badge" aria-hidden="true">DS</div>
+        <div class="brand-text">
+          <div class="brand-name">DiscusScan</div>
+          <div class="brand-sub">forum & telegram monitoring</div>
+        </div>
+        <div class="version-pill">v<?= htmlspecialchars($localVersion) ?></div>
+        <?php if ($updateAvailable): ?>
+          <a href="/update.php" class="update-btn" title="Доступна новая версия">Обновить до v<?= htmlspecialchars($latestVersion) ?></a>
+        <?php endif; ?>
       </div>
-      <div class="version-pill">v<?= htmlspecialchars($localVersion) ?></div>
-      <?php if ($updateAvailable): ?>
-        <a href="/update.php" class="update-btn" title="Доступна новая версия">
-          Обновить до v<?= htmlspecialchars($latestVersion) ?>
-        </a>
-      <?php endif; ?>
     </div>
 
     <nav class="footer-links" aria-label="Наши сервисы">
@@ -51,5 +51,3 @@ try {
     </div>
   </div>
 </footer>
-</body>
-</html>
