@@ -1,12 +1,32 @@
 <?php
 // db.php — подключение к БД, авто-создание таблиц, настройки, логирование
 
-// If a local config exists, include it (config.php should define DB_* constants using define())
+// Legacy config.php (optional)
 if (file_exists(__DIR__ . '/config.php')) {
     include __DIR__ . '/config.php';
 }
 
-// --- БАЗОВЫЕ НАСТРОЙКИ БД (можно переопределить в config.php) ---
+// Load .env if present (KEY=VALUE per line). Values may be quoted.
+$envPath = __DIR__ . '/.env';
+if (file_exists($envPath)) {
+    $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+    foreach ($lines as $ln) {
+        $ln = trim($ln);
+        if ($ln === '' || $ln[0] === '#') continue;
+        if (strpos($ln, '=') === false) continue;
+        [$k, $v] = array_map('trim', explode('=', $ln, 2));
+        // strip quotes
+        if (strlen($v) >= 2 && ($v[0] === '"' && substr($v, -1) === '"' || $v[0] === "'" && substr($v, -1) === "'")) {
+            $v = substr($v, 1, -1);
+        }
+        // define constants if not already defined
+        if (!defined($k)) {
+            define($k, $v);
+        }
+    }
+}
+
+// --- БАЗОВЫЕ НАСТРОЙКИ БД (можно переопределить в config.php или .env) ---
 if (!defined('DB_HOST')) define('DB_HOST', 'topbit.mysql.tools');
 if (!defined('DB_NAME')) define('DB_NAME', 'topbit_monitor');
 if (!defined('DB_USER')) define('DB_USER', 'topbit_monitor');
@@ -53,7 +73,7 @@ function pdo(): PDO {
     } catch (Throwable $e) {
         app_log('error', 'db', 'DB connection failed', ['error' => $e->getMessage()]);
         http_response_code(500);
-        die('DB connection failed. Check db.php/settings or config.php.');
+        die('DB connection failed. Check db.php/settings or .env.');
     }
     install_schema($pdo);
     ensure_defaults($pdo);
