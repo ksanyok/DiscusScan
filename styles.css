@@ -301,11 +301,11 @@ main.container{ flex:1 0 auto; padding-bottom:14px; }
 
 /* Header logo sizing */
 .logo-icon{display:block;height:40px;width:auto}
-.logo-icon--header.xl{height:56px;max-height:56px}
+.logo-icon--header.xl{height:70px;max-height:70px}
 @media (max-width:700px){.logo-icon--header.xl{height:44px}}
 
 /* Footer small logo */
-.logo-icon--footer{height:34px;width:auto}
+.logo-icon--footer{height:50px;width:auto}
 @media (max-width:700px){.logo-icon--footer{height:30px}}
 
 /* Reset list markers inside settings to avoid random dot before switches */

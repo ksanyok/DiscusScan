@@ -40,13 +40,15 @@ $updateAvailable = version_compare($latestVersion, $localVersion, '>');
 ?>
 <footer id="app-footer">
   <div class="footer-inner">
-    <div class="footer-service logo-stack" aria-label="DiscusScan version">
-      <img src="logo.svg" alt="DiscusScan" class="logo-icon--footer" loading="lazy" width="40" height="40">
-      <div class="ver-badge" style="margin-left:0;">v<?=htmlspecialchars($localVersion)?></div>
+    <div class="footer-service" aria-label="DiscusScan version" style="gap:14px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <img src="logo.svg" alt="DiscusScan" class="logo-icon--footer" loading="lazy" width="34" height="34">
+        <span class="ver-badge" style="margin:0;">v<?=htmlspecialchars($localVersion)?></span>
+      </div>
       <?php if ($updateAvailable): ?>
         <a class="update-pill" href="/update.php" title="Доступно обновление до v<?=htmlspecialchars($latestVersion)?>">Обновить → v<?=htmlspecialchars($latestVersion)?></a>
       <?php endif; ?>
-      <div class="footer-company" style="margin-top:6px;">Последнее обновление: <?=$lastUpdateDate?></div>
+      <div class="footer-company" style="margin-top:2px;">Последнее обновление: <?=$lastUpdateDate?></div>
     </div>
 
     <!-- Center: Animated company brand -->
@@ -57,16 +59,16 @@ $updateAvailable = version_compare($latestVersion, $localVersion, '>');
 
     <!-- Right: Links with icons -->
     <div class="footer-links-right">
-      <a href="https://buyreadysite.com/" target="_blank" rel="noopener" title="BuyReadySite" aria-label="BuyReadySite">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 6-9 6-9-6 9-6z"/><path d="M3 15l9 6 9-6"/></svg>
+      <a class="icon-btn" href="https://buyreadysite.com/" target="_blank" rel="noopener" title="BuyReadySite" aria-label="BuyReadySite">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 6-9 6-9-6 9-6z"/><path d="M3 15l9 6 9-6"/></svg>
         <span>BuyReadySite</span>
       </a>
-      <a href="https://aiwizard.buyreadysite.com/" target="_blank" rel="noopener" title="AI Content Wizard" aria-label="AI Content Wizard">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><circle cx="12" cy="12" r="3"/><path d="M5.6 5.6l2.8 2.8"/><path d="M15.6 15.6l2.8 2.8"/><path d="M18.4 5.6l-2.8 2.8"/><path d="M8.4 15.6l-2.8 2.8"/></svg>
+      <a class="icon-btn" href="https://aiwizard.buyreadysite.com/" target="_blank" rel="noopener" title="AI Content Wizard" aria-label="AI Content Wizard">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><circle cx="12" cy="12" r="3"/><path d="M5.6 5.6l2.8 2.8"/><path d="M15.6 15.6l2.8 2.8"/><path d="M18.4 5.6l-2.8 2.8"/><path d="M8.4 15.6l-2.8 2.8"/></svg>
         <span>AI Content Wizard</span>
       </a>
-      <a href="https://aiseo.buyreadysite.com/" target="_blank" rel="noopener" title="AI SEO Pro" aria-label="AI SEO Pro">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>
+      <a class="icon-btn" href="https://aiseo.buyreadysite.com/" target="_blank" rel="noopener" title="AI SEO Pro" aria-label="AI SEO Pro">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>
         <span>AI SEO Pro</span>
       </a>
     </div>
