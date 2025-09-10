@@ -45,6 +45,7 @@ if ($activeSource) {
 <head>
   <meta charset="utf-8">
   <title>Домены — Мониторинг</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>

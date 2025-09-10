@@ -7,13 +7,13 @@ function nav_active($file){ return basename($_SERVER['PHP_SELF']) === $file ? 'a
 <header class="topbar glass">
   <div class="app-shell">
     <div class="brand">
-      <div style="display:flex; align-items:center; gap:8px;">
-        <div style="width:32px; height:32px; border-radius:8px; background:linear-gradient(135deg,#5b8cff,#7ea2ff); display:flex; align-items:center; justify-content:center; font-weight:700; color:#fff;">DS</div>
-        <div>
-          <span>DiscusScan</span>
-          <div style="font-size:12px; color:#7884a6; margin-top:2px;">v<?=$version?></div>
+      <a href="index.php" class="brand-link" aria-label="DiscusScan dashboard">
+        <div class="logo-badge-lg">DS</div>
+        <div class="logo-text-block">
+          <span class="title">DiscusScan</span>
+          <span class="ver">v<?=$version?></span>
         </div>
-      </div>
+      </a>
     </div>
     <nav>
       <a href="index.php" class="<?=nav_active('index.php')?>">Дашборд</a>

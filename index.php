@@ -81,6 +81,7 @@ $cronUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://'
 <head>
   <meta charset="utf-8">
   <title>Дашборд — Мониторинг</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
