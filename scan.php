@@ -378,21 +378,41 @@ function extract_json_sources_from_responses(string $body): array {
     if (isset($data['output'][0]['parsed']['sources']) && is_array($data['output'][0]['parsed']['sources'])) {
         return $data['output'][0]['parsed']['sources'];
     }
+    // NEW: scan output messages for output_text
+    if (isset($data['output']) && is_array($data['output'])) {
+        foreach ($data['output'] as $out) {
+            if (($out['type'] ?? '') === 'message' && isset($out['content']) && is_array($out['content'])) {
+                foreach ($out['content'] as $c) {
+                    if (($c['type'] ?? '') === 'output_text' && isset($c['text']) && is_string($c['text'])) {
+                        $j = json_decode($c['text'], true);
+                        if (isset($j['sources']) && is_array($j['sources'])) return $j['sources'];
+                    }
+                }
+            }
+        }
+    }
     // Try text
     $text = $data['output_text'] ?? '';
     if (is_string($text)) {
         $j = json_decode($text, true);
         if (isset($j['sources']) && is_array($j['sources'])) return $j['sources'];
     }
+    // Fallback: extract first JSON object from body
+    if (is_string($body) && preg_match('~\{.*\}~s', $body, $m)) {
+        $j = json_decode($m[0], true);
+        if (isset($j['sources']) && is_array($j['sources'])) return $j['sources'];
+    }
     return [];
 }
 
 // ----------------------- OpenAI call with retry logic -----------------------
-function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log): array {
+function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log, array $opts = []): array {
     global $UA;
     $model = (string)get_setting('openai_model', 'gpt-5-mini');
     $strictRequired = (bool)get_setting('return_schema_required', true);
-    $enableWeb = (bool)get_setting('openai_enable_web_search', false);
+    // Allow override via opts
+    $enableWeb = array_key_exists('enable_web', $opts) ? (bool)$opts['enable_web'] : (bool)get_setting('openai_enable_web_search', false);
+    $maxToolCalls = $opts['max_tool_calls'] ?? (int)get_setting('openai_max_tool_calls', 0);
 
     $payload = [
         'model' => $model,
@@ -421,6 +441,9 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     if ($enableWeb) {
         $payload['tools'] = [ ['type' => 'web_search'] ];
         $payload['tool_choice'] = 'auto';
+        if ($maxToolCalls > 0) {
+            $payload['max_tool_calls'] = (int)$maxToolCalls;
+        }
     }
 
     // Retry логика для обработки временных сбоев API
@@ -735,7 +758,11 @@ if ($DISCOVERY_ENABLED) {
     $globalCap = max(1024, (int)get_setting('openai_max_output_tokens', 4096));
     $discoveryMaxTokens = min(8192, max(1024, $desired, $globalCap));
 
-    [$st, $_c, $_, $raw] = run_openai_job('discovery', DISCOVERY_SYSTEM_PROMPT, $user, $requestUrl, $requestHeaders, $discoverySchema, $discoveryMaxTokens, $OPENAI_HTTP_TIMEOUT, $appLog);
+    [$st, $_c, $_, $raw] = run_openai_job('discovery', DISCOVERY_SYSTEM_PROMPT, $user, $requestUrl, $requestHeaders, $discoverySchema, $discoveryMaxTokens, $OPENAI_HTTP_TIMEOUT, $appLog, [
+        // Let settings decide web usage on first try
+    ]);
+
+    $srcs = [];
     if ($st === 200 && $raw) {
         $srcs = extract_json_sources_from_responses($raw);
         if (!$srcs) {
@@ -744,8 +771,33 @@ if ($DISCOVERY_ENABLED) {
                 $statusTxt = $j['status'] ?? null;
                 $incompleteReason = $j['incomplete_details']['reason'] ?? null;
                 app_log('warning', 'discovery', 'No sources parsed from response', [ 'status' => $statusTxt, 'incomplete_reason' => $incompleteReason, 'n' => $DISCOVERY_N, 'max_output_tokens' => $discoveryMaxTokens ]);
-            } catch (Throwable $e) {}
+                $isIncomplete = ($statusTxt === 'incomplete') || ($incompleteReason === 'max_output_tokens');
+            } catch (Throwable $e) { $isIncomplete = false; }
+
+            // Fallback 1: if incomplete or empty, retry smaller N and with web disabled to save tokens
+            if (empty($srcs)) {
+                $n1 = max(5, min(10, (int)$DISCOVERY_N));
+                $user1 = "TOPIC: {$basePromptShort}\nLANGUAGES: {$langsTxt}\nREGIONS: {$regsTxt}\nN: {$n1}\nEXCLUDED_DOMAINS: " . json_encode($excluded, JSON_UNESCAPED_UNICODE) . "\nReturn valid JSON strictly matching the schema. No explanations.";
+                $desired1 = $n1 * $avgItemTokens + $overhead;
+                $tokens1 = min(8192, max(2048, $desired1, $globalCap));
+                [$st1, $_c1, $_1, $raw1] = run_openai_job('discovery-fallback1', DISCOVERY_SYSTEM_PROMPT, $user1, $requestUrl, $requestHeaders, $discoverySchema, $tokens1, $OPENAI_HTTP_TIMEOUT, $appLog, [ 'enable_web' => false, 'max_tool_calls' => 0 ]);
+                if ($st1 === 200 && $raw1) {
+                    $srcs = extract_json_sources_from_responses($raw1);
+                }
+            }
+            // Fallback 2: as last resort N=5, web disabled
+            if (empty($srcs)) {
+                $n2 = 5;
+                $user2 = "TOPIC: {$basePromptShort}\nLANGUAGES: {$langsTxt}\nREGIONS: {$regsTxt}\nN: {$n2}\nEXCLUDED_DOMAINS: " . json_encode($excluded, JSON_UNESCAPED_UNICODE) . "\nReturn valid JSON strictly matching the schema. No explanations.";
+                $desired2 = $n2 * $avgItemTokens + $overhead;
+                $tokens2 = min(8192, max(2048, $desired2, $globalCap));
+                [$st2, $_c2, $_2, $raw2] = run_openai_job('discovery-fallback2', DISCOVERY_SYSTEM_PROMPT, $user2, $requestUrl, $requestHeaders, $discoverySchema, $tokens2, $OPENAI_HTTP_TIMEOUT, $appLog, [ 'enable_web' => false, 'max_tool_calls' => 0 ]);
+                if ($st2 === 200 && $raw2) {
+                    $srcs = extract_json_sources_from_responses($raw2);
+                }
+            }
         }
+
         foreach ($srcs as $s) {
             $domain = normalize_host((string)arr_get($s, 'domain', ''));
             $proof = (string)arr_get($s, 'proof_url', '');
