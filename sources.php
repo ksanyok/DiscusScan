@@ -75,6 +75,26 @@ $stmt = pdo()->prepare("
 $stmt->execute([':since' => $sinceSql]);
 $domains = $stmt->fetchAll();
 
+// Добавим discovered, которых ещё нет в sources
+$discExtra = pdo()->query("SELECT domain, proof_url, platform_guess, status, score, first_seen_at, last_checked_at FROM discovered_sources WHERE domain NOT IN (SELECT host FROM sources) ORDER BY first_seen_at DESC LIMIT 200")->fetchAll() ?: [];
+foreach ($discExtra as $r) {
+    $domains[] = [
+        'id' => null,
+        'host' => $r['domain'],
+        'is_active' => 0,
+        'is_enabled' => 0,
+        'is_paused' => 0,
+        'links_count' => 0,
+        'fresh_count' => 0,
+        'last_seen' => $r['last_checked_at'] ?? $r['first_seen_at'],
+        'disc_status' => $r['status'],
+        'disc_score' => $r['score'],
+        'disc_platform' => $r['platform_guess'],
+        'disc_proof' => $r['proof_url'],
+        'is_discovered_only' => true,
+    ];
+}
+
 // Selected domain
 $activeSource = (isset($_GET['source']) && ctype_digit($_GET['source'])) ? (int)$_GET['source'] : null;
 $activeHost = null;
@@ -96,12 +116,6 @@ if ($activeSource) {
 
 // Paused hosts list for preview
 $pausedHosts = pdo()->query("SELECT host FROM sources WHERE COALESCE(is_paused,0)=1 ORDER BY host")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-
-// NEW: Discovered sources block data
-$disc = pdo()->query("SELECT domain, proof_url, platform_guess, status, score, first_seen_at, last_checked_at FROM discovered_sources ORDER BY first_seen_at DESC LIMIT 200")->fetchAll() ?: [];
-$discByStatus = ['new'=>[], 'verified'=>[], 'failed'=>[], 'rejected'=>[]];
-foreach ($disc as $r) { $discByStatus[$r['status']][] = $r; }
-$discCounts = [ 'new'=>count($discByStatus['new']), 'verified'=>count($discByStatus['verified']), 'failed'=>count($discByStatus['failed']), 'rejected'=>count($discByStatus['rejected']) ];
 ?>
 <!doctype html>
 <html lang="ru">
@@ -139,64 +153,56 @@ $discCounts = [ 'new'=>count($discByStatus['new']), 'verified'=>count($discBySta
             <th>Обновлено</th>
             <th>Enabled</th>
             <th>Pause</th>
-            <th class="col-actions">Упр.</th>
+            <th>Discovery</th>
+            <th class="col-actions">Действие</th>
           </tr></thead>
           <tbody>
             <?php foreach ($domains as $d): ?>
-              <tr<?= $activeSource===$d['id'] ? ' style="background:rgba(255,255,255,.05)"' : '';?>>
-                <td><a href="sources.php?source=<?=$d['id']?>"><?=e($d['host'])?></a></td>
+              <?php $isDiscOnly = !empty($d['is_discovered_only']); ?>
+              <tr<?= ($activeSource && !$isDiscOnly && $activeSource===$d['id']) ? ' style="background:rgba(255,255,255,.05)"' : '';?>>
+                <td>
+                  <?php if ($isDiscOnly): ?>
+                    <span class="pill beta" title="Ещё не добавлен в sources">NEW</span> <?=e($d['host'])?>
+                    <?php if (!empty($d['disc_proof'])): ?>
+                      <a href="<?=e($d['disc_proof'])?>" target="_blank" rel="noopener" class="btn small">proof</a>
+                    <?php endif; ?>
+                  <?php else: ?>
+                    <a href="sources.php?source=<?=$d['id']?>"><?=e($d['host'])?></a>
+                  <?php endif; ?>
+                </td>
                 <td><span class="pill"><?=$d['links_count']?></span></td>
                 <td><span class="pill"><?= (int)$d['fresh_count'] ?></span></td>
                 <td><?= $d['last_seen'] ? date('Y-m-d H:i', strtotime($d['last_seen'])) : '—' ?></td>
-                <td class="col-status"><?= !empty($d['is_enabled']) ? '✅' : '⛔' ?>
-                  <a class="btn small" href="sources.php?toggle_enabled=<?=$d['id']?>">перекл.</a>
+                <td class="col-status">
+                  <?php if ($isDiscOnly): ?>—<?php else: ?><?= !empty($d['is_enabled']) ? '✅' : '⛔' ?>
+                    <a class="btn small" href="sources.php?toggle_enabled=<?=$d['id']?>">перекл.</a>
+                  <?php endif; ?>
                 </td>
-                <td class="col-status"><?= !empty($d['is_paused']) ? '⏸️' : '▶️' ?>
-                  <a class="btn small" href="sources.php?toggle_paused=<?=$d['id']?>">перекл.</a>
+                <td class="col-status">
+                  <?php if ($isDiscOnly): ?>—<?php else: ?><?= !empty($d['is_paused']) ? '⏸️' : '▶️' ?>
+                    <a class="btn small" href="sources.php?toggle_paused=<?=$d['id']?>">перекл.</a>
+                  <?php endif; ?>
+                </td>
+                <td>
+                  <?php if ($isDiscOnly): ?>
+                    <span class="pill <?=($d['disc_status']==='failed'?'danger':($d['disc_status']==='verified'?'good':'info'))?>"><?=e($d['disc_status'] ?? 'new')?></span>
+                  <?php else: ?>
+                    <span class="pill muted">—</span>
+                  <?php endif; ?>
                 </td>
                 <td class="col-actions">
-                  <a class="btn small" href="sources.php?toggle=<?=$d['id']?>&amp;source=<?=$d['id']?>"><?= !empty($d['is_active']) ? 'Пауза (legacy)' : 'Вкл. (legacy)' ?></a>
+                  <?php if ($isDiscOnly): ?>
+                    <a class="btn small" href="sources.php?enable_discovered=<?=urlencode($d['host'])?>">Включить</a>
+                  <?php else: ?>
+                    <a class="btn small" href="sources.php?toggle=<?=$d['id']?>&amp;source=<?=$d['id']?>"><?= !empty($d['is_active']) ? 'Пауза (legacy)' : 'Вкл. (legacy)' ?></a>
+                  <?php endif; ?>
                 </td>
               </tr>
             <?php endforeach; ?>
           </tbody>
         </table>
       </div>
-      <div class="muted" style="margin-top:8px">Клик по домену — покажем ссылки справа. Счётчик «За <?=$freshnessDays?>д» считает по published_at.</div>
-
-      <!-- NEW: Discovered sources block -->
-      <hr>
-      <div class="card-title">Discovered (LLM)
-        <span class="pill">new: <?=$discCounts['new']?></span>
-        <span class="pill">verified: <?=$discCounts['verified']?></span>
-        <span class="pill">failed: <?=$discCounts['failed']?></span>
-      </div>
-      <?php if ($disc): ?>
-        <div class="table-wrap">
-          <table class="table compact">
-            <thead><tr><th>Домен</th><th>Proof</th><th>Платформа</th><th>Статус</th><th class="col-actions">Действие</th></tr></thead>
-            <tbody>
-              <?php foreach ($disc as $r): ?>
-                <tr>
-                  <td class="ellipsis"><?=e($r['domain'])?></td>
-                  <td class="ellipsis"><a href="<?=e($r['proof_url'])?>" target="_blank" rel="noopener">proof</a></td>
-                  <td><?=e($r['platform_guess'] ?: 'unknown')?></td>
-                  <td><?=e($r['status'])?></td>
-                  <td>
-                    <?php if ($r['status']==='new' || $r['status']==='failed'): ?>
-                      <a class="btn small" href="sources.php?enable_discovered=<?=urlencode($r['domain'])?>">Включить</a>
-                    <?php else: ?>
-                      <span class="pill">—</span>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-      <?php else: ?>
-        <div class="muted">Нет кандидатов Discovery.</div>
-      <?php endif; ?>
+      <div class="muted" style="margin-top:8px">Discovered домены теперь отображаются вместе. Столбец Discovery показывает внутренний статус (new / failed / verified). Failed обычно означает, что предыдущая верификация посчитала источник нерелевантным или возникла ошибка запроса. Можно принудительно включить домен кнопкой «Включить».</div>
     </div>
 
     <div class="card glass">
