@@ -33,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     [ 'role' => 'user',   'content' => [[ 'type' => 'input_text', 'text' => 'Return {"ok": true} only.' ]] ]
                 ],
                 'max_output_tokens' => 16,
-                'temperature' => 0.0,
+                // removed temperature: not supported by some models in Responses API
                 'text' => [
                     'format' => [
                         'type' => 'json_schema',

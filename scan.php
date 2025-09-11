@@ -318,7 +318,6 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             ]
         ],
         'max_output_tokens' => $maxTokens,
-        'temperature' => 0.1,
         'text' => [
             'format' => [
                 'type' => 'json_schema',
