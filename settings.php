@@ -7,47 +7,53 @@ $models = [
 ];
 
 $ok = '';
+$err = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // базовые настройки
-    set_setting('openai_api_key', trim($_POST['openai_api_key'] ?? ''));
-    set_setting('openai_model', in_array($_POST['openai_model'] ?? '', $models, true) ? $_POST['openai_model'] : 'gpt-5-mini');
-    set_setting('scan_period_min', max(1, (int)($_POST['scan_period_min'] ?? 15)));
-    set_setting('search_prompt', trim($_POST['search_prompt'] ?? ''));
+    if (!verify_csrf_token($_POST['csrf_token'] ?? '')) {
+        $err = 'Неверный токен безопасности';
+        app_log('warning', 'settings', 'CSRF token mismatch', []);
+    } else {
+        // базовые настройки
+        set_setting('openai_api_key', trim($_POST['openai_api_key'] ?? ''));
+        set_setting('openai_model', in_array($_POST['openai_model'] ?? '', $models, true) ? $_POST['openai_model'] : 'gpt-5-mini');
+        set_setting('scan_period_min', max(1, (int)($_POST['scan_period_min'] ?? 15)));
+        set_setting('search_prompt', trim($_POST['search_prompt'] ?? ''));
 
-    // telegram для уведомлений
-    set_setting('telegram_token', trim($_POST['telegram_token'] ?? ''));
-    set_setting('telegram_chat_id', trim($_POST['telegram_chat_id'] ?? ''));
+        // telegram для уведомлений
+        set_setting('telegram_token', trim($_POST['telegram_token'] ?? ''));
+        set_setting('telegram_chat_id', trim($_POST['telegram_chat_id'] ?? ''));
 
-    // НОВЫЕ ОБЛАСТИ ПОИСКА
-    set_setting('scope_domains_enabled', isset($_POST['scope_domains_enabled']));
-    set_setting('scope_telegram_enabled', isset($_POST['scope_telegram_enabled']));
-    $telegram_mode = $_POST['telegram_mode'] ?? 'any';
-    if (!in_array($telegram_mode, ['any','discuss'], true)) $telegram_mode = 'any';
-    set_setting('telegram_mode', $telegram_mode);
-    set_setting('scope_forums_enabled', isset($_POST['scope_forums_enabled']));
+        // НОВЫЕ ОБЛАСТИ ПОИСКА
+        set_setting('scope_domains_enabled', isset($_POST['scope_domains_enabled']));
+        set_setting('scope_telegram_enabled', isset($_POST['scope_telegram_enabled']));
+        $telegram_mode = $_POST['telegram_mode'] ?? 'any';
+        if (!in_array($telegram_mode, ['any','discuss'], true)) $telegram_mode = 'any';
+        set_setting('telegram_mode', $telegram_mode);
+        set_setting('scope_forums_enabled', isset($_POST['scope_forums_enabled']));
 
-    // CRON секрет
-    $cron_secret = trim($_POST['cron_secret'] ?? '');
-    if ($cron_secret === '') $cron_secret = bin2hex(random_bytes(12));
-    set_setting('cron_secret', $cron_secret);
+        // CRON секрет
+        $cron_secret = trim($_POST['cron_secret'] ?? '');
+        if ($cron_secret === '') $cron_secret = bin2hex(random_bytes(12));
+        set_setting('cron_secret', $cron_secret);
 
-    // FRESH-ONLY параметры
-    $freshnessDays = max(1, (int)($_POST['freshness_days'] ?? 7));
-    set_setting('freshness_days', $freshnessDays);
-    set_setting('enabled_sources_only', isset($_POST['enabled_sources_only']));
-    $maxRes = (int)($_POST['max_results_per_scan'] ?? 80);
-    if ($maxRes < 1) $maxRes = 1; if ($maxRes > 200) $maxRes = 200;
-    set_setting('max_results_per_scan', $maxRes);
-    set_setting('return_schema_required', isset($_POST['return_schema_required']));
+        // FRESH-ONLY параметры
+        $freshnessDays = max(1, (int)($_POST['freshness_days'] ?? 7));
+        set_setting('freshness_days', $freshnessDays);
+        set_setting('enabled_sources_only', isset($_POST['enabled_sources_only']));
+        $maxRes = (int)($_POST['max_results_per_scan'] ?? 80);
+        if ($maxRes < 1) $maxRes = 1; if ($maxRes > 200) $maxRes = 200;
+        set_setting('max_results_per_scan', $maxRes);
+        set_setting('return_schema_required', isset($_POST['return_schema_required']));
 
-    // опциональные — массивы языков/регионов (через запятую)
-    $langs = trim((string)($_POST['languages'] ?? ''));
-    $regs  = trim((string)($_POST['regions'] ?? ''));
-    set_setting('languages', $langs === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $langs))))));
-    set_setting('regions',  $regs  === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $regs))))));
+        // опциональные — массивы языков/регионов (через запятую)
+        $langs = trim((string)($_POST['languages'] ?? ''));
+        $regs  = trim((string)($_POST['regions'] ?? ''));
+        set_setting('languages', $langs === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $langs))))));
+        set_setting('regions',  $regs  === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $regs))))));
 
-    $ok = 'Сохранено';
-    app_log('info', 'settings', 'Settings updated', []);
+        $ok = 'Сохранено';
+        app_log('info', 'settings', 'Settings updated', []);
+    }
 }
 
 // текущие значения
@@ -110,8 +116,10 @@ try {
   <div class="card glass">
     <div class="card-title">Параметры</div>
     <?php if ($ok): ?><div class="alert success"><?=$ok?></div><?php endif; ?>
+    <?php if ($err): ?><div class="alert danger"><?=$err?></div><?php endif; ?>
     <form method="post" class="stack settings-form">
-
+      <?= csrf_field() ?>
+      
       <label>OpenAI API Key
         <input type="password" name="openai_api_key" value="<?=e($apiKey)?>" placeholder="sk-...">
       </label>
@@ -181,25 +189,28 @@ try {
 
       <hr>
       <div class="card-title">Fresh-only мониторинг</div>
-      <div class="grid-3">
+      <div class="grid-2">
         <label>Окно свежести, дней
           <input type="number" name="freshness_days" value="<?= (int)$freshnessDays ?>" min="1" max="90">
         </label>
         <label>Лимит результатов за скан
           <input type="number" name="max_results_per_scan" value="<?= (int)$maxResultsPerScan ?>" min="1" max="200">
         </label>
-        <label class="checkbox-row">
-          <input type="checkbox" name="enabled_sources_only" <?=$enabledSourcesOnly?'checked':''?>>
+      </div>
+      <div class="grid-2">
+        <label>
           <span>Только включённые источники</span>
+          <input class="switch" type="checkbox" name="enabled_sources_only" <?=$enabledSourcesOnly?'checked':''?>>
+        </label>
+        <label>
+          <span>Требовать строгий JSON от модели</span>
+          <input class="switch" type="checkbox" name="return_schema_required" <?=$returnSchemaRequired?'checked':''?>>
         </label>
       </div>
       <div class="grid-2">
-        <label class="checkbox-row">
-          <input type="checkbox" name="return_schema_required" <?=$returnSchemaRequired?'checked':''?>>
-          <span>Требовать строгий JSON от модели</span>
-        </label>
         <div class="hint">SINCE (UTC): <code><?=e($since)?></code></div>
       </div>
+
       <div class="grid-2">
         <label>Языки (опц.), через запятую
           <input type="text" name="languages" value="<?=e($languagesCsv)?>" placeholder="ru, uk, en">

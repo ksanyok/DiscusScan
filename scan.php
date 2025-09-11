@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/version.php';
 /**
  * Scanner — Fresh-only monitoring
  * - Single OpenAI call using web_search, with strict JSON schema including published_at.
@@ -7,6 +8,8 @@
  */
 
 require_once __DIR__ . '/db.php';
+
+$UA = 'DiscusScan/' . (defined('APP_VERSION') ? APP_VERSION : 'dev');
 
 // ----------------------- Helpers -----------------------
 function normalize_host(string $host): string {
@@ -298,6 +301,7 @@ function extract_json_links_from_responses(string $body): array {
 
 // ----------------------- OpenAI call with retry logic -----------------------
 function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log): array {
+    global $UA;
     $model = (string)get_setting('openai_model', 'gpt-5-mini');
     $strictRequired = (bool)get_setting('return_schema_required', true);
 
@@ -306,21 +310,23 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
         'input' => [
             [
                 'role' => 'system',
-                'content' => [ ['type' => 'text', 'text' => $sys] ]
+                'content' => [ ['type' => 'input_text', 'text' => $sys] ]
             ],
             [
                 'role' => 'user',
-                'content' => [ ['type' => 'text', 'text' => $user] ]
+                'content' => [ ['type' => 'input_text', 'text' => $user] ]
             ]
         ],
         'max_output_tokens' => $maxTokens,
         'temperature' => 0.1,
-        'response_format' => [
-            'type' => 'json_schema',
-            'json_schema' => [
-                'name' => 'monitoring_output',
-                'schema' => $schema,
-                'strict' => $strictRequired
+        'text' => [
+            'format' => [
+                'type' => 'json_schema',
+                'json_schema' => [
+                    'name' => 'monitoring_output',
+                    'schema' => $schema,
+                    'strict' => $strictRequired
+                ]
             ]
         ]
     ];
@@ -340,7 +346,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_HEADER => true,
             CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_USERAGENT => 'DiscusScan/1.1.13'
+            CURLOPT_USERAGENT => $UA
         ]);
         
         $resp = curl_exec($ch);
@@ -371,7 +377,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             
             // If strict required — do not relax. Otherwise try relaxed schema once.
             if (empty($links) && !$strictRequired) {
-                $payload['response_format']['json_schema']['strict'] = false;
+                $payload['text']['format']['json_schema']['strict'] = false;
                 $ch2 = curl_init($requestUrl);
                 curl_setopt_array($ch2, [
                     CURLOPT_POST => true,
@@ -382,7 +388,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
                     CURLOPT_CONNECTTIMEOUT => 10,
                     CURLOPT_HEADER => true,
                     CURLOPT_SSL_VERIFYPEER => true,
-                    CURLOPT_USERAGENT => 'DiscusScan/1.1.13'
+                    CURLOPT_USERAGENT => $UA
                 ]);
                 $resp2 = curl_exec($ch2);
                 $info2 = curl_getinfo($ch2);
@@ -623,7 +629,8 @@ if ($tgToken !== '' && $tgChat !== '') {
         CURLOPT_POST => true,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POSTFIELDS => [ 'chat_id' => $tgChat, 'text' => $txt, 'disable_web_page_preview' => 1 ],
-        CURLOPT_TIMEOUT => 15
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_USERAGENT => $UA
     ]);
     curl_exec($chT);
     curl_close($chT);
