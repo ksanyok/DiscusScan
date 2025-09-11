@@ -322,6 +322,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
         'text' => [
             'format' => [
                 'type' => 'json_schema',
+                'name' => 'monitoring_output',
                 'json_schema' => [
                     'name' => 'monitoring_output',
                     'schema' => $schema,
@@ -440,6 +441,14 @@ $enabledHosts = $settings['enabled_sources_only'] ? array_slice($enabledHostsAll
 $seenPaths = array_slice(getSeenPathFingerprints(pdo(), 400), 0, 400);
 $maxResults = max(1, min(200, (int)$settings['max_results_per_scan'])) ;
 
+// Определяем реально активные скоупы
+$scopesAvail = [];
+if ($scopeDomains && !empty($enabledHosts)) $scopesAvail[] = 'domains';
+if ($scopeTelegram) $scopesAvail[] = 'telegram';
+if ($scopeForums) $scopesAvail[] = 'forums';
+if (empty($scopesAvail)) $scopesAvail = ['forums'];
+$perScopeMax = max(1, (int)ceil($maxResults / count($scopesAvail)));
+
 $langsTxt = '';
 if (!empty($settings['languages'])) {
     $langsTxt = 'Languages: ' . implode(', ', $settings['languages']) . '.';
@@ -475,42 +484,35 @@ HARD RULES:
 SYS;
 
 $jobs = [];
-$enabledScopeCount = (int)$scopeDomains + (int)$scopeTelegram + (int)$scopeForums;
-if ($enabledScopeCount === 0) { $scopeForums = true; $enabledScopeCount = 1; }
-$perScopeMax = max(1, (int)ceil($maxResults / $enabledScopeCount));
-
-// DOMAINS SCOPE
-if ($scopeDomains && !empty($enabledHosts)) {
-    $sys = $sysCommon . "\nAdditional rules for this scope:\n- Include ONLY hosts in ENABLED_HOSTS.\n- Do NOT include or query Telegram or social networks.\n";
-    $user = "TASK:\nFind NEW or updated discussion pages strictly newer than SINCE_DATETIME = {$sinceIso}.\nCONTEXT:\nPAUSED_HOSTS = "
-          . json_encode($pausedHosts, JSON_UNESCAPED_UNICODE)
-          . "\nENABLED_HOSTS = " . json_encode($enabledHosts, JSON_UNESCAPED_UNICODE)
-          . "\nSEEN_URL_FINGERPRINTS = " . json_encode($seenPaths, JSON_UNESCAPED_UNICODE)
-          . "\n\nFocus on forums/Q&A/support/community subpaths of these hosts.\n{$langsTxt}\n{$regionsTxt}\nMAX_RESULTS = {$perScopeMax}\n\nTargets:\n" . $basePrompt;
-    $jobs[] = ['name' => 'domains', 'sys' => $sys, 'user' => $user];
-}
-
-// TELEGRAM SCOPE
-if ($scopeTelegram) {
-    $modeLine = ($telegramMode === 'discuss')
-        ? "Prefer posts that allow replies/comments; avoid bare channel homepages."
-        : "Include Telegram post URLs with message IDs; avoid bare channel homepages.";
-    $sys = $sysCommon . "\nAdditional rules for this scope:\n- Include ONLY t.me (Telegram) posts.\n- {$modeLine}\n- Do NOT include any other domains.\n";
-    $user = "TASK:\nFind NEW Telegram posts strictly newer than SINCE_DATETIME = {$sinceIso}.\nCONTEXT:\nPAUSED_HOSTS = "
-          . json_encode($pausedHosts, JSON_UNESCAPED_UNICODE)
-          . "\nSEEN_URL_FINGERPRINTS = " . json_encode($seenPaths, JSON_UNESCAPED_UNICODE)
-          . "\n\nDomain MUST be t.me.\n{$langsTxt}\n{$regionsTxt}\nMAX_RESULTS = {$perScopeMax}\n\nTargets:\n" . $basePrompt;
-    $jobs[] = ['name' => 'telegram', 'sys' => $sys, 'user' => $user];
-}
-
-// FORUMS SCOPE
-if ($scopeForums) {
-    $sys = $sysCommon . "\nAdditional rules for this scope:\n- Include only real discussions (forum/thread/topic/discussion/comments/support/issue).\n- EXCLUDE Telegram and social networks entirely (do not include or query t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com).\n";
-    $user = "TASK:\nFind NEW or updated discussions strictly newer than SINCE_DATETIME = {$sinceIso}.\nCONTEXT:\nPAUSED_HOSTS = "
-          . json_encode($pausedHosts, JSON_UNESCAPED_UNICODE)
-          . "\nSEEN_URL_FINGERPRINTS = " . json_encode($seenPaths, JSON_UNESCAPED_UNICODE)
-          . "\n\nFocus on forums / Q&A / support communities / GitHub Issues / StackOverflow.\n{$langsTxt}\n{$regionsTxt}\nMAX_RESULTS = {$perScopeMax}\n\nTargets:\n" . $basePrompt;
-    $jobs[] = ['name' => 'forums', 'sys' => $sys, 'user' => $user];
+foreach ($scopesAvail as $scopeName) {
+    if ($scopeName === 'domains') {
+        $sys = $sysCommon . "\nAdditional rules for this scope:\n- Include ONLY hosts in ENABLED_HOSTS.\n- Do NOT include or query Telegram or social networks.\n";
+        $user = "TASK:\nFind NEW or updated discussion pages strictly newer than SINCE_DATETIME = {$sinceIso}.\nCONTEXT:\nPAUSED_HOSTS = "
+              . json_encode($pausedHosts, JSON_UNESCAPED_UNICODE)
+              . "\nENABLED_HOSTS = " . json_encode($enabledHosts, JSON_UNESCAPED_UNICODE)
+              . "\nSEEN_URL_FINGERPRINTS = " . json_encode($seenPaths, JSON_UNESCAPED_UNICODE)
+              . "\n\nFocus on forums/Q&A/support/community subpaths of these hosts.\n{$langsTxt}\n{$regionsTxt}\nMAX_RESULTS = {$perScopeMax}\n\nTargets:\n" . $basePrompt;
+        $jobs[] = ['name' => 'domains', 'sys' => $sys, 'user' => $user];
+    }
+    if ($scopeName === 'telegram') {
+        $modeLine = ($telegramMode === 'discuss')
+            ? "Prefer posts that allow replies/comments; avoid bare channel homepages."
+            : "Include Telegram post URLs with message IDs; avoid bare channel homepages.";
+        $sys = $sysCommon . "\nAdditional rules for this scope:\n- Include ONLY t.me (Telegram) posts.\n- {$modeLine}\n- Do NOT include any other domains.\n";
+        $user = "TASK:\nFind NEW Telegram posts strictly newer than SINCE_DATETIME = {$sinceIso}.\nCONTEXT:\nPAUSED_HOSTS = "
+              . json_encode($pausedHosts, JSON_UNESCAPED_UNICODE)
+              . "\nSEEN_URL_FINGERPRINTS = " . json_encode($seenPaths, JSON_UNESCAPED_UNICODE)
+              . "\n\nDomain MUST be t.me.\n{$langsTxt}\n{$regionsTxt}\nMAX_RESULTS = {$perScopeMax}\n\nTargets:\n" . $basePrompt;
+        $jobs[] = ['name' => 'telegram', 'sys' => $sys, 'user' => $user];
+    }
+    if ($scopeName === 'forums') {
+        $sys = $sysCommon . "\nAdditional rules for this scope:\n- Include only real discussions (forum/thread/topic/discussion/comments/support/issue).\n- EXCLUDE Telegram and social networks entirely (do not include or query t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com).\n";
+        $user = "TASK:\nFind NEW or updated discussions strictly newer than SINCE_DATETIME = {$sinceIso}.\nCONTEXT:\nPAUSED_HOSTS = "
+              . json_encode($pausedHosts, JSON_UNESCAPED_UNICODE)
+              . "\nSEEN_URL_FINGERPRINTS = " . json_encode($seenPaths, JSON_UNESCAPED_UNICODE)
+              . "\n\nFocus on forums / Q&A / support communities / GitHub Issues / StackOverflow.\n{$langsTxt}\n{$regionsTxt}\nMAX_RESULTS = {$perScopeMax}\n\nTargets:\n" . $basePrompt;
+        $jobs[] = ['name' => 'forums', 'sys' => $sys, 'user' => $user];
+    }
 }
 
 // Execute all jobs and aggregate

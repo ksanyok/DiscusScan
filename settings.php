@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/version.php';
 require_once __DIR__ . '/db.php';
 require_login();
 
@@ -8,12 +9,85 @@ $models = [
 
 $ok = '';
 $err = '';
+$apiTestMsg = '';
+$apiTestOk = null;
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? 'save';
     if (!verify_csrf_token($_POST['csrf_token'] ?? '')) {
         $err = 'Неверный токен безопасности';
         app_log('warning', 'settings', 'CSRF token mismatch', []);
+    } else if ($action === 'test_openai') {
+        // Проверка ключа OpenAI через Responses API
+        $apiKeyToTest = (string)get_setting('openai_api_key', '');
+        $modelToTest  = (string)get_setting('openai_model', 'gpt-5-mini');
+        if ($apiKeyToTest === '') {
+            $apiTestOk = false;
+            $apiTestMsg = 'Ключ OpenAI не задан в настройках.';
+        } else {
+            $UA = 'DiscusScan/' . (defined('APP_VERSION') ? APP_VERSION : 'dev');
+            $payload = [
+                'model' => $modelToTest,
+                'input' => [
+                    [ 'role' => 'system', 'content' => [[ 'type' => 'input_text', 'text' => 'You are a checker. Output strict JSON with schema {"ok": boolean} only.' ]] ],
+                    [ 'role' => 'user',   'content' => [[ 'type' => 'input_text', 'text' => 'Return {"ok": true} only.' ]] ]
+                ],
+                'max_output_tokens' => 16,
+                'temperature' => 0.0,
+                'text' => [
+                    'format' => [
+                        'type' => 'json_schema',
+                        'name' => 'ping',
+                        'json_schema' => [
+                            'name' => 'ping',
+                            'schema' => [
+                                'type' => 'object',
+                                'properties' => [ 'ok' => [ 'type' => 'boolean' ] ],
+                                'required' => ['ok'],
+                                'additionalProperties' => false
+                            ],
+                            'strict' => true
+                        ]
+                    ]
+                ]
+            ];
+            $headers = [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $apiKeyToTest,
+            ];
+            $ch = curl_init('https://api.openai.com/v1/responses');
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_HTTPHEADER => $headers,
+                CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_HEADER => true,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_USERAGENT => $UA
+            ]);
+            $resp = curl_exec($ch);
+            $info = curl_getinfo($ch);
+            $status = (int)($info['http_code'] ?? 0);
+            $body = substr((string)$resp, (int)($info['header_size'] ?? 0));
+            $cerr = curl_error($ch);
+            curl_close($ch);
+
+            if ($status === 200) {
+                $apiTestOk = true;
+                $apiTestMsg = 'Ключ рабочий (HTTP 200). Модель: ' . e($modelToTest);
+            } else {
+                $apiTestOk = false;
+                $errDetail = '';
+                $dec = json_decode($body, true);
+                if (isset($dec['error']['message'])) { $errDetail = (string)$dec['error']['message']; }
+                elseif ($cerr) { $errDetail = $cerr; }
+                $apiTestMsg = 'Ошибка проверки ключа (HTTP ' . $status . '). ' . $errDetail;
+            }
+        }
     } else {
-        // базовые настройки
+        // базовые настройки (сохранение)
         set_setting('openai_api_key', trim($_POST['openai_api_key'] ?? ''));
         set_setting('openai_model', in_array($_POST['openai_model'] ?? '', $models, true) ? $_POST['openai_model'] : 'gpt-5-mini');
         set_setting('scan_period_min', max(1, (int)($_POST['scan_period_min'] ?? 15)));
@@ -117,11 +191,17 @@ try {
     <div class="card-title">Параметры</div>
     <?php if ($ok): ?><div class="alert success"><?=$ok?></div><?php endif; ?>
     <?php if ($err): ?><div class="alert danger"><?=$err?></div><?php endif; ?>
+    <?php if ($apiTestOk === true): ?><div class="alert success"><?=e($apiTestMsg)?></div><?php endif; ?>
+    <?php if ($apiTestOk === false): ?><div class="alert danger"><?=e($apiTestMsg)?></div><?php endif; ?>
     <form method="post" class="stack settings-form">
       <?= csrf_field() ?>
+      <input type="hidden" name="action" value="save">
       
       <label>OpenAI API Key
-        <input type="password" name="openai_api_key" value="<?=e($apiKey)?>" placeholder="sk-...">
+        <div class="row-gap">
+          <input type="password" name="openai_api_key" value="<?=e($apiKey)?>" placeholder="sk-...">
+          <button formaction="" formmethod="post" name="action" value="test_openai" class="btn">Проверить ключ</button>
+        </div>
       </label>
 
       <label>Модель агента
