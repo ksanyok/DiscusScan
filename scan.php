@@ -304,6 +304,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     global $UA;
     $model = (string)get_setting('openai_model', 'gpt-5-mini');
     $strictRequired = (bool)get_setting('return_schema_required', true);
+    $enableWeb = (bool)get_setting('openai_enable_web_search', true);
 
     $payload = [
         'model' => $model,
@@ -327,6 +328,12 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             ]
         ]
     ];
+
+    // Enable OpenAI web search tool if allowed (for models that support it)
+    if ($enableWeb) {
+        $payload['tools'] = [ ['type' => 'web_search'] ];
+        $payload['tool_choice'] = 'auto';
+    }
 
     // Retry логика для обработки временных сбоев API
     $maxRetries = 3;
@@ -549,7 +556,10 @@ foreach ((array)$returnedLinks as $item) {
 
     // Host filters
     if (isset($pausedSet[$domain])) continue;
-    if ($settings['enabled_sources_only'] && !isset($enabledSet[$domain])) continue;
+    if ($settings['enabled_sources_only'] && !isset($enabledSet[$domain])) {
+        // Allow Telegram even if not whitelisted
+        if (!in_array($domain, ['t.me', 'telegram.me'], true)) continue;
+    }
 
     // Seen path dedupe
     $path = parse_url($url, PHP_URL_PATH) ?? '/';
