@@ -256,6 +256,9 @@ function ensure_defaults(PDO $pdo): void {
         'verify_freshness_days_for_new_domain' => 90,
         'http_timeout_sec' => 20,
         'max_parallel_http' => 12,
+        // NEW: OpenAI parallel/tool settings
+        'openai_max_tool_calls' => 8,
+        'max_parallel_openai' => 6,
     ];
     $sel = $pdo->prepare("SELECT svalue FROM settings WHERE skey = ?");
     $ins = $pdo->prepare("INSERT INTO settings (skey, svalue) VALUES (?, ?) ON DUPLICATE KEY UPDATE svalue = VALUES(svalue)");

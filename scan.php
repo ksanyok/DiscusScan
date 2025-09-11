@@ -405,6 +405,36 @@ function extract_json_sources_from_responses(string $body): array {
     return [];
 }
 
+// NEW: extractor for verification
+function extract_json_verify_from_responses(string $body): array {
+    $data = json_decode($body, true);
+    // Prefer parsed
+    if (isset($data['output_parsed'][0]) && is_array($data['output_parsed'][0])) return $data['output_parsed'][0];
+    if (isset($data['output_parsed']) && is_array($data['output_parsed'])) return $data['output_parsed'];
+    if (isset($data['output'][0]['parsed']) && is_array($data['output'][0]['parsed'])) return $data['output'][0]['parsed'];
+    // Scan output_text
+    $txt = '';
+    if (isset($data['output']) && is_array($data['output'])) {
+        foreach ($data['output'] as $out) {
+            if (($out['type'] ?? '') === 'message' && isset($out['content'])) {
+                foreach ($out['content'] as $c) { if (($c['type'] ?? '') === 'output_text') { $txt .= (string)($c['text'] ?? ''); } }
+            }
+        }
+    }
+    if ($txt === '' && is_string(($data['output_text'] ?? ''))) $txt = (string)$data['output_text'];
+    if ($txt !== '') {
+        $j = json_decode($txt, true);
+        if (is_array($j)) return $j;
+        if (preg_match('~\{.*\}~s', $txt, $m)) {
+            $j = json_decode($m[0], true);
+            if (is_array($j)) return $j;
+        }
+    }
+    // As last resort, the body might already be JSON
+    $j = json_decode($body, true);
+    return is_array($j) ? $j : [];
+}
+
 // ----------------------- OpenAI call with retry logic -----------------------
 function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log, array $opts = []): array {
     global $UA;
@@ -543,6 +573,75 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     }
 
     return [$status ?? 0, 0, [], ''];
+}
+
+// NEW: parallel OpenAI responses POST helper
+function openai_multi_responses(array $jobs, string $requestUrl, array $requestHeaders, int $timeoutSec, int $concurrency, callable $log): array {
+    // $jobs: [ jobKey => payloadArray ]
+    $res = [];
+    if (!$jobs) return $res;
+    $queue = $jobs; // associative
+    $mh = curl_multi_init();
+    $handles = [];
+
+    $startReq = function(string $key, array $payload) use (&$handles, $mh, $requestUrl, $requestHeaders, $timeoutSec, $log) {
+        $ch = curl_init($requestUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => $requestHeaders,
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => $timeoutSec,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HEADER => true,
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+        curl_multi_add_handle($mh, $ch);
+        $handles[(int)$ch] = $key;
+        // Log request minimal
+        $log("OpenAI REQUEST [verify:$key] (attempt 1)", [ 'url' => $requestUrl, 'model' => $payload['model'] ?? null, 'max_output_tokens' => $payload['max_output_tokens'] ?? null ], json_encode($payload, JSON_UNESCAPED_UNICODE));
+    };
+
+    // prime
+    $i = 0;
+    foreach ($queue as $k => $p) {
+        if ($i >= $concurrency) break;
+        unset($queue[$k]);
+        $startReq($k, $p);
+        $i++;
+    }
+
+    do {
+        $active = null;
+        curl_multi_exec($mh, $active);
+        while ($info = curl_multi_info_read($mh)) {
+            $ch = $info['handle'];
+            $key = $handles[(int)$ch] ?? '';
+            $content = curl_multi_getcontent($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $hsz  = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+            $ctype= curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+            $headersRaw = substr((string)$content, 0, (int)$hsz);
+            $body = substr((string)$content, (int)$hsz);
+            $res[$key] = [ 'status' => (int)$code, 'content_type' => $ctype, 'headers' => $headersRaw, 'body' => (string)$body ];
+            // Log response minimal
+            $log("OpenAI RESPONSE [verify:$key] (attempt 1)", [ 'status' => (int)$code, 'content_type' => $ctype, 'curl_error' => '' ], (string)$body);
+            curl_multi_remove_handle($mh, $ch);
+            curl_close($ch);
+            unset($handles[(int)$ch]);
+            // feed next
+            if ($queue) {
+                $nextKey = array_key_first($queue);
+                $payload = $queue[$nextKey];
+                unset($queue[$nextKey]);
+                $startReq($nextKey, $payload);
+            }
+        }
+        if ($active) curl_multi_select($mh, 1.0);
+    } while ($active || $handles);
+
+    curl_multi_close($mh);
+    return $res;
 }
 
 // ===================== [FETCH] =========================
@@ -798,18 +897,26 @@ if ($DISCOVERY_ENABLED) {
             }
         }
 
+        // Deduplicate by domain (normalized) and keep first proof_url
+        $seenDomains = [];
+        $dedup = [];
         foreach ($srcs as $s) {
             $domain = normalize_host((string)arr_get($s, 'domain', ''));
             $proof = (string)arr_get($s, 'proof_url', '');
             if ($domain === '' || $proof === '') continue;
             if (in_array($domain, $excluded, true)) continue;
-            db_upsert_discovered([
+            if (isset($seenDomains[$domain])) continue;
+            $seenDomains[$domain] = true;
+            $dedup[] = [
                 'domain' => $domain,
                 'proof_url' => $proof,
                 'platform_guess' => (string)arr_get($s, 'platform_guess', 'unknown'),
                 'reason' => (string)arr_get($s, 'reason', ''),
                 'activity_hint' => (string)arr_get($s, 'activity_hint', ''),
-            ]);
+            ];
+        }
+        foreach ($dedup as $row) {
+            db_upsert_discovered($row);
             $discoveredCount++;
         }
     }
@@ -820,6 +927,72 @@ try {
     $sinceVerifyIso = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->sub(new DateInterval('P' . max(1,$VERIFY_FRESH_DAYS) . 'D'))->format('Y-m-d\TH:i:s\Z');
     $sinceVerifyDt = new DateTimeImmutable($sinceVerifyIso, new DateTimeZone('UTC'));
 } catch (Throwable $e) { $sinceVerifyDt = $sinceDt; }
+$discRows = pdo()->query("SELECT domain, proof_url, platform_guess FROM discovered_sources WHERE status='new' ORDER BY first_seen_at DESC LIMIT 100")->fetchAll() ?: [];
+
+// NEW: OpenAI web_search verify for all new domains (in parallel)
+if ($discRows) {
+    $strictRequired = (bool)get_setting('return_schema_required', true);
+    $maxToolCalls = (int)get_setting('openai_max_tool_calls', 8);
+    $maxParLLM = max(1, (int)get_setting('max_parallel_openai', 6));
+    $verifySchema = [
+        'type' => 'object',
+        'properties' => [
+            'fresh' => ['type' => 'boolean'],
+            'proof_urls' => ['type' => 'array', 'items' => ['type' => 'string']],
+            'platform_guess' => ['type' => 'string'],
+            'reason' => ['type' => 'string'],
+            'activity_hint' => ['type' => 'string']
+        ],
+        'required' => ['fresh','proof_urls','platform_guess','reason','activity_hint'],
+        'additionalProperties' => false
+    ];
+    $verifySystem = "You are a domain verifier for discussion sources. Return STRICT JSON only.\nTask: Given a DOMAIN and TOPIC, use web_search to locate proof pages that show threads/topics/discussions relevant to the TOPIC. Mark fresh=true only if there is clear evidence of recent activity within FRESHNESS_DAYS days (use topic lists, latest pages, or threads with dates). Exclude marketing pages, static blogs and home pages without threads.";
+
+    $jobs = [];
+    foreach ($discRows as $r) {
+        $domain = normalize_host((string)$r['domain']);
+        if ($domain === '') continue;
+        $user = "DOMAIN: {$domain}\nTOPIC: " . mb_substr($basePrompt, 0, 400) . "\nLANGUAGES: " . (($settings['languages'] ? implode(', ', $settings['languages']) : 'any')) . "\nREGIONS: " . (($settings['regions'] ? implode(', ', $settings['regions']) : 'any')) . "\nSINCE: {$sinceIso}\nFRESHNESS_DAYS: {$VERIFY_FRESH_DAYS}\nReturn valid JSON strictly matching the schema.";
+        $payload = [
+            'model' => $model,
+            'input' => [
+                [ 'role' => 'system', 'content' => [ ['type' => 'input_text', 'text' => $verifySystem] ] ],
+                [ 'role' => 'user',   'content' => [ ['type' => 'input_text', 'text' => $user] ] ]
+            ],
+            'max_output_tokens' => 700,
+            'text' => [ 'format' => [ 'type' => 'json_schema', 'name' => 'verify_output', 'schema' => $verifySchema, 'strict' => $strictRequired ] ],
+            'tools' => [ ['type' => 'web_search'] ],
+            'tool_choice' => 'auto',
+            'max_tool_calls' => $maxToolCalls
+        ];
+        $jobs[$domain] = $payload;
+    }
+    if ($jobs) {
+        $llmResults = openai_multi_responses($jobs, $requestUrl, $requestHeaders, $OPENAI_HTTP_TIMEOUT, $maxParLLM, $appLog);
+        foreach ($llmResults as $domain => $resp) {
+            $status = (int)arr_get($resp, 'status', 0);
+            $body = (string)arr_get($resp, 'body', '');
+            if ($status === 200 && $body !== '') {
+                $parsed = extract_json_verify_from_responses($body);
+                $fresh = (bool)arr_get($parsed, 'fresh', false);
+                $plat  = (string)arr_get($parsed, 'platform_guess', 'unknown');
+                if ($fresh) {
+                    $verifiedDomains++;
+                    try {
+                        $st = pdo()->prepare("INSERT INTO sources (host, url, is_active, is_enabled, is_paused, note, platform, discovered_via) VALUES (?,?,?,?,?,?,?,?)
+                                              ON DUPLICATE KEY UPDATE is_enabled=VALUES(is_enabled), platform=VALUES(platform), discovered_via=VALUES(discovered_via)");
+                        $st->execute([$domain, 'https://' . $domain, 1, 1, 0, 'discovered', detect_platform($domain, null) ?: $plat, 'llm_web_search']);
+                        db_mark_discovered_status($domain, 'verified', 6);
+                    } catch (Throwable $e) {
+                        app_log('error', 'verify', 'Insert verified source failed', ['domain' => $domain, 'err' => $e->getMessage()]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Fallback: HTTP feed verification для доменов, которые остались status='new'
 $discRows = pdo()->query("SELECT domain, proof_url, platform_guess FROM discovered_sources WHERE status='new' ORDER BY first_seen_at DESC LIMIT 100")->fetchAll() ?: [];
 if ($discRows) {
     $reqs = [];
