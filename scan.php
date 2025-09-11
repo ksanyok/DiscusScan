@@ -576,7 +576,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
 }
 
 // NEW: parallel OpenAI responses POST helper
-function openai_multi_responses(array $jobs, string $requestUrl, array $requestHeaders, int $timeoutSec, int $concurrency, callable $log): array {
+function openai_multi_responses(array $jobs, string $requestUrl, array $requestHeaders, int $timeoutSec, int $concurrency, callable $log, string $tag = ''): array {
     // $jobs: [ jobKey => payloadArray ]
     $res = [];
     if (!$jobs) return $res;
@@ -584,7 +584,7 @@ function openai_multi_responses(array $jobs, string $requestUrl, array $requestH
     $mh = curl_multi_init();
     $handles = [];
 
-    $startReq = function(string $key, array $payload) use (&$handles, $mh, $requestUrl, $requestHeaders, $timeoutSec, $log) {
+    $startReq = function(string $key, array $payload) use (&$handles, $mh, $requestUrl, $requestHeaders, $timeoutSec, $log, $tag) {
         $ch = curl_init($requestUrl);
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
@@ -599,7 +599,7 @@ function openai_multi_responses(array $jobs, string $requestUrl, array $requestH
         curl_multi_add_handle($mh, $ch);
         $handles[(int)$ch] = $key;
         // Log request minimal
-        $log("OpenAI REQUEST [verify:$key] (attempt 1)", [ 'url' => $requestUrl, 'model' => $payload['model'] ?? null, 'max_output_tokens' => $payload['max_output_tokens'] ?? null ], json_encode($payload, JSON_UNESCAPED_UNICODE));
+        $log("OpenAI REQUEST [{$tag}:{$key}] (attempt 1)", [ 'url' => $requestUrl, 'model' => $payload['model'] ?? null, 'max_output_tokens' => $payload['max_output_tokens'] ?? null ], json_encode($payload, JSON_UNESCAPED_UNICODE));
     };
 
     // prime
@@ -625,7 +625,7 @@ function openai_multi_responses(array $jobs, string $requestUrl, array $requestH
             $body = substr((string)$content, (int)$hsz);
             $res[$key] = [ 'status' => (int)$code, 'content_type' => $ctype, 'headers' => $headersRaw, 'body' => (string)$body ];
             // Log response minimal
-            $log("OpenAI RESPONSE [verify:$key] (attempt 1)", [ 'status' => (int)$code, 'content_type' => $ctype, 'curl_error' => '' ], (string)$body);
+            $log("OpenAI RESPONSE [{$tag}:{$key}] (attempt 1)", [ 'status' => (int)$code, 'content_type' => $ctype, 'curl_error' => '' ], (string)$body);
             curl_multi_remove_handle($mh, $ch);
             curl_close($ch);
             unset($handles[(int)$ch]);
@@ -956,7 +956,7 @@ if ($DISCOVERY_ENABLED) {
                 ];
             }
             if ($jobs) {
-                $llmResults = openai_multi_responses($jobs, $requestUrl, $requestHeaders, $OPENAI_HTTP_TIMEOUT, $maxParLLM, $appLog);
+                $llmResults = openai_multi_responses($jobs, $requestUrl, $requestHeaders, $OPENAI_HTTP_TIMEOUT, $maxParLLM, $appLog, 'search');
                 // build source_id map for quick inserts
                 $srcMap = [];
                 try {
@@ -1072,6 +1072,79 @@ foreach ($scanFeeds as $host => $urls) {
 
             // Enforce per-scan limit
             if ($preNew >= $maxResults) break 3;
+        }
+    }
+}
+
+// NEW: LLM web_search for all enabled domains (not paused)
+$llmSearchDomains = array_diff($enabledHostsAll, $pausedHosts);
+$llmBatchSize = max(1, (int)get_setting('llm_search_domains_per_scan', 20));
+$llmSearchBatch = array_slice($llmSearchDomains, 0, $llmBatchSize);
+
+if (!empty($llmSearchBatch)) {
+    $strictRequired = (bool)get_setting('return_schema_required', true);
+    $maxToolCalls = (int)get_setting('openai_max_tool_calls', 8);
+    $maxParLLM = max(1, (int)get_setting('max_parallel_openai', 6));
+    $searchSystem = "You are a focused topical search agent for discussion content. Return STRICT JSON only.\nTask: For the given DOMAIN and TOPIC, find recent discussion threads or listing pages from that DOMAIN only, relevant to the TOPIC, since the given SINCE datetime. Prefer forum/topic/discussion pages, not home pages or marketing pages.";
+
+    // Map hosts -> source_id
+    $srcMap = [];
+    try {
+        $place = implode(',', array_fill(0, count($llmSearchBatch), '?'));
+        $st = pdo()->prepare("SELECT id, host FROM sources WHERE host IN ($place)");
+        $st->execute($llmSearchBatch);
+        foreach ($st->fetchAll() as $r) { $srcMap[normalize_host($r['host'])] = (int)$r['id']; }
+    } catch (Throwable $e) {}
+
+    $llmSearchJobs = [];
+    foreach ($llmSearchBatch as $dom) {
+        $user = "DOMAIN: {$dom}\nTOPIC: " . mb_substr($basePrompt, 0, 400) . "\nSINCE: {$sinceIso}\nONLY_DOMAIN: yes (site:" . $dom . ")\nReturn strictly the JSON matching the links schema.";
+        $llmSearchJobs[$dom] = [
+            'model' => $model,
+            'input' => [
+                [ 'role' => 'system', 'content' => [ ['type' => 'input_text', 'text' => $searchSystem] ] ],
+                [ 'role' => 'user',   'content' => [ ['type' => 'input_text', 'text' => $user] ] ]
+            ],
+            'max_output_tokens' => min(2000, (int)get_setting('openai_max_output_tokens', 4096)),
+            'text' => [ 'format' => [ 'type' => 'json_schema', 'name' => 'links_output', 'schema' => $schema, 'strict' => $strictRequired ] ],
+            'tools' => [ ['type' => 'web_search'] ],
+            'tool_choice' => 'auto',
+            'max_tool_calls' => $maxToolCalls
+        ];
+    }
+    if ($llmSearchJobs) {
+        $llmSearchResults = openai_multi_responses($llmSearchJobs, $requestUrl, $requestHeaders, $OPENAI_HTTP_TIMEOUT, $maxParLLM, $appLog, 'search');
+        foreach ($llmSearchResults as $dom => $resp) {
+            if ($preNew >= $maxResults) break;
+            $status = (int)arr_get($resp, 'status', 0);
+            $body = (string)arr_get($resp, 'body', '');
+            if ($status !== 200 || $body === '') continue;
+            $links = extract_json_links_from_responses($body);
+            if (!$links) continue;
+            foreach ($links as $it) {
+                if ($preNew >= $maxResults) break 2;
+                $url = canonicalize_url((string)arr_get($it, 'url', ''));
+                $title = trim((string)arr_get($it, 'title', ''));
+                $pub  = (string)arr_get($it, 'published_at', '');
+                if ($url === '' || $title === '' || $pub === '') continue;
+                $d = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
+                if ($d !== $dom) continue; // enforce domain constraint
+                try { $pubDt = new DateTimeImmutable($pub, new DateTimeZone('UTC')); } catch (Throwable $e) { continue; }
+                if ($pubDt < $sinceDt) continue;
+                $path = parse_url($url, PHP_URL_PATH) ?? '/'; if ($path === '') $path = '/';
+                $fp = $d . '|' . $path; if (isset($seenPathSet[$fp])) continue; $seenPathSet[$fp] = 1;
+                $sourceId = $srcMap[$d] ?? null; if (!$sourceId) continue;
+                try {
+                    $nowSql = gmdate('Y-m-d H:i:s');
+                    $ins = pdo()->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status, published_at)
+                                           VALUES (?,?,?,?,?,?,?,?)
+                                           ON DUPLICATE KEY UPDATE last_seen=VALUES(last_seen), times_seen=times_seen+1, title=VALUES(title), published_at=COALESCE(VALUES(published_at), published_at)");
+                    $ins->execute([$sourceId, $url, $title, $nowSql, $nowSql, 1, 'new', $pubDt->format('Y-m-d H:i:s')]);
+                    $preFound++; if ($ins->rowCount() === 1) { $preNew++; }
+                } catch (Throwable $e) {
+                    app_log('error', 'llm_search', 'Insert link failed', ['url' => $url, 'err' => $e->getMessage()]);
+                }
+            }
         }
     }
 }

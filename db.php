@@ -250,7 +250,7 @@ function ensure_defaults(PDO $pdo): void {
         'scope_forums_enabled' => true,
         'telegram_mode' => 'any',
         // NEW DISCOVERY/HTTP defaults
-        'openai_enable_web_search' => false,
+        'openai_enable_web_search' => true,
         'discovery_daily_candidates' => 20,
         'discovery_enabled' => true,
         'verify_freshness_days_for_new_domain' => 90,
@@ -259,6 +259,8 @@ function ensure_defaults(PDO $pdo): void {
         // NEW: OpenAI parallel/tool settings
         'openai_max_tool_calls' => 8,
         'max_parallel_openai' => 6,
+        // NEW: LLM web search batch size per scan
+        'llm_search_domains_per_scan' => 30,
     ];
     $sel = $pdo->prepare("SELECT svalue FROM settings WHERE skey = ?");
     $ins = $pdo->prepare("INSERT INTO settings (skey, svalue) VALUES (?, ?) ON DUPLICATE KEY UPDATE svalue = VALUES(svalue)");
