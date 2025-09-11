@@ -915,121 +915,87 @@ if ($DISCOVERY_ENABLED) {
                 'activity_hint' => (string)arr_get($s, 'activity_hint', ''),
             ];
         }
+        // Insert directly into sources and collect newly added domains
+        $newDomains = [];
         foreach ($dedup as $row) {
-            db_upsert_discovered($row);
-            $discoveredCount++;
+            $domain = $row['domain'];
+            try {
+                $st = pdo()->prepare("INSERT INTO sources (host, url, is_active, is_enabled, is_paused, note, platform, discovered_via) VALUES (?,?,?,?,?,?,?,?)
+                                      ON DUPLICATE KEY UPDATE platform=VALUES(platform)");
+                $plat = detect_platform($domain, $row['proof_url']) ?: ($row['platform_guess'] ?? 'unknown');
+                $st->execute([$domain, 'https://' . $domain, 1, 1, 0, 'discovered', $plat, 'llm_discovery']);
+                if ($st->rowCount() === 1) { // inserted new
+                    $newDomains[] = $domain;
+                    $discoveredCount++;
+                }
+            } catch (Throwable $e) {
+                app_log('error', 'discovery', 'Insert source failed', ['domain' => $domain, 'err' => $e->getMessage()]);
+            }
         }
-    }
-}
 
-// ----- Verification for newly discovered -----
-try {
-    $sinceVerifyIso = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->sub(new DateInterval('P' . max(1,$VERIFY_FRESH_DAYS) . 'D'))->format('Y-m-d\TH:i:s\Z');
-    $sinceVerifyDt = new DateTimeImmutable($sinceVerifyIso, new DateTimeZone('UTC'));
-} catch (Throwable $e) { $sinceVerifyDt = $sinceDt; }
-$discRows = pdo()->query("SELECT domain, proof_url, platform_guess FROM discovered_sources WHERE status='new' ORDER BY first_seen_at DESC LIMIT 100")->fetchAll() ?: [];
-
-// NEW: OpenAI web_search verify for all new domains (in parallel)
-if ($discRows) {
-    $strictRequired = (bool)get_setting('return_schema_required', true);
-    $maxToolCalls = (int)get_setting('openai_max_tool_calls', 8);
-    $maxParLLM = max(1, (int)get_setting('max_parallel_openai', 6));
-    $verifySchema = [
-        'type' => 'object',
-        'properties' => [
-            'fresh' => ['type' => 'boolean'],
-            'proof_urls' => ['type' => 'array', 'items' => ['type' => 'string']],
-            'platform_guess' => ['type' => 'string'],
-            'reason' => ['type' => 'string'],
-            'activity_hint' => ['type' => 'string']
-        ],
-        'required' => ['fresh','proof_urls','platform_guess','reason','activity_hint'],
-        'additionalProperties' => false
-    ];
-    $verifySystem = "You are a domain verifier for discussion sources. Return STRICT JSON only.\nTask: Given a DOMAIN and TOPIC, use web_search to locate proof pages that show threads/topics/discussions relevant to the TOPIC. Mark fresh=true only if there is clear evidence of recent activity within FRESHNESS_DAYS days (use topic lists, latest pages, or threads with dates). Exclude marketing pages, static blogs and home pages without threads.";
-
-    $jobs = [];
-    foreach ($discRows as $r) {
-        $domain = normalize_host((string)$r['domain']);
-        if ($domain === '') continue;
-        $user = "DOMAIN: {$domain}\nTOPIC: " . mb_substr($basePrompt, 0, 400) . "\nLANGUAGES: " . (($settings['languages'] ? implode(', ', $settings['languages']) : 'any')) . "\nREGIONS: " . (($settings['regions'] ? implode(', ', $settings['regions']) : 'any')) . "\nSINCE: {$sinceIso}\nFRESHNESS_DAYS: {$VERIFY_FRESH_DAYS}\nReturn valid JSON strictly matching the schema.";
-        $payload = [
-            'model' => $model,
-            'input' => [
-                [ 'role' => 'system', 'content' => [ ['type' => 'input_text', 'text' => $verifySystem] ] ],
-                [ 'role' => 'user',   'content' => [ ['type' => 'input_text', 'text' => $user] ] ]
-            ],
-            'max_output_tokens' => 700,
-            'text' => [ 'format' => [ 'type' => 'json_schema', 'name' => 'verify_output', 'schema' => $verifySchema, 'strict' => $strictRequired ] ],
-            'tools' => [ ['type' => 'web_search'] ],
-            'tool_choice' => 'auto',
-            'max_tool_calls' => $maxToolCalls
-        ];
-        $jobs[$domain] = $payload;
-    }
-    if ($jobs) {
-        $llmResults = openai_multi_responses($jobs, $requestUrl, $requestHeaders, $OPENAI_HTTP_TIMEOUT, $maxParLLM, $appLog);
-        foreach ($llmResults as $domain => $resp) {
-            $status = (int)arr_get($resp, 'status', 0);
-            $body = (string)arr_get($resp, 'body', '');
-            if ($status === 200 && $body !== '') {
-                $parsed = extract_json_verify_from_responses($body);
-                $fresh = (bool)arr_get($parsed, 'fresh', false);
-                $plat  = (string)arr_get($parsed, 'platform_guess', 'unknown');
-                if ($fresh) {
-                    $verifiedDomains++;
-                    try {
-                        $st = pdo()->prepare("INSERT INTO sources (host, url, is_active, is_enabled, is_paused, note, platform, discovered_via) VALUES (?,?,?,?,?,?,?,?)
-                                              ON DUPLICATE KEY UPDATE is_enabled=VALUES(is_enabled), platform=VALUES(platform), discovered_via=VALUES(discovered_via)");
-                        $st->execute([$domain, 'https://' . $domain, 1, 1, 0, 'discovered', detect_platform($domain, null) ?: $plat, 'llm_web_search']);
-                        db_mark_discovered_status($domain, 'verified', 6);
-                    } catch (Throwable $e) {
-                        app_log('error', 'verify', 'Insert verified source failed', ['domain' => $domain, 'err' => $e->getMessage()]);
+        // NEW: Topical search via LLM for newly added domains
+        if (!empty($newDomains)) {
+            $strictRequired = (bool)get_setting('return_schema_required', true);
+            $maxToolCalls = (int)get_setting('openai_max_tool_calls', 8);
+            $maxParLLM = max(1, (int)get_setting('max_parallel_openai', 6));
+            $searchSystem = "You are a focused topical search agent for discussion content. Return STRICT JSON only.\nTask: For the given DOMAIN and TOPIC, find recent discussion threads or listing pages from that DOMAIN only, relevant to the TOPIC, since the given SINCE datetime. Prefer forum/topic/discussion pages, not home pages or marketing pages.";
+            $jobs = [];
+            foreach ($newDomains as $dom) {
+                $user = "DOMAIN: {$dom}\nTOPIC: " . mb_substr($basePrompt, 0, 400) . "\nSINCE: {$sinceIso}\nONLY_DOMAIN: yes (site:" . $dom . ")\nReturn strictly the JSON matching the links schema.";
+                $jobs[$dom] = [
+                    'model' => $model,
+                    'input' => [
+                        [ 'role' => 'system', 'content' => [ ['type' => 'input_text', 'text' => $searchSystem] ] ],
+                        [ 'role' => 'user',   'content' => [ ['type' => 'input_text', 'text' => $user] ] ]
+                    ],
+                    'max_output_tokens' => min(2000, (int)get_setting('openai_max_output_tokens', 4096)),
+                    'text' => [ 'format' => [ 'type' => 'json_schema', 'name' => 'links_output', 'schema' => $schema, 'strict' => $strictRequired ] ],
+                    'tools' => [ ['type' => 'web_search'] ],
+                    'tool_choice' => 'auto',
+                    'max_tool_calls' => $maxToolCalls
+                ];
+            }
+            if ($jobs) {
+                $llmResults = openai_multi_responses($jobs, $requestUrl, $requestHeaders, $OPENAI_HTTP_TIMEOUT, $maxParLLM, $appLog);
+                // build source_id map for quick inserts
+                $srcMap = [];
+                try {
+                    $rows = pdo()->query("SELECT id, host FROM sources WHERE host IN ('" . implode("','", array_map(fn($d)=>addslashes($d), $newDomains)) . "')")->fetchAll() ?: [];
+                    foreach ($rows as $r) { $srcMap[strtolower($r['host'])] = (int)$r['id']; }
+                } catch (Throwable $e) {}
+                // existing fingerprints to dedupe
+                $seenFp = array_flip(getSeenPathFingerprints(pdo(), 600));
+                foreach ($llmResults as $dom => $resp) {
+                    $status = (int)arr_get($resp, 'status', 0);
+                    $body = (string)arr_get($resp, 'body', '');
+                    if ($status !== 200 || $body === '') continue;
+                    $links = extract_json_links_from_responses($body);
+                    if (!$links) continue;
+                    foreach ($links as $it) {
+                        $url = canonicalize_url((string)arr_get($it, 'url', ''));
+                        $title = trim((string)arr_get($it, 'title', ''));
+                        $pub  = (string)arr_get($it, 'published_at', '');
+                        if ($url === '' || $title === '' || $pub === '') continue;
+                        $d = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
+                        if ($d !== $dom) continue; // enforce domain constraint
+                        try { $pubDt = new DateTimeImmutable($pub, new DateTimeZone('UTC')); } catch (Throwable $e) { continue; }
+                        if ($pubDt < $sinceDt) continue;
+                        $path = parse_url($url, PHP_URL_PATH) ?? '/'; if ($path === '') $path = '/';
+                        $fp = $d . '|' . $path; if (isset($seenFp[$fp])) continue; $seenFp[$fp] = 1;
+                        $sourceId = $srcMap[$d] ?? null; if (!$sourceId) continue;
+                        try {
+                            $nowSql = gmdate('Y-m-d H:i:s');
+                            $ins = pdo()->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status, published_at)
+                                                   VALUES (?,?,?,?,?,?,?,?)
+                                                   ON DUPLICATE KEY UPDATE last_seen=VALUES(last_seen), times_seen=times_seen+1, title=VALUES(title), published_at=COALESCE(VALUES(published_at), published_at)");
+                            $ins->execute([$sourceId, $url, $title, $nowSql, $nowSql, 1, 'new', $pubDt->format('Y-m-d H:i:s')]);
+                            $preFound++; if ($ins->rowCount() === 1) { $preNew++; }
+                        } catch (Throwable $e) {
+                            app_log('error', 'llm_search', 'Insert link failed', ['url' => $url, 'err' => $e->getMessage()]);
+                        }
                     }
                 }
             }
-        }
-    }
-}
-
-// Fallback: HTTP feed verification для доменов, которые остались status='new'
-$discRows = pdo()->query("SELECT domain, proof_url, platform_guess FROM discovered_sources WHERE status='new' ORDER BY first_seen_at DESC LIMIT 100")->fetchAll() ?: [];
-if ($discRows) {
-    $reqs = [];
-    foreach ($discRows as $r) {
-        $host = normalize_host($r['domain']);
-        $plat = detect_platform($host, $r['proof_url'] ?? null);
-        $feeds = discover_feeds_for_platform($host, $plat);
-        foreach ($feeds as $u) { $reqs[$host][] = $u; }
-    }
-    $flat = array_values(array_unique(array_merge(...array_values($reqs) ?: [[]])));
-    $resp = http_multi_get($flat, $HTTP_TIMEOUT_SEC, $MAX_PAR_HTTP);
-    foreach ($reqs as $host => $urls) {
-        $fresh = false; $bestPlat = 'unknown';
-        foreach ($urls as $u) {
-            if (!isset($resp[$u])) continue;
-            $r = $resp[$u];
-            if ($r['status'] >= 200 && $r['status'] < 300) {
-                $items = parse_feed_items($u, (string)$r['body'], (string)$r['content_type']);
-                foreach ($items as $it) {
-                    $pub = arr_get($it, 'published_at');
-                    if ($pub) {
-                        try { $dt = new DateTimeImmutable($pub, new DateTimeZone('UTC')); } catch (Throwable $e) { $dt = null; }
-                        if ($dt && $dt >= $sinceVerifyDt) { $fresh = true; break; }
-                    }
-                }
-            }
-            if ($fresh) break;
-        }
-        if ($fresh) {
-            $verifiedDomains++;
-            // upsert into sources
-            $st = pdo()->prepare("INSERT INTO sources (host, url, is_active, is_enabled, is_paused, note, platform, discovered_via) VALUES (?,?,?,?,?,?,?,?)
-                                  ON DUPLICATE KEY UPDATE is_enabled=VALUES(is_enabled), platform=VALUES(platform), discovered_via=VALUES(discovered_via)");
-            $st->execute([$host, 'https://' . $host, 1, 1, 0, 'discovered', detect_platform($host, null), 'llm_discovery']);
-            db_mark_discovered_status($host, 'verified', 5);
-        } else {
-            db_mark_discovered_status($host, 'failed', 0);
         }
     }
 }
