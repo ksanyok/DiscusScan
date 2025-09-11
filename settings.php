@@ -24,8 +24,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $goal = trim((string)($_POST['goal'] ?? ''));
         $keywords = array_values(array_filter(array_map('trim', explode(',', (string)($_POST['keywords'] ?? '')))));
         $where = (array)($_POST['where'] ?? []);
-        $langs = array_values(array_filter(array_map('trim', explode(',', (string)($_POST['languages'] ?? '')))));
-        $regs  = array_values(array_filter(array_map('trim', explode(',', (string)($_POST['regions'] ?? '')))));
+        $langs = array_values(array_filter(array_map('trim', preg_split('~[;,\s]+~', (string)($_POST['languages'] ?? '')))));
+        $regs  = array_values(array_filter(array_map('trim', preg_split('~[;,\s]+~', (string)($_POST['regions'] ?? '')))));
+        // Нормализация языков: двухбуквенные латинские, lower
+        $nl = [];$droppedLang=0;foreach ($langs as $l){$raw=$l;$l=strtolower(preg_replace('~[^a-z]~','',$l));if(strlen($l)===2){$nl[$l]=true;}else{$droppedLang++;}}
+        $langs = array_values(array_keys($nl));
+        // Нормализация регионов: двухбуквенные латинские, upper
+        $nr=[];$droppedReg=0;foreach($regs as $r){$raw=$r;$r=strtoupper(preg_replace('~[^A-Za-z]~','',$r));if(strlen($r)===2){$nr[$r]=true;}else{$droppedReg++;}}
+        $regs = array_values(array_keys($nr));
         $freshDays = max(1, (int)get_setting('freshness_days', 7));
         // Базовый (fallback) промпт
         $parts = [];
@@ -97,11 +103,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 app_log('warning','wizard','LLM prompt optimize failed',['err'=>$e->getMessage()]);
             }
         }
+        $scopeDomainsSel = in_array('домены', $where, true);
+        $scopeTelegramSel = in_array('telegram', $where, true);
+        $scopeForumsSel = in_array('форумы', $where, true);
         echo json_encode([
             'ok'=>true,
             'prompt'=>$finalPrompt,
             'languages'=>$langs,
-            'regions'=>$regs
+            'regions'=>$regs,
+            'scopes'=>[
+                'domains'=>$scopeDomainsSel,
+                'telegram'=>$scopeTelegramSel,
+                'forums'=>$scopeForumsSel
+            ],
+            'dropped'=>[
+                'languages'=>$droppedLang,
+                'regions'=>$droppedReg
+            ]
         ], JSON_UNESCAPED_UNICODE);
         exit;
     } else if (!verify_csrf_token($_POST['csrf_token'] ?? '')) {
@@ -272,6 +290,8 @@ try {
     .wizard-loading-overlay{position:absolute;inset:0;background:rgba(0,0,0,.65);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;color:#fff;font-size:.95rem;border-radius:12px;}
     .loader-spinner{width:46px;height:46px;border:5px solid #2f3139;border-top-color:#4ea1ff;border-radius:50%;animation:spin 1s linear infinite;}
     @keyframes spin{to{transform:rotate(360deg);}}
+    .mono{font-family:monospace;resize:vertical;}
+    .prompt-counter{font-size:.7rem;opacity:.7;margin-top:2px;text-align:right;}
   </style>
 </head>
 <body>
@@ -312,7 +332,8 @@ try {
           <button type="button" class="btn" id="wizardStart">Запустить мастера</button>
         </div>
         <div class="hint" id="wizardPromptPreview"><?= $prompt ? e(mb_strimwidth($prompt,0,140,'…')) : 'Промпт ещё не задан' ?></div>
-        <input type="hidden" name="search_prompt" id="search_prompt" value="<?= e($prompt) ?>">
+        <textarea name="search_prompt" id="search_prompt" rows="6" class="mono"><?= e($prompt) ?></textarea>
+        <div class="prompt-counter" id="promptCounter"><?= mb_strlen($prompt) ?> символов</div>
       </div>
 
       <hr>
@@ -433,11 +454,13 @@ try {
   const cancelBtn = document.getElementById('wizardCancel');
   const bodyEl = document.getElementById('wizardBody');
   const stepsEls = Array.from(document.querySelectorAll('.wizard-step'));
-  const promptInput = document.getElementById('search_prompt');
-  const preview = document.getElementById('wizardPromptPreview');
-
+  const promptArea = document.getElementById('search_prompt');
+  const counter = document.getElementById('promptCounter');
   const langInput = document.querySelector('input[name="languages"]');
   const regInput  = document.querySelector('input[name="regions"]');
+  const scopeDomains = document.querySelector('input[name="scope_domains_enabled"]');
+  const scopeTelegram = document.querySelector('input[name="scope_telegram_enabled"]');
+  const scopeForums = document.querySelector('input[name="scope_forums_enabled"]');
 
   let step = 0;
   const data = { goal:'', where:[], keywords:[], languages:[], regions:[] };
@@ -501,14 +524,31 @@ try {
       const r = await fetch(location.href, {method:'POST', body: fd});
       const j = await r.json();
       if(j.ok){
-        promptInput.value = j.prompt || '';
-        preview.textContent = (j.prompt||'').length>160 ? j.prompt.slice(0,160)+'…' : (j.prompt||'Промпт ещё не задан');
-        if(Array.isArray(j.languages) && langInput){ langInput.value = j.languages.join(', '); }
-        if(Array.isArray(j.regions) && regInput){ regInput.value = j.regions.join(', '); }
-        // авто-сохранение
-        if (promptInput.form) {
-          // Delay tiny to allow DOM update
-          setTimeout(()=> promptInput.form.requestSubmit(), 300);
+        if (promptArea && j.prompt){ promptArea.value = j.prompt; updateCounter(); }
+        if (Array.isArray(j.languages) && langInput){ langInput.value = j.languages.join(', '); }
+        if (Array.isArray(j.regions) && regInput){ regInput.value = j.regions.join(', '); }
+        if (j.scopes){
+          if (scopeDomains) scopeDomains.checked = !!j.scopes.domains;
+          if (scopeTelegram) scopeTelegram.checked = !!j.scopes.telegram;
+          if (scopeForums) scopeForums.checked = !!j.scopes.forums;
+        }
+        if (j.dropped && (j.dropped.languages>0 || j.dropped.regions>0)){
+          const msg = [];
+          if (j.dropped.languages>0) msg.push('Отброшено языков: '+j.dropped.languages+' (ожидались 2-букв. коды)');
+          if (j.dropped.regions>0) msg.push('Отброшено регионов: '+j.dropped.regions+' (ожидались 2-букв. коды ISO)');
+          if (msg.length) {
+            let alertBox = document.getElementById('wizardSanitizeMsg');
+            if(!alertBox){
+              alertBox = document.createElement('div');
+              alertBox.id='wizardSanitizeMsg';
+              alertBox.className='alert';
+              document.querySelector('.settings-form')?.insertAdjacentElement('afterbegin', alertBox);
+            }
+            alertBox.textContent = msg.join(' | ');
+          }
+        }
+        if (promptArea.form) {
+          setTimeout(()=> promptArea.form.requestSubmit(), 300);
         }
       } else {
         alert('Не удалось сгенерировать промпт (fallback).');
