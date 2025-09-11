@@ -2,7 +2,7 @@
 require_once __DIR__ . '/db.php';
 require_login();
 
-// Toggle domain activity from this page and come back preserving selection
+// Toggle domain activity (legacy)
 if (isset($_GET['toggle']) && ctype_digit($_GET['toggle'])) {
     $id = (int)$_GET['toggle'];
     pdo()->exec("UPDATE sources SET is_active = 1 - is_active WHERE id = {$id}");
@@ -11,15 +11,49 @@ if (isset($_GET['toggle']) && ctype_digit($_GET['toggle'])) {
     exit;
 }
 
-// Domains summary
-$domains = pdo()->query("
-    SELECT s.id, s.host, s.is_active, COUNT(l.id) AS links_count,
+// New: toggle is_enabled
+if (isset($_GET['toggle_enabled']) && ctype_digit($_GET['toggle_enabled'])) {
+    $id = (int)$_GET['toggle_enabled'];
+    pdo()->exec("UPDATE sources SET is_enabled = 1 - COALESCE(is_enabled,1) WHERE id = {$id}");
+    header('Location: sources.php?source=' . $id);
+    exit;
+}
+// New: toggle is_paused
+if (isset($_GET['toggle_paused']) && ctype_digit($_GET['toggle_paused'])) {
+    $id = (int)$_GET['toggle_paused'];
+    pdo()->exec("UPDATE sources SET is_paused = 1 - COALESCE(is_paused,0) WHERE id = {$id}");
+    header('Location: sources.php?source=' . $id);
+    exit;
+}
+
+// Freshness window
+$freshnessDays = (int)get_setting('freshness_days', 7);
+try {
+    $sinceDt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
+        ->sub(new DateInterval('P' . max(1, $freshnessDays) . 'D'));
+    $sinceSql = $sinceDt->format('Y-m-d H:i:s');
+    $sinceIso = $sinceDt->format('Y-m-d\TH:i:s\Z');
+} catch (Throwable $e) {
+    $sinceSql = gmdate('Y-m-d H:i:s');
+    $sinceIso = gmdate('Y-m-d\TH:i:s\Z');
+}
+
+// Domains summary with fresh counter
+$stmt = pdo()->prepare("
+    SELECT s.id, s.host,
+           COALESCE(s.is_active,1) AS is_active,
+           COALESCE(s.is_enabled,1) AS is_enabled,
+           COALESCE(s.is_paused,0)  AS is_paused,
+           COUNT(l.id) AS links_count,
+           SUM(CASE WHEN l.published_at IS NOT NULL AND l.published_at >= :since THEN 1 ELSE 0 END) AS fresh_count,
            MAX(COALESCE(l.last_seen, l.first_found)) AS last_seen
     FROM sources s
     LEFT JOIN links l ON l.source_id = s.id
-    GROUP BY s.id, s.host, s.is_active
-    ORDER BY links_count DESC, s.host ASC
-")->fetchAll();
+    GROUP BY s.id, s.host, is_active, is_enabled, is_paused
+    ORDER BY fresh_count DESC, links_count DESC, s.host ASC
+");
+$stmt->execute([':since' => $sinceSql]);
+$domains = $stmt->fetchAll();
 
 // Selected domain
 $activeSource = (isset($_GET['source']) && ctype_digit($_GET['source'])) ? (int)$_GET['source'] : null;
@@ -33,12 +67,15 @@ if ($activeSource) {
     $stmt = pdo()->prepare("
         SELECT l.* FROM links l
         WHERE l.source_id = ?
-        ORDER BY COALESCE(l.last_seen, l.first_found) DESC
+        ORDER BY COALESCE(l.published_at, l.last_seen, l.first_found) DESC
         LIMIT 500
     ");
     $stmt->execute([$activeSource]);
     $domainLinks = $stmt->fetchAll();
 }
+
+// Paused hosts list for preview
+$pausedHosts = pdo()->query("SELECT host FROM sources WHERE COALESCE(is_paused,0)=1 ORDER BY host")->fetchAll(PDO::FETCH_COLUMN) ?: [];
 ?>
 <!doctype html>
 <html lang="ru">
@@ -54,29 +91,52 @@ if ($activeSource) {
 <main class="container">
   <section class="grid domains">
     <div class="card glass left">
-      <div class="card-title">Домены с упоминаниями</div>
+      <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <span>Домены с упоминаниями</span>
+        <details>
+          <summary class="btn small">Показать paused hosts</summary>
+          <div class="muted" style="margin-top:6px">
+            <?php if ($pausedHosts): ?>
+              <code><?=e(json_encode(array_values($pausedHosts), JSON_UNESCAPED_UNICODE))?></code>
+            <?php else: ?>
+              <span>Нет паузных источников</span>
+            <?php endif; ?>
+          </div>
+        </details>
+      </div>
       <div class="table-wrap">
         <table class="table">
           <thead><tr>
-            <th>Домен</th><th>Ссылок</th><th>Обновлено</th>
-            <th class="col-status">Статус</th><th class="col-actions">Упр.</th>
+            <th>Домен</th>
+            <th>Всего</th>
+            <th>За <?=$freshnessDays?>д</th>
+            <th>Обновлено</th>
+            <th>Enabled</th>
+            <th>Pause</th>
+            <th class="col-actions">Упр.</th>
           </tr></thead>
           <tbody>
             <?php foreach ($domains as $d): ?>
               <tr<?= $activeSource===$d['id'] ? ' style="background:rgba(255,255,255,.05)"' : '';?>>
                 <td><a href="sources.php?source=<?=$d['id']?>"><?=e($d['host'])?></a></td>
                 <td><span class="pill"><?=$d['links_count']?></span></td>
+                <td><span class="pill"><?= (int)$d['fresh_count'] ?></span></td>
                 <td><?= $d['last_seen'] ? date('Y-m-d H:i', strtotime($d['last_seen'])) : '—' ?></td>
-                <td class="col-status"><?= !empty($d['is_active']) ? '✅' : '⛔' ?></td>
+                <td class="col-status"><?= !empty($d['is_enabled']) ? '✅' : '⛔' ?>
+                  <a class="btn small" href="sources.php?toggle_enabled=<?=$d['id']?>">перекл.</a>
+                </td>
+                <td class="col-status"><?= !empty($d['is_paused']) ? '⏸️' : '▶️' ?>
+                  <a class="btn small" href="sources.php?toggle_paused=<?=$d['id']?>">перекл.</a>
+                </td>
                 <td class="col-actions">
-                  <a class="btn small" href="sources.php?toggle=<?=$d['id']?>&amp;source=<?=$d['id']?>"><?= !empty($d['is_active']) ? 'Пауза' : 'Вкл.' ?></a>
+                  <a class="btn small" href="sources.php?toggle=<?=$d['id']?>&amp;source=<?=$d['id']?>"><?= !empty($d['is_active']) ? 'Пауза (legacy)' : 'Вкл. (legacy)' ?></a>
                 </td>
               </tr>
             <?php endforeach; ?>
           </tbody>
         </table>
       </div>
-      <div class="muted" style="margin-top:8px">Клик по домену — покажем ссылки справа.</div>
+      <div class="muted" style="margin-top:8px">Клик по домену — покажем ссылки справа. Счётчик «За <?=$freshnessDays?>д» считает по published_at.</div>
     </div>
 
     <div class="card glass">
@@ -84,12 +144,13 @@ if ($activeSource) {
       <?php if ($activeSource && $domainLinks): ?>
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>Заголовок</th><th>URL</th><th>Найдено</th><th>Обновлено</th><th>Пок.</th></tr></thead>
+            <thead><tr><th>Заголовок</th><th>URL</th><th>Опубл.</th><th>Найдено</th><th>Обновлено</th><th>Пок.</th></tr></thead>
             <tbody>
               <?php foreach ($domainLinks as $l): ?>
                 <tr>
                   <td class="ellipsis"><?=e($l['title'] ?? '—')?></td>
                   <td class="ellipsis"><a href="<?=e($l['url'])?>" target="_blank" rel="noopener"><?=e($l['url'])?></a></td>
+                  <td><?= $l['published_at'] ? date('Y-m-d H:i', strtotime($l['published_at'])) : '—' ?></td>
                   <td><?= $l['first_found'] ? date('Y-m-d H:i', strtotime($l['first_found'])) : '—' ?></td>
                   <td><?= $l['last_seen'] ? date('Y-m-d H:i', strtotime($l['last_seen'])) : '—' ?></td>
                   <td><?= (int)$l['times_seen'] ?></td>

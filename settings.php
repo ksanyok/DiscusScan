@@ -31,6 +31,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($cron_secret === '') $cron_secret = bin2hex(random_bytes(12));
     set_setting('cron_secret', $cron_secret);
 
+    // FRESH-ONLY параметры
+    $freshnessDays = max(1, (int)($_POST['freshness_days'] ?? 7));
+    set_setting('freshness_days', $freshnessDays);
+    set_setting('enabled_sources_only', isset($_POST['enabled_sources_only']));
+    $maxRes = (int)($_POST['max_results_per_scan'] ?? 80);
+    if ($maxRes < 1) $maxRes = 1; if ($maxRes > 200) $maxRes = 200;
+    set_setting('max_results_per_scan', $maxRes);
+    set_setting('return_schema_required', isset($_POST['return_schema_required']));
+
+    // опциональные — массивы языков/регионов (через запятую)
+    $langs = trim((string)($_POST['languages'] ?? ''));
+    $regs  = trim((string)($_POST['regions'] ?? ''));
+    set_setting('languages', $langs === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $langs))))));
+    set_setting('regions',  $regs  === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $regs))))));
+
     $ok = 'Сохранено';
     app_log('info', 'settings', 'Settings updated', []);
 }
@@ -49,6 +64,16 @@ $scopeTelegram = (bool)get_setting('scope_telegram_enabled', false);
 $telegramMode  = (string)get_setting('telegram_mode', 'any'); // any|discuss
 $scopeForums   = (bool)get_setting('scope_forums_enabled', true);
 
+// Fresh-only
+$freshnessDays       = (int)get_setting('freshness_days', 7);
+$enabledSourcesOnly  = (bool)get_setting('enabled_sources_only', true);
+$maxResultsPerScan   = (int)get_setting('max_results_per_scan', 80);
+$returnSchemaRequired= (bool)get_setting('return_schema_required', true);
+$languagesArr        = (array)get_setting('languages', []);
+$regionsArr          = (array)get_setting('regions', []);
+$languagesCsv        = $languagesArr ? implode(', ', $languagesArr) : '';
+$regionsCsv          = $regionsArr ? implode(', ', $regionsArr) : '';
+
 // вспомогательное
 $cronSecret = (string)get_setting('cron_secret', '');
 $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? 'localhost');
@@ -56,11 +81,19 @@ $cronUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/scan.php?secret=' . u
 
 // количество активных доменов и ссылка на их управление
 try {
-    $activeDomainsCount = (int)pdo()->query("SELECT COUNT(*) FROM sources WHERE is_active=1")->fetchColumn();
+    // активные = is_enabled=1 и is_paused=0 (если колонок нет — fallback к is_active)
+    $activeDomainsCount = (int)pdo()->query("SELECT COUNT(*) FROM sources WHERE COALESCE(is_enabled,1)=1 AND COALESCE(is_paused,0)=0")->fetchColumn();
 } catch (Throwable $e) {
     $activeDomainsCount = (int)get_setting('active_sources_count', 0); // fallback, если нет таблицы
 }
 $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
+
+// Предпросмотр SINCE (UTC)
+try {
+    $since = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
+        ->sub(new DateInterval('P' . max(1, (int)$freshnessDays) . 'D'))
+        ->format('Y-m-d\TH:i:s\Z');
+} catch (Throwable $e) { $since = ''; }
 ?>
 <!doctype html>
 <html lang="ru">
@@ -143,6 +176,36 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
         </label>
         <label>Telegram Chat ID
           <input type="text" name="telegram_chat_id" value="<?=e($tgChat)?>" placeholder="@channel или ID">
+        </label>
+      </div>
+
+      <hr>
+      <div class="card-title">Fresh-only мониторинг</div>
+      <div class="grid-3">
+        <label>Окно свежести, дней
+          <input type="number" name="freshness_days" value="<?= (int)$freshnessDays ?>" min="1" max="90">
+        </label>
+        <label>Лимит результатов за скан
+          <input type="number" name="max_results_per_scan" value="<?= (int)$maxResultsPerScan ?>" min="1" max="200">
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="enabled_sources_only" <?=$enabledSourcesOnly?'checked':''?>>
+          <span>Только включённые источники</span>
+        </label>
+      </div>
+      <div class="grid-2">
+        <label class="checkbox-row">
+          <input type="checkbox" name="return_schema_required" <?=$returnSchemaRequired?'checked':''?>>
+          <span>Требовать строгий JSON от модели</span>
+        </label>
+        <div class="hint">SINCE (UTC): <code><?=e($since)?></code></div>
+      </div>
+      <div class="grid-2">
+        <label>Языки (опц.), через запятую
+          <input type="text" name="languages" value="<?=e($languagesCsv)?>" placeholder="ru, uk, en">
+        </label>
+        <label>Регионы (опц.), через запятую
+          <input type="text" name="regions" value="<?=e($regionsCsv)?>" placeholder="UA, RU, EU">
         </label>
       </div>
 

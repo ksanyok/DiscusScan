@@ -1,12 +1,9 @@
 <?php
 /**
- * Scanner v2 — scope-aware and multi-pass
- * - Reads base human prompt from settings ("search_prompt").
- * - Considers scope checkboxes from settings: scope_domains_enabled, scope_telegram_enabled(+telegram_mode), scope_forums_enabled.
- * - Runs ONE OpenAI Responses API call PER ENABLED SCOPE (domains / telegram / forums) using the hosted `web_search` tool.
- * - Each scope has its own system+user prompt tuned for maximal recall and freshness.
- * - Aggregates results locally, canonicalizes & de-dupes, and stores in DB.
- * - Minimal logging: request payload (masked key) + raw OpenAI response per scope, plus relaxed/bump tries.
+ * Scanner — Fresh-only monitoring
+ * - Single OpenAI call using web_search, with strict JSON schema including published_at.
+ * - Prompt-level filtering: paused/enabled hosts, freshness window, seen path fingerprints.
+ * - Saves only valid fresh items; stores published_at (UTC) in DB.
  */
 
 require_once __DIR__ . '/db.php';
@@ -26,7 +23,8 @@ function canonicalize_url(string $url): string {
     if (!$p || empty($p['host'])) return $url;
 
     $scheme = $p['scheme'] ?? 'https';
-    $host   = strtolower($p['host']);
+    $host   = $p['host'] ?? '';
+    $host   = strtolower($host);
     $path   = $p['path'] ?? '/';
     $path   = preg_replace('~//+~', '/', $path);
 
@@ -48,6 +46,46 @@ function canonicalize_url(string $url): string {
 
 function arr_get(array $a, string $k, $d=null){ return $a[$k] ?? $d; }
 
+function compute_since_datetime(array $settings, PDO $pdo): string {
+    $base = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
+        ->sub(new DateInterval('P' . max(1, (int)($settings['freshness_days'] ?? 7)) . 'D'));
+    // Optional: use MAX(published_at) - 60 minutes buffer
+    // $stmt = $pdo->query("SELECT MAX(published_at) AS maxp FROM links");
+    // $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    // if (!empty($row['maxp'])) {
+    //     try { $base = (new DateTimeImmutable($row['maxp'], new DateTimeZone('UTC')))->sub(new DateInterval('PT60M')); } catch (Throwable $e) {}
+    // }
+    return $base->format('Y-m-d\TH:i:s\Z');
+}
+
+function getPausedHosts(PDO $pdo): array {
+    try {
+        $rows = $pdo->query("SELECT host FROM sources WHERE COALESCE(is_paused,0)=1 ORDER BY host LIMIT 400")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        return array_values(array_unique(array_map('normalize_host', $rows)));
+    } catch (Throwable $e) { return []; }
+}
+function getEnabledHosts(PDO $pdo): array {
+    try {
+        $rows = $pdo->query("SELECT host FROM sources WHERE COALESCE(is_enabled,1)=1 AND COALESCE(is_paused,0)=0 ORDER BY host LIMIT 800")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        return array_values(array_unique(array_map('normalize_host', $rows)));
+    } catch (Throwable $e) { return []; }
+}
+function getSeenPathFingerprints(PDO $pdo, int $limit = 300): array {
+    try {
+        $st = $pdo->prepare("SELECT url FROM links ORDER BY id DESC LIMIT :lim");
+        $st->bindValue(':lim', max(1, $limit), PDO::PARAM_INT);
+        $st->execute();
+        $paths = [];
+        while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
+            $u = (string)$row['url'];
+            $p = parse_url($u, PHP_URL_PATH) ?? '/';
+            if ($p === '') $p = '/';
+            $paths[$p] = 1;
+        }
+        return array_values(array_keys($paths));
+    } catch (Throwable $e) { return []; }
+}
+
 // ----------------------- Access guards -----------------------
 $isCli = php_sapi_name() === 'cli';
 if (!$isCli) {
@@ -63,51 +101,56 @@ if (!$isCli) {
     }
 }
 
+// Mark manual runs to bypass the period guard
+$isManual = (!$isCli && isset($_GET['manual']));
+
 // ----------------------- Period guard -----------------------
-$periodMin = (int)get_setting('scan_period_min', 15);
-$lastScanRow = pdo()->query("SELECT finished_at FROM scans ORDER BY id DESC LIMIT 1")->fetchColumn();
-if ($lastScanRow) {
-    $diff = time() - strtotime($lastScanRow);
-    if ($diff < $periodMin * 60) {
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['ok' => true, 'skipped' => true, 'reason' => 'period_guard', 'last_scan_at' => $lastScanRow, 'period_min' => $periodMin], JSON_UNESCAPED_UNICODE);
-        exit;
+if (!$isManual) {
+    $periodMin = (int)get_setting('scan_period_min', 15);
+    $lastScanRow = pdo()->query("SELECT finished_at FROM scans ORDER BY id DESC LIMIT 1")->fetchColumn();
+    if ($lastScanRow) {
+        $diff = time() - strtotime($lastScanRow);
+        if ($diff < $periodMin * 60) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['ok' => true, 'skipped' => true, 'reason' => 'period_guard', 'last_scan_at' => $lastScanRow, 'period_min' => $periodMin], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
     }
 }
 
 // ----------------------- Settings -----------------------
 $apiKey = (string)get_setting('openai_api_key', '');
 $model  = (string)get_setting('openai_model', 'gpt-5-mini');
-$prompt = (string)get_setting('search_prompt', '');
-if ($apiKey === '' || $prompt === '') {
+$basePrompt = (string)get_setting('search_prompt', '');
+if ($apiKey === '' || $basePrompt === '') {
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode(['ok' => false, 'error' => 'Missing OpenAI API key or search prompt'], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-$lastScanAt = (string)get_setting('last_scan_at', '');
+$settings = [
+    'freshness_days' => (int)get_setting('freshness_days', 7),
+    'enabled_sources_only' => (bool)get_setting('enabled_sources_only', true),
+    'max_results_per_scan' => (int)get_setting('max_results_per_scan', 80),
+    'return_schema_required' => (bool)get_setting('return_schema_required', true),
+    'languages' => (array)get_setting('languages', []),
+    'regions' => (array)get_setting('regions', []),
+];
 
-// Scope flags
+// Scope toggles
 $scopeDomains  = (bool)get_setting('scope_domains_enabled', false);
 $scopeTelegram = (bool)get_setting('scope_telegram_enabled', false);
 $scopeForums   = (bool)get_setting('scope_forums_enabled', true);
 $telegramMode  = (string)get_setting('telegram_mode', 'any'); // any|discuss
 
-// Active domains list (for domain scope)
-$activeHosts = [];
-try {
-    $q = pdo()->query("SELECT host FROM sources WHERE is_active=1 ORDER BY host");
-    while ($row = $q->fetch(PDO::FETCH_ASSOC)) {
-        $h = normalize_host((string)$row['host']);
-        if ($h !== '') $activeHosts[] = $h;
-    }
-} catch (Throwable $e) {}
+$sinceIso = compute_since_datetime($settings, pdo());
+$sinceDt = new DateTimeImmutable($sinceIso, new DateTimeZone('UTC'));
 
 // ----------------------- DB: start scan row -----------------------
 $scanId = null;
 try {
     $ins = pdo()->prepare("INSERT INTO scans (started_at, status, model, prompt) VALUES (NOW(), 'started', ?, ?)");
-    $ins->execute([$model, $prompt]);
+    $ins->execute([$model, $basePrompt]);
     $scanId = (int)pdo()->lastInsertId();
 } catch (Throwable $e) {}
 
@@ -119,7 +162,6 @@ $requestUrl = 'https://api.openai.com/v1/responses';
 $requestHeaders = [
     'Content-Type: application/json',
     'Authorization: Bearer ' . $apiKey,
-    'Expect:' // disable 100-continue
 ];
 
 $schema = [
@@ -133,8 +175,10 @@ $schema = [
                     'url' => ['type' => 'string'],
                     'title' => ['type' => 'string'],
                     'domain' => ['type' => 'string'],
+                    'published_at' => ['type' => 'string'],
+                    'why' => ['type' => 'string']
                 ],
-                'required' => ['url','title','domain'],
+                'required' => ['url','title','domain','published_at','why'],
                 'additionalProperties' => false
             ]
         ]
@@ -176,6 +220,37 @@ $appLog = function (string $title, array $kv = [], ?string $body = null) {
     $buf .= str_repeat('-', 80) . "\n";
     @file_put_contents(APP_LOG, $buf, FILE_APPEND);
 };
+
+function extract_json_links_from_chat_completion(string $body): array {
+    $data = json_decode($body, true);
+    if (!is_array($data)) return [];
+    
+    // Standard OpenAI Chat Completions response format
+    if (isset($data['choices'][0]['message']['content'])) {
+        $content = (string)$data['choices'][0]['message']['content'];
+        
+        // Try to parse as JSON directly
+        $json = json_decode($content, true);
+        if (is_array($json) && isset($json['links']) && is_array($json['links'])) {
+            return $json['links'];
+        }
+        
+        // Try to extract JSON from text if wrapped
+        if (preg_match('~\{.*?\}~s', $content, $matches)) {
+            $json = json_decode($matches[0], true);
+            if (is_array($json) && isset($json['links']) && is_array($json['links'])) {
+                return $json['links'];
+            }
+        }
+    }
+    
+    // Fallback: if the response itself contains links array
+    if (isset($data['links']) && is_array($data['links'])) {
+        return $data['links'];
+    }
+    
+    return [];
+}
 
 function extract_json_links_from_responses(string $body): array {
     $data = json_decode($body, true);
@@ -221,332 +296,301 @@ function extract_json_links_from_responses(string $body): array {
     return $json['links'];
 }
 
-function extract_links_from_plain_list(string $body): array {
-    $out = [];
-    $text = trim($body);
-    if ($text === '') return $out;
-    // If it's JSON, skip (handled elsewhere)
-    $first = ltrim($text)[0] ?? '';
-    if ($first === '{' || $first === '[') return $out;
-
-    $lines = preg_split('~\r?\n+~', $text);
-    foreach ($lines as $line) {
-        $line = trim($line);
-        if ($line === '') continue;
-        // Expect format: <url>\t<title>
-        $parts = explode("\t", $line, 2);
-        $url = trim($parts[0] ?? '');
-        if (!preg_match('~^https?://~i', $url)) continue;
-        $title = trim($parts[1] ?? '');
-        $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
-        if ($domain === '') continue;
-        $out[] = ['url' => $url, 'title' => $title, 'domain' => $domain];
-    }
-    return $out;
-}
-
-/**
- * Call OpenAI Responses once with provided sys/user texts.
- * Returns [status,int_links,array links,bool bumped]
- */
+// ----------------------- OpenAI call with retry logic -----------------------
 function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log): array {
     $model = (string)get_setting('openai_model', 'gpt-5-mini');
+    $strictRequired = (bool)get_setting('return_schema_required', true);
 
-    // Base payload: no explicit "reasoning" to avoid burning reasoning tokens.
     $payload = [
         'model' => $model,
-        'max_output_tokens' => $maxTokens,
         'input' => [
-            ['role' => 'system', 'content' => $sys . "\n\nMANDATORY: When finished, output ONLY the JSON that matches the schema (even if empty)."],
-            ['role' => 'user',   'content' => $user],
+            [
+                'role' => 'system',
+                'content' => [ ['type' => 'text', 'text' => $sys] ]
+            ],
+            [
+                'role' => 'user',
+                'content' => [ ['type' => 'text', 'text' => $user] ]
+            ]
         ],
-        'text' => [
-            'format' => [
-                'type' => 'json_schema',
+        'max_output_tokens' => $maxTokens,
+        'temperature' => 0.1,
+        'response_format' => [
+            'type' => 'json_schema',
+            'json_schema' => [
                 'name' => 'monitoring_output',
                 'schema' => $schema,
-                'strict' => true
-            ],
-            'verbosity' => 'low'
-        ],
-        'tools' => [ ['type' => 'web_search'] ],
-        'tool_choice' => 'auto'
+                'strict' => $strictRequired
+            ]
+        ]
     ];
 
-    // --- HTTP (primary) ---
-    $ch = curl_init($requestUrl);
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => $requestHeaders,
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => $timeout,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_HEADER => true
-    ]);
-    $resp = curl_exec($ch);
-    $info  = curl_getinfo($ch);
-    $status = (int)($info['http_code'] ?? 0);
-    $body   = substr((string)$resp, (int)($info['header_size'] ?? 0));
-    curl_close($ch);
-
-    $log("OpenAI REQUEST [{$jobName}]", [ 'url' => $requestUrl, 'model' => $model, 'max_output_tokens' => $maxTokens ], json_encode($payload, JSON_UNESCAPED_UNICODE));
-    $log("OpenAI RESPONSE [{$jobName}]", [ 'status' => $status, 'content_type' => $info['content_type'] ?? null ], (string)$body);
-
-    $bumped = false;
-
-    // If incomplete due to max tokens — bump once
-    $parsed = json_decode((string)$body, true);
-    if ($status === 200 && is_array($parsed)
-        && (arr_get($parsed, 'status') === 'incomplete')
-        && strtolower((string)arr_get($parsed, 'incomplete_details')['reason'] ?? '') === 'max_output_tokens') {
-
-        $payload['max_output_tokens'] = min(8192, max(2048, $maxTokens * 2));
-        $bumped = true;
-
-        $ch2 = curl_init($requestUrl);
-        curl_setopt_array($ch2, [
+    // Retry логика для обработки временных сбоев API
+    $maxRetries = 3;
+    $baseDelay = 1; // seconds
+    
+    for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+        $ch = curl_init($requestUrl);
+        curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => $requestHeaders,
             CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => $timeout,
             CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_HEADER => true
+            CURLOPT_HEADER => true,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_USERAGENT => 'DiscusScan/1.1.13'
         ]);
-        $resp2 = curl_exec($ch2);
-        $info2 = curl_getinfo($ch2);
-        $status2 = (int)($info2['http_code'] ?? 0);
-        $body2   = substr((string)$resp2, (int)($info2['header_size'] ?? 0));
-        curl_close($ch2);
+        
+        $resp = curl_exec($ch);
+        $info = curl_getinfo($ch);
+        $status = (int)($info['http_code'] ?? 0);
+        $body = substr((string)$resp, (int)($info['header_size'] ?? 0));
+        $curlError = curl_error($ch);
+        curl_close($ch);
 
-        $log("OpenAI SECOND TRY [{$jobName}]", [ 'status' => $status2, 'content_type' => $info2['content_type'] ?? null ], (string)$body2);
+        $log("OpenAI REQUEST [{$jobName}] (attempt {$attempt})", [ 
+            'url' => $requestUrl, 
+            'model' => $model, 
+            'max_output_tokens' => $maxTokens 
+        ], json_encode($payload, JSON_UNESCAPED_UNICODE));
+        
+        $log("OpenAI RESPONSE [{$jobName}] (attempt {$attempt})", [ 
+            'status' => $status, 
+            'content_type' => $info['content_type'] ?? null, 
+            'curl_error' => $curlError 
+        ], (string)$body);
 
-        $status = $status2;
-        $body   = $body2;
-    }
+        // Проверяем на временные ошибки (rate limit, server errors)
+        $isRetryable = in_array($status, [429, 500, 502, 503, 504]) || !empty($curlError);
+        
+        if ($status === 200) {
+            // Success - parse response (Responses API)
+            $links = extract_json_links_from_responses((string)$body);
+            
+            // If strict required — do not relax. Otherwise try relaxed schema once.
+            if (empty($links) && !$strictRequired) {
+                $payload['response_format']['json_schema']['strict'] = false;
+                $ch2 = curl_init($requestUrl);
+                curl_setopt_array($ch2, [
+                    CURLOPT_POST => true,
+                    CURLOPT_HTTPHEADER => $requestHeaders,
+                    CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => $timeout,
+                    CURLOPT_CONNECTTIMEOUT => 10,
+                    CURLOPT_HEADER => true,
+                    CURLOPT_SSL_VERIFYPEER => true,
+                    CURLOPT_USERAGENT => 'DiscusScan/1.1.13'
+                ]);
+                $resp2 = curl_exec($ch2);
+                $info2 = curl_getinfo($ch2);
+                $status2 = (int)($info2['http_code'] ?? 0);
+                $body2 = substr((string)$resp2, (int)($info2['header_size'] ?? 0));
+                curl_close($ch2);
 
-    // Try strict/relaxed JSON extraction
-    $links = [];
-    if ($status === 200) {
-        $links = extract_json_links_from_responses((string)$body);
-        if (empty($links)) {
-            // RELAX schema and retry once
-            $payload['text']['format']['strict'] = false;
-            $ch3 = curl_init($requestUrl);
-            curl_setopt_array($ch3, [
-                CURLOPT_POST => true,
-                CURLOPT_HTTPHEADER => $requestHeaders,
-                CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => $timeout,
-                CURLOPT_CONNECTTIMEOUT => 10,
-                CURLOPT_HEADER => true
+                $log("OpenAI RELAXED RESPONSE [{$jobName}]", [ 
+                    'status' => $status2, 
+                    'content_type' => $info2['content_type'] ?? null 
+                ], (string)$body2);
+                
+                if ($status2 === 200) {
+                    $links = extract_json_links_from_responses((string)$body2);
+                }
+            }
+            
+            return [$status, count($links), $links];
+        }
+        
+        if (!$isRetryable || $attempt === $maxRetries) {
+            // Не ретраимся или это последняя попытка
+            $log("OpenAI ERROR [{$jobName}] - Final attempt", [
+                'status' => $status,
+                'curl_error' => $curlError,
+                'attempt' => $attempt
             ]);
-            $resp3 = curl_exec($ch3);
-            $info3 = curl_getinfo($ch3);
-            $status3 = (int)($info3['http_code'] ?? 0);
-            $body3   = substr((string)$resp3, (int)($info3['header_size'] ?? 0));
-            curl_close($ch3);
-
-            $log("OpenAI RELAXED RESPONSE [{$jobName}]", [ 'status' => $status3, 'content_type' => $info3['content_type'] ?? null ], (string)$body3);
-
-            if ($status3 === 200) {
-                $links = extract_json_links_from_responses((string)$body3);
-                $body = $body3;
-            }
+            return [$status, 0, []];
         }
-    }
-
-    // FINAL FALLBACK: ask for newline-separated "<url>\t<title>" and parse locally
-    if (empty($links)) {
-        $fallbackPayload = [
-            'model' => $model,
-            'max_output_tokens' => $maxTokens,
-            'input' => [
-                ['role' => 'system', 'content' =>
-                    $sys
-                    . "\n\nFALLBACK MODE:\nReturn ONLY newline-separated lines in the format: <url>\\t<title>.\nNo prose, no JSON, no bullets. If nothing found, return an empty output."],
-                ['role' => 'user', 'content' => $user . "\nReturn ONLY the list as specified."]
-            ],
-            'tools' => [ ['type' => 'web_search'] ],
-            'tool_choice' => 'auto'
-        ];
-
-        $ch4 = curl_init($requestUrl);
-        curl_setopt_array($ch4, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => $requestHeaders,
-            CURLOPT_POSTFIELDS => json_encode($fallbackPayload, JSON_UNESCAPED_UNICODE),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => $timeout,
-            CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_HEADER => true
+        
+        // Экспоненциальная задержка перед повторной попыткой
+        $delay = $baseDelay * pow(2, $attempt - 1);
+        sleep($delay);
+        
+        $log("OpenAI RETRY [{$jobName}]", [
+            'status' => $status,
+            'attempt' => $attempt,
+            'next_delay' => $delay * 2
         ]);
-        $resp4 = curl_exec($ch4);
-        $info4 = curl_getinfo($ch4);
-        $status4 = (int)($info4['http_code'] ?? 0);
-        $body4   = substr((string)$resp4, (int)($info4['header_size'] ?? 0));
-        curl_close($ch4);
-
-        $log("OpenAI FALLBACK URLS [{$jobName}]", [ 'status' => $status4, 'content_type' => $info4['content_type'] ?? null ], (string)$body4);
-
-        if ($status4 === 200) {
-            $fallbackLinks = extract_links_from_plain_list((string)$body4);
-            if (!empty($fallbackLinks)) {
-                $links = $fallbackLinks;
-                $status = $status4;
-            }
-        }
     }
 
-    return [$status, count($links), $links, $bumped];
+    return [$status, 0, []];
 }
 
-// ----------------------- Build jobs per scope -----------------------
+// ----------------------- Prompt assembly -----------------------
+$pausedHosts = array_slice(getPausedHosts(pdo()), 0, 150);
+$enabledHostsAll = getEnabledHosts(pdo());
+$enabledHosts = $settings['enabled_sources_only'] ? array_slice($enabledHostsAll, 0, 300) : [];
+$seenPaths = array_slice(getSeenPathFingerprints(pdo(), 400), 0, 400);
+$maxResults = max(1, min(200, (int)$settings['max_results_per_scan'])) ;
+
+$langsTxt = '';
+if (!empty($settings['languages'])) {
+    $langsTxt = 'Languages: ' . implode(', ', $settings['languages']) . '.';
+}
+$regionsTxt = '';
+if (!empty($settings['regions'])) {
+    $regionsTxt = 'Regions: ' . implode(', ', $settings['regions']) . '.';
+}
+
+$sysCommon = <<<SYS
+You are a web monitor. Return STRICT JSON ONLY with this exact schema:
+{
+  "links": [
+    {
+      "url": "string (absolute URL)",
+      "title": "string",
+      "domain": "string (registrable domain, e.g., example.com)",
+      "published_at": "YYYY-MM-DDTHH:MM:SSZ (UTC, publication or last-activity time)",
+      "why": "one-sentence reason"
+    }
+  ]
+}
+
+HARD RULES:
+- Include ONLY real discussion pages: forums, threads, Q&A, support/community topics, GitHub Issues/Discussions, StackOverflow/StackExchange, vendor communities.
+- Exclude marketing/home pages and docs without comments.
+- Exclude ANY paused/blocked sources (see PAUSED_HOSTS).
+- Include ONLY items STRICTLY NEWER than SINCE_DATETIME.
+- If you cannot extract a reliable publication/last-activity datetime, DO NOT include the item.
+- Exclude duplicates and anything already seen (see SEEN_URL_FINGERPRINTS as path patterns).
+- Return at most MAX_RESULTS items.
+- Output must be valid JSON and nothing else.
+SYS;
+
 $jobs = [];
-$nowPref = ($lastScanAt !== '')
-    ? "Prefer pages created or updated AFTER {$lastScanAt} UTC; otherwise last 12 months."
-    : "Prefer results from the last 30 days; if none, include older (up to 12 months).";
+$enabledScopeCount = (int)$scopeDomains + (int)$scopeTelegram + (int)$scopeForums;
+if ($enabledScopeCount === 0) { $scopeForums = true; $enabledScopeCount = 1; }
+$perScopeMax = max(1, (int)ceil($maxResults / $enabledScopeCount));
 
 // DOMAINS SCOPE
-if ($scopeDomains && !empty($activeHosts)) {
-    $hostList = implode(', ', array_slice($activeHosts, 0, 300));
-
-    $sys = "You are a web monitoring agent focused on a FIXED set of domains.\n"
-         . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
-         . $nowPref . "\n"
-         . "Only include results whose host is in this allowlist: " . $hostList . ".\n"
-         . "EXCLUDE Telegram and social networks entirely (do not include t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com). Do not query them.\n"
-         . "Use the web_search tool with diverse queries in Russian and English; aggressively use site:&lt;host&gt; operators.\n"
-         . "Return canonical content URLs (not homepages). Return 10–100 unique URLs.\n"
-         . "At the end, output ONLY the JSON per schema.";
-
-    $user = "Targets:\n{$prompt}\n"
-          . "Constraints:\n"
-          . "- Allowed hosts only (active sources).\n"
-          . "- Exclude any social/Telegram domains.\n"
-          . "- Unique URLs.\n"
-          . "- Prefer threads/discussions/comments/support pages if available; otherwise any page that genuinely mentions the targets.\n"
-          . "Output fields: url, title, domain.";
-
+if ($scopeDomains && !empty($enabledHosts)) {
+    $sys = $sysCommon . "\nAdditional rules for this scope:\n- Include ONLY hosts in ENABLED_HOSTS.\n- Do NOT include or query Telegram or social networks.\n";
+    $user = "TASK:\nFind NEW or updated discussion pages strictly newer than SINCE_DATETIME = {$sinceIso}.\nCONTEXT:\nPAUSED_HOSTS = "
+          . json_encode($pausedHosts, JSON_UNESCAPED_UNICODE)
+          . "\nENABLED_HOSTS = " . json_encode($enabledHosts, JSON_UNESCAPED_UNICODE)
+          . "\nSEEN_URL_FINGERPRINTS = " . json_encode($seenPaths, JSON_UNESCAPED_UNICODE)
+          . "\n\nFocus on forums/Q&A/support/community subpaths of these hosts.\n{$langsTxt}\n{$regionsTxt}\nMAX_RESULTS = {$perScopeMax}\n\nTargets:\n" . $basePrompt;
     $jobs[] = ['name' => 'domains', 'sys' => $sys, 'user' => $user];
 }
 
 // TELEGRAM SCOPE
 if ($scopeTelegram) {
     $modeLine = ($telegramMode === 'discuss')
-        ? "Include only Telegram groups/channels that allow replies or comments; prefer URLs like t.me/c/&lt;id&gt;/&lt;msg&gt; or t.me/&lt;name&gt;/&lt;post&gt;. Avoid bare channel homepages without a post id."
-        : "Include Telegram post URLs on t.me (with message ids). Avoid bare channel homepages without a post id.";
-
-    $sys = "You are a web monitoring agent focused ONLY on Telegram posts on t.me.\n"
-         . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
-         . $nowPref . "\n"
-         . "Search via site:t.me queries (channels and groups). Do NOT include or query any other domains.\n"
-         . $modeLine . "\n"
-         . "Return 10–100 unique post URLs.\n"
-         . "At the end, output ONLY the JSON per schema.";
-
-    $user = "Targets:\n{$prompt}\n"
-          . "Constraints:\n- Domain MUST be t.me\n- Unique canonical post URLs only\n- Output fields: url, title, domain.";
-
+        ? "Prefer posts that allow replies/comments; avoid bare channel homepages."
+        : "Include Telegram post URLs with message IDs; avoid bare channel homepages.";
+    $sys = $sysCommon . "\nAdditional rules for this scope:\n- Include ONLY t.me (Telegram) posts.\n- {$modeLine}\n- Do NOT include any other domains.\n";
+    $user = "TASK:\nFind NEW Telegram posts strictly newer than SINCE_DATETIME = {$sinceIso}.\nCONTEXT:\nPAUSED_HOSTS = "
+          . json_encode($pausedHosts, JSON_UNESCAPED_UNICODE)
+          . "\nSEEN_URL_FINGERPRINTS = " . json_encode($seenPaths, JSON_UNESCAPED_UNICODE)
+          . "\n\nDomain MUST be t.me.\n{$langsTxt}\n{$regionsTxt}\nMAX_RESULTS = {$perScopeMax}\n\nTargets:\n" . $basePrompt;
     $jobs[] = ['name' => 'telegram', 'sys' => $sys, 'user' => $user];
 }
 
 // FORUMS SCOPE
 if ($scopeForums) {
-    $sys = "You are a web monitoring agent focused ONLY on forums and discussion platforms (not social networks).\n"
-         . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
-         . $nowPref . "\n"
-         . "Include only real discussions: URL patterns like /forum, /forums, /topic, /thread, /discussion, /comments, /support, /r/, question pages on Stack Overflow/StackExchange, GitHub Issues/Discussions, and product community portals.\n"
-         . "EXCLUDE Telegram and social networks entirely (do not include or query t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com). Never use site:t.me in this scope.\n"
-         . "Avoid homepages, marketing/landing pages, pricing, docs, blogs.\n"
-         . "Use at least 12–16 diverse queries in RU and EN, combining target keywords with operators (forum, topic, thread, discussion, support, comments, reddit, stackoverflow, review).\n"
-         . "Return 10–100 unique discussion URLs.\n"
-         . "At the end, output ONLY the JSON per schema.";
-
-    $user = "Targets:\n{$prompt}\nOutput fields: url, title, domain. Unique URLs only.";
-
+    $sys = $sysCommon . "\nAdditional rules for this scope:\n- Include only real discussions (forum/thread/topic/discussion/comments/support/issue).\n- EXCLUDE Telegram and social networks entirely (do not include or query t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com).\n";
+    $user = "TASK:\nFind NEW or updated discussions strictly newer than SINCE_DATETIME = {$sinceIso}.\nCONTEXT:\nPAUSED_HOSTS = "
+          . json_encode($pausedHosts, JSON_UNESCAPED_UNICODE)
+          . "\nSEEN_URL_FINGERPRINTS = " . json_encode($seenPaths, JSON_UNESCAPED_UNICODE)
+          . "\n\nFocus on forums / Q&A / support communities / GitHub Issues / StackOverflow.\n{$langsTxt}\n{$regionsTxt}\nMAX_RESULTS = {$perScopeMax}\n\nTargets:\n" . $basePrompt;
     $jobs[] = ['name' => 'forums', 'sys' => $sys, 'user' => $user];
 }
 
-// FALLBACK generic job if user disabled everything accidentally
-if (empty($jobs)) {
-    $sys = "You are a web monitoring agent. Use the web_search tool to find RECENT web pages that mention the targets described by the user.\n"
-         . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
-         . $nowPref . "\n"
-         . "Search broadly across the web (forums, social, blogs, news, Q&A, Telegram, Reddit, support portals).\n"
-         . "Return 10–100 unique URLs.";
-    $user = "Task:\n{$prompt}\nOutput format:\n- JSON with fields: url, title, domain for each mention.\n- Only unique URLs (no duplicates).";
-    $jobs[] = ['name' => 'generic', 'sys' => $sys, 'user' => $user];
-}
-
-// ----------------------- Execute jobs & aggregate -----------------------
-$allLinks = [];
-$bumpedAny = false;
+// Execute all jobs and aggregate
+$allReturned = [];
 $jobStats = [];
-
-foreach ($jobs as $job) {
-    [$status, $cnt, $links, $bumped] = run_openai_job(
-        $job['name'], $job['sys'], $job['user'],
-        $requestUrl, $requestHeaders, $schema,
-        $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog
-    );
-    $bumpedAny = $bumpedAny || $bumped;
-    $jobStats[$job['name']] = ['status' => $status, 'count' => $cnt];
-
-    foreach ($links as $it) { $allLinks[] = $it; }
+foreach ($jobs as $jb) {
+    [$st, $c, $lnks] = run_openai_job($jb['name'], $jb['sys'], $jb['user'], $requestUrl, $requestHeaders, $schema, $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog);
+    $jobStats[] = ['scope' => $jb['name'], 'status' => $st, 'returned' => $c];
+    foreach ((array)$lnks as $x) { $allReturned[] = $x; }
 }
+$totalReturned = array_sum(array_map(fn($j)=> (int)$j['returned'], $jobStats));
+$lastStatus = $jobStats ? end($jobStats)['status'] : 0;
+// replace returnedLinks for downstream pipeline
+$returnedLinks = $allReturned;
 
-// ----------------------- Local post-processing -----------------------
-$seen = [];
-$links = [];
-foreach ($allLinks as $it) {
-    $url = canonicalize_url(arr_get($it, 'url', ''));
-    if ($url === '') continue;
+// ----------------------- Parse, validate, filter -----------------------
+$valid = [];
+$pausedSet = array_flip($pausedHosts);
+$enabledSet = array_flip($enabledHostsAll);
+$seenPathSet = array_flip($seenPaths);
 
-    $domain = normalize_host(arr_get($it, 'domain', ''));
-    if ($domain === '') {
-        $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
-    }
+foreach ((array)$returnedLinks as $item) {
+    $url = canonicalize_url((string)arr_get($item, 'url', ''));
+    $title = trim((string)arr_get($item, 'title', ''));
+    $domain = normalize_host((string)arr_get($item, 'domain', ''));
+    $pub = trim((string)arr_get($item, 'published_at', ''));
+
+    if ($url === '' || $title === '' || $domain === '' || $pub === '') continue;
+    // Extract from URL if domain missing or mismatch
+    if ($domain === '') { $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: ''); }
     if ($domain === '') continue;
 
-    if (isset($seen[$url])) continue;
-    $seen[$url] = 1;
+    // Date parse and filter
+    try {
+        $pubDt = new DateTimeImmutable($pub, new DateTimeZone('UTC'));
+    } catch (Throwable $e) { continue; }
+    if ($pubDt < $sinceDt) continue;
 
-    $title = trim((string)arr_get($it, 'title', ''));
-    $links[] = ['url' => $url, 'title' => $title, 'domain' => $domain];
+    // Host filters
+    if (isset($pausedSet[$domain])) continue;
+    if ($settings['enabled_sources_only'] && !isset($enabledSet[$domain])) continue;
+
+    // Seen path dedupe
+    $path = parse_url($url, PHP_URL_PATH) ?? '/';
+    if (isset($seenPathSet[$path])) continue;
+
+    $valid[] = [
+        'url' => $url,
+        'title' => $title,
+        'domain' => $domain,
+        'published_at' => $pubDt->format('Y-m-d H:i:s'), // store as SQL UTC
+        'why' => (string)arr_get($item, 'why', '')
+    ];
+    if (count($valid) >= $maxResults) break;
 }
 
 // ----------------------- Save results -----------------------
 $found = 0; $new = 0;
-foreach ($links as $it) {
+foreach ($valid as $it) {
     $url = $it['url'];
     $title = $it['title'];
     $domain = $it['domain'];
+    $publishedAtSql = $it['published_at'];
 
-    // Ensure source exists (we honor is_active only on search time; saving is always allowed)
+    // Ensure source exists
     $stmt = pdo()->prepare("SELECT id FROM sources WHERE host=? LIMIT 1");
     $stmt->execute([$domain]);
     $srcId = $stmt->fetchColumn();
     if (!$srcId) {
-        $ins = pdo()->prepare("INSERT INTO sources (host, url, is_active, note) VALUES (?,?,1,'discovered')");
+        $ins = pdo()->prepare("INSERT INTO sources (host, url, is_active, is_enabled, is_paused, note) VALUES (?,?,1,1,0,'discovered')");
         $ins->execute([$domain, 'https://' . $domain]);
         $srcId = (int)pdo()->lastInsertId();
     }
 
     // Upsert link
     $found++;
-    $q = pdo()->prepare("SELECT id, times_seen FROM links WHERE url=? LIMIT 1");
+    $q = pdo()->prepare("SELECT id, times_seen, published_at FROM links WHERE url=? LIMIT 1");
     $q->execute([$url]);
     $row = $q->fetch();
     if ($row) {
         $times = (int)$row['times_seen'] + 1;
-        $u = pdo()->prepare("UPDATE links SET title=?, last_seen=NOW(), times_seen=? WHERE id=?");
-        $u->execute([$title, $times, $row['id']]);
+        $u = pdo()->prepare("UPDATE links SET title=?, last_seen=NOW(), times_seen=?, published_at=COALESCE(published_at, ?) WHERE id=?");
+        $u->execute([$title, $times, $publishedAtSql, $row['id']]);
     } else {
-        $ins = pdo()->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status) VALUES (?,?,?,NOW(),NOW(),1,'new')");
-        $ins->execute([$srcId, $url, $title]);
+        $ins = pdo()->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status, published_at) VALUES (?,?,?,NOW(),NOW(),1,'new',?)");
+        $ins->execute([$srcId, $url, $title, $publishedAtSql]);
         $new++;
     }
 }
@@ -565,10 +609,10 @@ if ($tgToken !== '' && $tgChat !== '') {
     $lines = [];
     $lines[] = "🔎 Сканирование завершено";
     $lines[] = "Модель: {$model}";
-    foreach ($jobStats as $name => $st) {
-        $lines[] = "— {$name}: статус {$st['status']}, найдено примерно {$st['count']}";
-    }
-    $lines[] = "Итого ссылок: {$found}";
+    $lines[] = "SINCE (UTC): {$sinceIso}";
+    $lines[] = "Скоупы: " . implode(', ', array_map(fn($j)=> $j['scope'] . "=" . $j['returned'], $jobStats));
+    $lines[] = "Всего возвращено: {$totalReturned}";
+    $lines[] = "Итого валидных ссылок: {$found}";
     $lines[] = "Новых: {$new}";
     $lines[] = "Время: " . date('Y-m-d H:i');
 
@@ -592,6 +636,8 @@ echo json_encode([
     'scan_id' => $scanId,
     'found' => $found,
     'new' => $new,
-    'bumped_any' => $bumpedAny,
+    'since' => $sinceIso,
+    'total_returned' => $totalReturned,
     'job_stats' => $jobStats,
+    'status' => $lastStatus
 ], JSON_UNESCAPED_UNICODE);

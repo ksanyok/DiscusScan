@@ -25,7 +25,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_s
 /// Переключение активности источника (с учётом возврата на нужный экран)
 if (isset($_GET['toggle']) && ctype_digit($_GET['toggle'])) {
     $id = (int)$_GET['toggle'];
-    pdo()->exec("UPDATE sources SET is_active = 1 - is_active WHERE id = {$id}");
+    // Switch to new pause flag instead of legacy is_active
+    pdo()->exec("UPDATE sources SET is_paused = 1 - COALESCE(is_paused,0) WHERE id = {$id}");
     $ret = $_GET['return'] ?? '';
     if ($ret === 'domains') {
         header('Location: index.php?view=domains&source=' . $id);
@@ -37,7 +38,7 @@ if (isset($_GET['toggle']) && ctype_digit($_GET['toggle'])) {
 
 // Базовые данные для дашборда
 $lastScan = pdo()->query("SELECT * FROM scans ORDER BY id DESC LIMIT 1")->fetch() ?: null;
-$totalSites = (int)pdo()->query("SELECT COUNT(*) FROM sources WHERE is_active=1")->fetchColumn();
+$totalSites = (int)pdo()->query("SELECT COUNT(*) FROM sources WHERE COALESCE(is_enabled,1)=1 AND COALESCE(is_paused,0)=0")->fetchColumn();
 $totalLinks = (int)pdo()->query("SELECT COUNT(*) FROM links")->fetchColumn();
 $lastFound = $lastScan ? (int)$lastScan['found_links'] : 0;
 $lastScanAt = $lastScan && $lastScan['finished_at'] ? date('Y-m-d H:i', strtotime($lastScan['finished_at'])) : '—';
@@ -66,7 +67,7 @@ $domains = pdo()->query("
 $recentLinks = pdo()->query("
     SELECT l.*, s.host FROM links l 
     JOIN sources s ON s.id=l.source_id
-    ORDER BY (l.last_seen IS NULL) ASC, l.last_seen DESC, (l.first_found IS NULL) ASC, l.first_found DESC
+    ORDER BY COALESCE(l.published_at, l.last_seen, l.first_found) DESC
     LIMIT 20
 ")->fetchAll();
 
@@ -75,6 +76,21 @@ $cronSecret = (string)get_setting('cron_secret', '');
 $cronUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://')
          . ($_SERVER['HTTP_HOST'] ?? 'localhost')
          . dirname($_SERVER['SCRIPT_NAME']) . '/scan.php?secret=' . urlencode($cronSecret);
+
+// Fresh-only controls
+$freshnessDays      = (int)get_setting('freshness_days', 7);
+$enabledOnly        = (bool)get_setting('enabled_sources_only', true);
+$maxPerScan         = (int)get_setting('max_results_per_scan', 80);
+try {
+    $sinceIso = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
+        ->sub(new DateInterval('P' . max(1, $freshnessDays) . 'D'))
+        ->format('Y-m-d\TH:i:s\Z');
+} catch (Throwable $e) { $sinceIso = ''; }
+
+// Preview lists
+$pausedHosts = pdo()->query("SELECT host FROM sources WHERE COALESCE(is_paused,0)=1 ORDER BY host")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+$enabledHosts = pdo()->query("SELECT host FROM sources WHERE COALESCE(is_enabled,1)=1 AND COALESCE(is_paused,0)=0 ORDER BY host")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+$previewEnabled = $enabledOnly ? array_slice($enabledHosts, 0, 300) : [];
 ?>
 <!doctype html>
 <html lang="ru">
@@ -110,6 +126,43 @@ $cronUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://'
   <section class="actions">
     <a class="btn primary" href="scan.php?manual=1" target="_blank" rel="noopener">🚀 Запустить сканирование</a>
     <div class="hint">Периодичность (guard): каждые <?=$period?> мин. Для CRON: <code><?=e($cronUrl)?></code></div>
+  </section>
+
+  <section class="card glass" id="fresh-controls">
+    <div class="card-title">Fresh-only: окно и источники</div>
+    <div class="grid-3">
+      <div>
+        <div class="muted">Окно свежести (дней)</div>
+        <div class="metric"><?= (int)$freshnessDays ?></div>
+      </div>
+      <div>
+        <div class="muted">MAX результатов за скан</div>
+        <div class="metric"><?= (int)$maxPerScan ?></div>
+      </div>
+      <div>
+        <div class="muted">Только включённые источники</div>
+        <div class="metric"><?= $enabledOnly ? 'Да' : 'Нет' ?></div>
+      </div>
+    </div>
+    <div class="hint">SINCE (UTC): <code><?=e($sinceIso)?></code></div>
+
+    <details class="accordion" style="margin-top:10px">
+      <summary class="card-title">Предпросмотр: какие источники пойдут в промт</summary>
+      <div class="content">
+        <div class="stack compact">
+          <div><b>Paused hosts</b> (исключаются):
+            <code><?=e(json_encode(array_slice($pausedHosts, 0, 200), JSON_UNESCAPED_UNICODE))?></code>
+          </div>
+          <?php if ($enabledOnly): ?>
+          <div><b>Enabled hosts</b> (включаются):
+            <code><?=e(json_encode($previewEnabled, JSON_UNESCAPED_UNICODE))?></code>
+          </div>
+          <?php else: ?>
+          <div class="muted">enabled_sources_only=false — включены все, кроме paused.</div>
+          <?php endif; ?>
+        </div>
+      </div>
+    </details>
   </section>
 
   <section class="card glass" id="top-domains">
@@ -153,15 +206,15 @@ $cronUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://'
               <tr>
                 <td><?=e($s['host'])?></td>
                 <td class="ellipsis"><a href="<?=e($s['url'])?>" target="_blank" rel="noopener"><?=e($s['url'])?></a></td>
-                <td><?= $s['is_active'] ? '✅' : '⛔' ?></td>
+                <td><?= !empty($s['is_enabled']) && empty($s['is_paused']) ? '✅' : '⛔' ?></td>
                 <td><span class="pill"><?= (int)$s['links_count'] ?></span></td>
-                <td><a class="btn small" href="?toggle=<?=$s['id']?>"><?= $s['is_active'] ? 'Пауза' : 'Вкл.' ?></a></td>
+                <td><a class="btn small" href="?toggle=<?=$s['id']?>"><?= !empty($s['is_paused']) ? 'Снять паузу' : 'Пауза' ?></a></td>
               </tr>
             <?php endforeach; ?>
             </tbody>
           </table>
         </div>
-        <div class="muted" style="margin-top:8px">«Пауза» — временно исключает домен из сканирования. Текущие ссылки остаются в базе, новые с этого домена не добавляются.</div>
+        <div class="muted" style="margin-top:8px">«Пауза» — временно исключает домен из сканирования. Новые поля: Enabled/Pause на странице «Домены».</div>
       </div>
     </details>
 
@@ -193,6 +246,7 @@ $cronUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://'
               <td><a class="cut" href="<?=e($l['url'])?>" target="_blank" rel="noopener"><?=e($l['url'])?></a></td>
               <td>
                 <div class="dates">
+                  <?= $l['published_at'] ? 'Опубл.: ' . date('d.m H:i', strtotime($l['published_at'])) . '<br>' : '' ?>
                   <?= $l['last_seen'] ? 'Обн.: ' . date('d.m H:i', strtotime($l['last_seen'])) : 'Обн.: —' ?><br>
                   <?= $l['first_found'] ? 'Найд.: ' . date('d.m H:i', strtotime($l['first_found'])) : 'Найд.: —' ?>
                 </div>
