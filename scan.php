@@ -393,6 +393,8 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     $model = (string)get_setting('openai_model', 'gpt-5-mini');
     $strictRequired = (bool)get_setting('return_schema_required', true);
     $enableWeb = (bool)get_setting('openai_enable_web_search', false);
+    $temperature = (float)get_setting('openai_temperature', 0.2);
+    $reasonEffort = (string)get_setting('openai_reasoning_effort', 'low'); // low|medium|high
 
     $payload = [
         'model' => $model,
@@ -407,6 +409,8 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             ]
         ],
         'max_output_tokens' => $maxTokens,
+        'temperature' => $temperature,
+        'reasoning' => [ 'effort' => $reasonEffort ],
         'text' => [
             'format' => [
                 'type' => 'json_schema',
@@ -727,9 +731,25 @@ if ($DISCOVERY_ENABLED) {
     $langsTxt = $settings['languages'] ? implode(', ', $settings['languages']) : 'any';
     $regsTxt  = $settings['regions'] ? implode(', ', $settings['regions']) : 'any';
     $user = "TOPIC: {$basePromptShort}\nLANGUAGES: {$langsTxt}\nREGIONS: {$regsTxt}\nN: {$DISCOVERY_N}\nEXCLUDED_DOMAINS: " . json_encode($excluded, JSON_UNESCAPED_UNICODE) . "\nReturn valid JSON strictly matching the schema. No explanations.";
-    [$st, $_c, $_, $raw] = run_openai_job('discovery', DISCOVERY_SYSTEM_PROMPT, $user, $requestUrl, $requestHeaders, $discoverySchema, 1024, $OPENAI_HTTP_TIMEOUT, $appLog);
+
+    // Dynamic token budget: avg ~180 tokens per item + overhead
+    $avgItemTokens = max(120, (int)get_setting('discovery_avg_item_tokens', 180));
+    $overhead = 256;
+    $desired = $DISCOVERY_N * $avgItemTokens + $overhead;
+    $globalCap = max(1024, (int)get_setting('openai_max_output_tokens', 4096));
+    $discoveryMaxTokens = min(8192, max(1024, $desired, $globalCap));
+
+    [$st, $_c, $_, $raw] = run_openai_job('discovery', DISCOVERY_SYSTEM_PROMPT, $user, $requestUrl, $requestHeaders, $discoverySchema, $discoveryMaxTokens, $OPENAI_HTTP_TIMEOUT, $appLog);
     if ($st === 200 && $raw) {
         $srcs = extract_json_sources_from_responses($raw);
+        if (!$srcs) {
+            try {
+                $j = json_decode($raw, true);
+                $statusTxt = $j['status'] ?? null;
+                $incompleteReason = $j['incomplete_details']['reason'] ?? null;
+                app_log('warning', 'discovery', 'No sources parsed from response', [ 'status' => $statusTxt, 'incomplete_reason' => $incompleteReason, 'n' => $DISCOVERY_N, 'max_output_tokens' => $discoveryMaxTokens ]);
+            } catch (Throwable $e) {}
+        }
         foreach ($srcs as $s) {
             $domain = normalize_host((string)arr_get($s, 'domain', ''));
             $proof = (string)arr_get($s, 'proof_url', '');
