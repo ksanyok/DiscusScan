@@ -178,6 +178,27 @@ function install_schema(PDO $pdo): void {
     // sources.is_enabled, sources.is_paused
     ensure_column_exists($pdo, 'sources', 'is_enabled', "`is_enabled` TINYINT(1) NOT NULL DEFAULT 1 AFTER `is_active`");
     ensure_column_exists($pdo, 'sources', 'is_paused',  "`is_paused`  TINYINT(1) NOT NULL DEFAULT 0 AFTER `is_enabled`");
+
+    // NEW: sources.platform + sources.discovered_via
+    ensure_column_exists($pdo, 'sources', 'platform', "`platform` ENUM('discourse','phpbb','vbulletin','ips','vanilla','flarum','wp-forum','github','stackexchange','unknown') NULL AFTER `url`");
+    ensure_column_exists($pdo, 'sources', 'discovered_via', "`discovered_via` VARCHAR(64) NULL AFTER `platform`");
+
+    // NEW: discovered_sources table
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS discovered_sources (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            domain VARCHAR(255) NOT NULL,
+            proof_url TEXT NOT NULL,
+            platform_guess VARCHAR(32) NOT NULL,
+            reason TEXT NOT NULL,
+            activity_hint VARCHAR(255) NOT NULL,
+            score TINYINT DEFAULT 0,
+            status ENUM('new','verified','rejected','failed') DEFAULT 'new',
+            first_seen_at DATETIME NOT NULL,
+            last_checked_at DATETIME NULL,
+            UNIQUE KEY uniq_discovered_domain (domain)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    ");
 }
 
 // --- НАСТРОЙКИ ---
@@ -227,7 +248,14 @@ function ensure_defaults(PDO $pdo): void {
         'scope_domains_enabled' => false,
         'scope_telegram_enabled' => false,
         'scope_forums_enabled' => true,
-        'telegram_mode' => 'any'
+        'telegram_mode' => 'any',
+        // NEW DISCOVERY/HTTP defaults
+        'openai_enable_web_search' => false,
+        'discovery_daily_candidates' => 20,
+        'discovery_enabled' => true,
+        'verify_freshness_days_for_new_domain' => 90,
+        'http_timeout_sec' => 20,
+        'max_parallel_http' => 12,
     ];
     $sel = $pdo->prepare("SELECT svalue FROM settings WHERE skey = ?");
     $ins = $pdo->prepare("INSERT INTO settings (skey, svalue) VALUES (?, ?) ON DUPLICATE KEY UPDATE svalue = VALUES(svalue)");
@@ -339,4 +367,44 @@ function e(string $s): string {
 function host_from_url(string $url): string {
     $h = parse_url($url, PHP_URL_HOST) ?: '';
     return strtolower(preg_replace('~^www\.~i', '', $h));
+}
+
+// --- DISCOVERY HELPERS ---
+function db_upsert_discovered(array $row): void {
+    // $row: domain, proof_url, platform_guess, reason, activity_hint, score?, status?
+    $domain = strtolower(trim($row['domain'] ?? ''));
+    if ($domain === '') return;
+    $proof = (string)($row['proof_url'] ?? '');
+    $plat  = (string)($row['platform_guess'] ?? 'unknown');
+    $reason= (string)($row['reason'] ?? '');
+    $hint  = (string)($row['activity_hint'] ?? '');
+    $score = (int)($row['score'] ?? 0);
+    $status= (string)($row['status'] ?? 'new');
+    $sql = "INSERT INTO discovered_sources (domain, proof_url, platform_guess, reason, activity_hint, score, status, first_seen_at, last_checked_at)
+            VALUES (?,?,?,?,?,?,?,NOW(),NULL)
+            ON DUPLICATE KEY UPDATE 
+                proof_url=VALUES(proof_url), platform_guess=VALUES(platform_guess), reason=VALUES(reason), activity_hint=VALUES(activity_hint),
+                last_checked_at=VALUES(last_checked_at)";
+    $st = pdo()->prepare($sql);
+    $st->execute([$domain, $proof, $plat, $reason, $hint, $score, $status]);
+}
+
+function db_mark_discovered_status(string $domain, string $status, int $score = 0): void {
+    $domain = strtolower(trim($domain));
+    if ($domain === '') return;
+    $st = pdo()->prepare("UPDATE discovered_sources SET status=?, score=?, last_checked_at=NOW() WHERE domain=?");
+    $st->execute([$status, $score, $domain]);
+}
+
+function db_sources_existing_domains(): array {
+    $domains = [];
+    try {
+        $rows = pdo()->query("SELECT host FROM sources")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        foreach ($rows as $h) { $h = strtolower(preg_replace('~^www\\.~i', '', trim($h))); if ($h) $domains[$h] = true; }
+    } catch (Throwable $e) {}
+    try {
+        $rows2 = pdo()->query("SELECT domain FROM discovered_sources")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        foreach ($rows2 as $h) { $h = strtolower(preg_replace('~^www\\.~i', '', trim($h))); if ($h) $domains[$h] = true; }
+    } catch (Throwable $e) {}
+    return array_keys($domains);
 }

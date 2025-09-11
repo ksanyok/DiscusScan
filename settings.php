@@ -122,6 +122,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         set_setting('languages', $langs === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $langs))))));
         set_setting('regions',  $regs  === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $regs))))));
 
+        // NEW: Discovery/Web/HTTP
+        set_setting('openai_enable_web_search', isset($_POST['openai_enable_web_search']));
+        set_setting('discovery_enabled', isset($_POST['discovery_enabled']));
+        set_setting('discovery_daily_candidates', max(1, (int)($_POST['discovery_daily_candidates'] ?? 20)));
+        set_setting('verify_freshness_days_for_new_domain', max(1, (int)($_POST['verify_freshness_days_for_new_domain'] ?? 90)));
+        set_setting('http_timeout_sec', max(5, (int)($_POST['http_timeout_sec'] ?? 20)));
+        set_setting('max_parallel_http', max(1, min(32, (int)($_POST['max_parallel_http'] ?? 12))));
+
         $ok = 'Сохранено';
         app_log('info', 'settings', 'Settings updated', []);
     }
@@ -150,6 +158,14 @@ $languagesArr        = (array)get_setting('languages', []);
 $regionsArr          = (array)get_setting('regions', []);
 $languagesCsv        = $languagesArr ? implode(', ', $languagesArr) : '';
 $regionsCsv          = $regionsArr ? implode(', ', $regionsArr) : '';
+
+// NEW: Discovery/HTTP
+$openaiWebSearch = (bool)get_setting('openai_enable_web_search', false);
+$discoveryEnabled = (bool)get_setting('discovery_enabled', true);
+$dailyCandidates = (int)get_setting('discovery_daily_candidates', 20);
+$verifyFreshDays = (int)get_setting('verify_freshness_days_for_new_domain', 90);
+$httpTimeoutSec  = (int)get_setting('http_timeout_sec', 20);
+$maxParallelHttp = (int)get_setting('max_parallel_http', 12);
 
 // вспомогательное
 $cronSecret = (string)get_setting('cron_secret', '');
@@ -294,6 +310,33 @@ try {
         </label>
         <label>Регионы (опц.), через запятую
           <input type="text" name="regions" value="<?=e($regionsCsv)?>" placeholder="UA, RU, EU">
+        </label>
+      </div>
+
+      <hr>
+      <div class="card-title">Discovery и HTTP</div>
+      <div class="grid-3">
+        <label>
+          <span>Включить Discovery (LLM)</span>
+          <input class="switch" type="checkbox" name="discovery_enabled" <?=$discoveryEnabled?'checked':''?>>
+        </label>
+        <label>
+          <span>Web Search tools для LLM</span>
+          <input class="switch" type="checkbox" name="openai_enable_web_search" <?=$openaiWebSearch?'checked':''?>>
+        </label>
+        <label>Кандидатов в день (N)
+          <input type="number" name="discovery_daily_candidates" value="<?= (int)$dailyCandidates ?>" min="1" max="100">
+        </label>
+      </div>
+      <div class="grid-3">
+        <label>Окно свежести для новых доменов, дней
+          <input type="number" name="verify_freshness_days_for_new_domain" value="<?= (int)$verifyFreshDays ?>" min="1" max="365">
+        </label>
+        <label>HTTP timeout, сек
+          <input type="number" name="http_timeout_sec" value="<?= (int)$httpTimeoutSec ?>" min="5" max="120">
+        </label>
+        <label>Параллельных HTTP
+          <input type="number" name="max_parallel_http" value="<?= (int)$maxParallelHttp ?>" min="1" max="32">
         </label>
       </div>
 

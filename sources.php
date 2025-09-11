@@ -26,6 +26,26 @@ if (isset($_GET['toggle_paused']) && ctype_digit($_GET['toggle_paused'])) {
     exit;
 }
 
+// NEW: enable discovered domain
+if (isset($_GET['enable_discovered'])) {
+    $domain = strtolower(trim($_GET['enable_discovered']));
+    $domain = preg_replace('~[^a-z0-9\.-]~', '', $domain);
+    if ($domain !== '') {
+        try {
+            $plat = detect_platform($domain, null);
+        } catch (Throwable $e) { $plat = 'unknown'; }
+        // upsert source
+        $st = pdo()->prepare("INSERT INTO sources (host, url, is_active, is_enabled, is_paused, note, platform, discovered_via)
+                              VALUES (?,?,?,?,?,?,?,?)
+                              ON DUPLICATE KEY UPDATE is_enabled=VALUES(is_enabled), platform=VALUES(platform), discovered_via=VALUES(discovered_via)");
+        $st->execute([$domain, 'https://' . $domain, 1, 1, 0, 'enabled from discovered', $plat, 'llm_discovery']);
+        // mark discovered as verified
+        db_mark_discovered_status($domain, 'verified', 5);
+        header('Location: sources.php');
+        exit;
+    }
+}
+
 // Freshness window
 $freshnessDays = (int)get_setting('freshness_days', 7);
 try {
@@ -76,6 +96,12 @@ if ($activeSource) {
 
 // Paused hosts list for preview
 $pausedHosts = pdo()->query("SELECT host FROM sources WHERE COALESCE(is_paused,0)=1 ORDER BY host")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+
+// NEW: Discovered sources block data
+$disc = pdo()->query("SELECT domain, proof_url, platform_guess, status, score, first_seen_at, last_checked_at FROM discovered_sources ORDER BY first_seen_at DESC LIMIT 200")->fetchAll() ?: [];
+$discByStatus = ['new'=>[], 'verified'=>[], 'failed'=>[], 'rejected'=>[]];
+foreach ($disc as $r) { $discByStatus[$r['status']][] = $r; }
+$discCounts = [ 'new'=>count($discByStatus['new']), 'verified'=>count($discByStatus['verified']), 'failed'=>count($discByStatus['failed']), 'rejected'=>count($discByStatus['rejected']) ];
 ?>
 <!doctype html>
 <html lang="ru">
@@ -137,6 +163,40 @@ $pausedHosts = pdo()->query("SELECT host FROM sources WHERE COALESCE(is_paused,0
         </table>
       </div>
       <div class="muted" style="margin-top:8px">Клик по домену — покажем ссылки справа. Счётчик «За <?=$freshnessDays?>д» считает по published_at.</div>
+
+      <!-- NEW: Discovered sources block -->
+      <hr>
+      <div class="card-title">Discovered (LLM)
+        <span class="pill">new: <?=$discCounts['new']?></span>
+        <span class="pill">verified: <?=$discCounts['verified']?></span>
+        <span class="pill">failed: <?=$discCounts['failed']?></span>
+      </div>
+      <?php if ($disc): ?>
+        <div class="table-wrap">
+          <table class="table compact">
+            <thead><tr><th>Домен</th><th>Proof</th><th>Платформа</th><th>Статус</th><th class="col-actions">Действие</th></tr></thead>
+            <tbody>
+              <?php foreach ($disc as $r): ?>
+                <tr>
+                  <td class="ellipsis"><?=e($r['domain'])?></td>
+                  <td class="ellipsis"><a href="<?=e($r['proof_url'])?>" target="_blank" rel="noopener">proof</a></td>
+                  <td><?=e($r['platform_guess'] ?: 'unknown')?></td>
+                  <td><?=e($r['status'])?></td>
+                  <td>
+                    <?php if ($r['status']==='new' || $r['status']==='failed'): ?>
+                      <a class="btn small" href="sources.php?enable_discovered=<?=urlencode($r['domain'])?>">Включить</a>
+                    <?php else: ?>
+                      <span class="pill">—</span>
+                    <?php endif; ?>
+                  </td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      <?php else: ?>
+        <div class="muted">Нет кандидатов Discovery.</div>
+      <?php endif; ?>
     </div>
 
     <div class="card glass">
