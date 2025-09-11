@@ -18,7 +18,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $err = 'Неверный токен безопасности';
         app_log('warning', 'settings', 'CSRF token mismatch', []);
     } else if ($action === 'test_openai') {
-        // Проверка ключа OpenAI через Responses API
         $apiKeyToTest = (string)get_setting('openai_api_key', '');
         $modelToTest  = (string)get_setting('openai_model', 'gpt-5-mini');
         if ($apiKeyToTest === '') {
@@ -33,7 +32,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     [ 'role' => 'user',   'content' => [[ 'type' => 'input_text', 'text' => 'Return {"ok": true} only.' ]] ]
                 ],
                 'max_output_tokens' => 16,
-                // removed temperature: not supported by some models in Responses API
                 'text' => [
                     'format' => [
                         'type' => 'json_schema',
@@ -83,18 +81,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $apiTestMsg = 'Ошибка проверки ключа (HTTP ' . $status . '). ' . $errDetail;
             }
         }
+    } else if ($action === 'clear_domains') {
+        try {
+            pdo()->exec("DELETE FROM sources");
+        } catch (Throwable $e) {}
+        try { pdo()->exec("DELETE FROM discovered_sources"); } catch (Throwable $e) {}
+        app_log('info', 'settings', 'All domains cleared', []);
+        $ok = 'Все домены (и кандидаты) очищены';
+    } else if ($action === 'clear_links') {
+        try { pdo()->exec("DELETE FROM links"); } catch (Throwable $e) {}
+        app_log('info', 'settings', 'All links cleared', []);
+        $ok = 'Все найденные ссылки очищены';
     } else {
-        // базовые настройки (сохранение)
         set_setting('openai_api_key', trim($_POST['openai_api_key'] ?? ''));
         set_setting('openai_model', in_array($_POST['openai_model'] ?? '', $models, true) ? $_POST['openai_model'] : 'gpt-5-mini');
         set_setting('scan_period_min', max(1, (int)($_POST['scan_period_min'] ?? 15)));
         set_setting('search_prompt', trim($_POST['search_prompt'] ?? ''));
 
-        // telegram для уведомлений
         set_setting('telegram_token', trim($_POST['telegram_token'] ?? ''));
         set_setting('telegram_chat_id', trim($_POST['telegram_chat_id'] ?? ''));
 
-        // НОВЫЕ ОБЛАСТИ ПОИСКА
         set_setting('scope_domains_enabled', isset($_POST['scope_domains_enabled']));
         set_setting('scope_telegram_enabled', isset($_POST['scope_telegram_enabled']));
         $telegram_mode = $_POST['telegram_mode'] ?? 'any';
@@ -102,40 +108,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         set_setting('telegram_mode', $telegram_mode);
         set_setting('scope_forums_enabled', isset($_POST['scope_forums_enabled']));
 
-        // CRON секрет
         $cron_secret = trim($_POST['cron_secret'] ?? '');
         if ($cron_secret === '') $cron_secret = bin2hex(random_bytes(12));
         set_setting('cron_secret', $cron_secret);
 
-        // FRESH-ONLY параметры
         $freshnessDays = max(1, (int)($_POST['freshness_days'] ?? 7));
         set_setting('freshness_days', $freshnessDays);
-        set_setting('enabled_sources_only', isset($_POST['enabled_sources_only']));
-        $maxRes = (int)($_POST['max_results_per_scan'] ?? 80);
-        if ($maxRes < 1) $maxRes = 1; if ($maxRes > 200) $maxRes = 200;
-        set_setting('max_results_per_scan', $maxRes);
-        set_setting('return_schema_required', isset($_POST['return_schema_required']));
 
-        // опциональные — массивы языков/регионов (через запятую)
         $langs = trim((string)($_POST['languages'] ?? ''));
         $regs  = trim((string)($_POST['regions'] ?? ''));
         set_setting('languages', $langs === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $langs))))));
         set_setting('regions',  $regs  === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $regs))))));
-
-        // NEW: Discovery/Web/HTTP
-        set_setting('openai_enable_web_search', isset($_POST['openai_enable_web_search']));
-        set_setting('discovery_enabled', isset($_POST['discovery_enabled']));
-        set_setting('discovery_daily_candidates', max(1, (int)($_POST['discovery_daily_candidates'] ?? 20)));
-        set_setting('verify_freshness_days_for_new_domain', max(1, (int)($_POST['verify_freshness_days_for_new_domain'] ?? 90)));
-        set_setting('http_timeout_sec', max(5, (int)($_POST['http_timeout_sec'] ?? 20)));
-        set_setting('max_parallel_http', max(1, min(32, (int)($_POST['max_parallel_http'] ?? 12))));
 
         $ok = 'Сохранено';
         app_log('info', 'settings', 'Settings updated', []);
     }
 }
 
-// текущие значения
 $apiKey = (string)get_setting('openai_api_key', '');
 $model = (string)get_setting('openai_model', 'gpt-5-mini');
 $period = (int)get_setting('scan_period_min', 15);
@@ -146,42 +135,26 @@ $tgChat = (string)get_setting('telegram_chat_id', '');
 
 $scopeDomains  = (bool)get_setting('scope_domains_enabled', false);
 $scopeTelegram = (bool)get_setting('scope_telegram_enabled', false);
-$telegramMode  = (string)get_setting('telegram_mode', 'any'); // any|discuss
+$telegramMode  = (string)get_setting('telegram_mode', 'any');
 $scopeForums   = (bool)get_setting('scope_forums_enabled', true);
 
-// Fresh-only
 $freshnessDays       = (int)get_setting('freshness_days', 7);
-$enabledSourcesOnly  = (bool)get_setting('enabled_sources_only', true);
-$maxResultsPerScan   = (int)get_setting('max_results_per_scan', 80);
-$returnSchemaRequired= (bool)get_setting('return_schema_required', true);
 $languagesArr        = (array)get_setting('languages', []);
 $regionsArr          = (array)get_setting('regions', []);
 $languagesCsv        = $languagesArr ? implode(', ', $languagesArr) : '';
 $regionsCsv          = $regionsArr ? implode(', ', $regionsArr) : '';
 
-// NEW: Discovery/HTTP
-$openaiWebSearch = (bool)get_setting('openai_enable_web_search', false);
-$discoveryEnabled = (bool)get_setting('discovery_enabled', true);
-$dailyCandidates = (int)get_setting('discovery_daily_candidates', 20);
-$verifyFreshDays = (int)get_setting('verify_freshness_days_for_new_domain', 90);
-$httpTimeoutSec  = (int)get_setting('http_timeout_sec', 20);
-$maxParallelHttp = (int)get_setting('max_parallel_http', 12);
-
-// вспомогательное
 $cronSecret = (string)get_setting('cron_secret', '');
 $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? 'localhost');
 $cronUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/scan.php?secret=' . urlencode($cronSecret);
 
-// количество активных доменов и ссылка на их управление
 try {
-    // активные = is_enabled=1 и is_paused=0 (если колонок нет — fallback к is_active)
     $activeDomainsCount = (int)pdo()->query("SELECT COUNT(*) FROM sources WHERE COALESCE(is_enabled,1)=1 AND COALESCE(is_paused,0)=0")->fetchColumn();
 } catch (Throwable $e) {
-    $activeDomainsCount = (int)get_setting('active_sources_count', 0); // fallback, если нет таблицы
+    $activeDomainsCount = (int)get_setting('active_sources_count', 0);
 }
 $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
 
-// Предпросмотр SINCE (UTC)
 try {
     $since = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
         ->sub(new DateInterval('P' . max(1, (int)$freshnessDays) . 'D'))
@@ -195,6 +168,18 @@ try {
   <title>Настройки — Мониторинг</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
+  <style>
+    .wizard-modal {position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);z-index:1000;}
+    .wizard-box {background:#1e1f24;padding:1.25rem;max-width:560px;width:100%;border-radius:12px;box-shadow:0 4px 30px rgba(0,0,0,.4);}
+    .wizard-steps {display:flex;gap:.5rem;margin-bottom:1rem;}
+    .wizard-step {flex:1;height:4px;background:#444;border-radius:2px;}
+    .wizard-step.active {background:#4ea1ff;}
+    .wizard-actions {display:flex;justify-content:space-between;margin-top:1rem;}
+    .small-input {width:100%;}
+    .taglist {display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.4rem;}
+    .taglist span {background:#2c2d33;padding:.25rem .5rem;border-radius:6px;font-size:.75rem;}
+    .danger-inline {background:#4d1f1f;color:#fff;}
+  </style>
 </head>
 <body>
 <?php include 'header.php'; ?>
@@ -225,16 +210,22 @@ try {
         </select>
       </label>
 
-      <label>Промпт (что и где искать)
-        <textarea name="search_prompt" rows="5" placeholder="Опиши задачу для агента..."><?=e($prompt)?></textarea>
-      </label>
+      <div class="stack">
+        <div class="row-gap" style="align-items:center;justify-content:space-between;">
+          <div>
+            <strong>Мастер запроса</strong>
+            <div class="hint">Пошагово уточняет задачу и формирует внутренний поисковый промпт.</div>
+          </div>
+          <button type="button" class="btn" id="wizardStart">Запустить мастера</button>
+        </div>
+        <div class="hint" id="wizardPromptPreview"><?= $prompt ? e(mb_strimwidth($prompt,0,140,'…')) : 'Промпт ещё не задан' ?></div>
+        <input type="hidden" name="search_prompt" id="search_prompt" value="<?= e($prompt) ?>">
+      </div>
 
-      <!-- НОВЫЙ блок: области поиска -->
       <hr>
       <div class="card-title">Где искать</div>
 
       <div class="scope-row">
-
         <label class="switch-card">
           <input class="switch" type="checkbox" name="scope_domains_enabled" <?=$scopeDomains?'checked':''?>>
           <div class="switch-title">По моим доменам</div>
@@ -259,7 +250,6 @@ try {
           <input class="switch" type="checkbox" name="scope_forums_enabled" <?=$scopeForums?'checked':''?>>
           <div class="switch-title">Форумы и сообщества</div>
         </label>
-
       </div>
 
       <div class="grid-2">
@@ -286,21 +276,6 @@ try {
         <label>Окно свежести, дней
           <input type="number" name="freshness_days" value="<?= (int)$freshnessDays ?>" min="1" max="90">
         </label>
-        <label>Лимит результатов за скан
-          <input type="number" name="max_results_per_scan" value="<?= (int)$maxResultsPerScan ?>" min="1" max="200">
-        </label>
-      </div>
-      <div class="grid-2">
-        <label>
-          <span>Только включённые источники</span>
-          <input class="switch" type="checkbox" name="enabled_sources_only" <?=$enabledSourcesOnly?'checked':''?>>
-        </label>
-        <label>
-          <span>Требовать строгий JSON от модели</span>
-          <input class="switch" type="checkbox" name="return_schema_required" <?=$returnSchemaRequired?'checked':''?>>
-        </label>
-      </div>
-      <div class="grid-2">
         <div class="hint">SINCE (UTC): <code><?=e($since)?></code></div>
       </div>
 
@@ -313,40 +288,120 @@ try {
         </label>
       </div>
 
-      <hr>
-      <div class="card-title">Discovery и HTTP</div>
-      <div class="grid-3">
-        <label>
-          <span>Включить Discovery (LLM)</span>
-          <input class="switch" type="checkbox" name="discovery_enabled" <?=$discoveryEnabled?'checked':''?>>
-        </label>
-        <label>
-          <span>Web Search tools для LLM</span>
-          <input class="switch" type="checkbox" name="openai_enable_web_search" <?=$openaiWebSearch?'checked':''?>>
-        </label>
-        <label>Кандидатов в день (N)
-          <input type="number" name="discovery_daily_candidates" value="<?= (int)$dailyCandidates ?>" min="1" max="100">
-        </label>
-      </div>
-      <div class="grid-3">
-        <label>Окно свежести для новых доменов, дней
-          <input type="number" name="verify_freshness_days_for_new_domain" value="<?= (int)$verifyFreshDays ?>" min="1" max="365">
-        </label>
-        <label>HTTP timeout, сек
-          <input type="number" name="http_timeout_sec" value="<?= (int)$httpTimeoutSec ?>" min="5" max="120">
-        </label>
-        <label>Параллельных HTTP
-          <input type="number" name="max_parallel_http" value="<?= (int)$maxParallelHttp ?>" min="1" max="32">
-        </label>
-      </div>
-
       <div class="hint">CRON URL: <code><?=e($cronUrl)?></code></div>
       <div class="hint">CLI: <code>php <?=e(__DIR__ . '/scan.php')?></code></div>
 
       <button class="btn primary">Сохранить</button>
     </form>
+
+    <hr>
+    <div class="card-title">Очистка данных</div>
+    <div class="stack">
+      <form method="post" onsubmit="return confirm('Удалить ВСЕ домены и кандидатов? Это удалит также связанные ссылки.');" class="row-gap">
+        <?= csrf_field() ?>
+        <input type="hidden" name="action" value="clear_domains">
+        <button class="btn danger">Очистить домены</button>
+      </form>
+      <form method="post" onsubmit="return confirm('Удалить все найденные ссылки?');" class="row-gap">
+        <?= csrf_field() ?>
+        <input type="hidden" name="action" value="clear_links">
+        <button class="btn danger">Очистить ссылки</button>
+      </form>
+    </div>
+
   </div>
 </main>
+
+<div class="wizard-modal" id="wizardModal" aria-hidden="true">
+  <div class="wizard-box">
+    <div class="wizard-steps" id="wizardSteps">
+      <div class="wizard-step" data-step="0"></div>
+      <div class="wizard-step" data-step="1"></div>
+      <div class="wizard-step" data-step="2"></div>
+      <div class="wizard-step" data-step="3"></div>
+    </div>
+    <div id="wizardBody" class="stack" style="gap:.75rem;min-height:180px"></div>
+    <div class="wizard-actions">
+      <button type="button" class="btn" id="wizardPrev" disabled>Назад</button>
+      <div class="row-gap" style="gap:.5rem;">
+        <button type="button" class="btn" id="wizardCancel">Отмена</button>
+        <button type="button" class="btn primary" id="wizardNext">Далее</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const modal = document.getElementById('wizardModal');
+  const startBtn = document.getElementById('wizardStart');
+  const prevBtn = document.getElementById('wizardPrev');
+  const nextBtn = document.getElementById('wizardNext');
+  const cancelBtn = document.getElementById('wizardCancel');
+  const bodyEl = document.getElementById('wizardBody');
+  const stepsEls = Array.from(document.querySelectorAll('.wizard-step'));
+  const promptInput = document.getElementById('search_prompt');
+  const preview = document.getElementById('wizardPromptPreview');
+
+  let step = 0;
+  const data = { goal:'', where:[], keywords:[], languages:[], regions:[] };
+
+  function render(){
+    stepsEls.forEach((el,i)=> el.classList.toggle('active', i<=step));
+    prevBtn.disabled = step===0;
+    nextBtn.textContent = step===steps.length-1 ? 'Готово' : 'Далее';
+    bodyEl.innerHTML = steps[step]();
+  }
+
+  function buildPrompt(){
+    const parts = [];
+    if (data.goal) parts.push('Цель: '+data.goal.trim());
+    if (data.keywords.length) parts.push('Ключевые слова: '+data.keywords.join(', '));
+    if (data.where.length) parts.push('Области: '+data.where.join(', '));
+    if (data.languages.length) parts.push('Языки: '+data.languages.join(', '));
+    if (data.regions.length) parts.push('Регионы: '+data.regions.join(', '));
+    parts.push('Вернуть уникальные обсуждения за последние '+(<?= (int)$freshnessDays ?>)+' дней.');
+    return parts.join('\n');
+  }
+
+  function collect(){
+    if (step===0) { data.goal = document.getElementById('w_goal').value; }
+    if (step===1) { data.keywords = document.getElementById('w_keywords').value.split(',').map(s=>s.trim()).filter(Boolean); }
+    if (step===2) {
+      data.where = Array.from(document.querySelectorAll('input[name="w_where[]"]:checked')).map(i=>i.value);
+    }
+    if (step===3) {
+      data.languages = document.getElementById('w_langs').value.split(',').map(s=>s.trim()).filter(Boolean);
+      data.regions   = document.getElementById('w_regs').value.split(',').map(s=>s.trim()).filter(Boolean);
+    }
+  }
+
+  const steps = [
+    ()=>`<label>Что ищем?<textarea id="w_goal" rows="4" class="small-input" placeholder="Например: упоминания моего бренда и плагина ...">${data.goal||''}</textarea></label>`,
+    ()=>`<label>Ключевые слова (через запятую)<input id="w_keywords" type="text" class="small-input" value="${data.keywords.join(', ')}" placeholder="бренд, плагин, домен"></label>`,
+    ()=>`<fieldset style="border:0;padding:0;" class="stack"><legend>Где искать</legend>
+          <label><input type="checkbox" name="w_where[]" value="домены" ${data.where.includes('домены')?'checked':''}> Мои домены</label>
+          <label><input type="checkbox" name="w_where[]" value="telegram" ${data.where.includes('telegram')?'checked':''}> Telegram</label>
+          <label><input type="checkbox" name="w_where[]" value="форумы" ${data.where.includes('форумы')?'checked':''}> Форумы/сообщества</label>
+        </fieldset>`,
+    ()=>`<div class="grid-2"><label>Языки<input id="w_langs" type="text" class="small-input" value="${data.languages.join(', ')}" placeholder="ru, en"></label>
+         <label>Регионы<input id="w_regs" type="text" class="small-input" value="${data.regions.join(', ')}" placeholder="UA, RU"></label></div>
+         <div class="hint">Нажмите Готово для формирования промпта.</div>`
+  ];
+
+  startBtn?.addEventListener('click', ()=>{ step=0; render(); modal.style.display='flex'; modal.setAttribute('aria-hidden','false'); });
+  cancelBtn?.addEventListener('click', ()=>{ modal.style.display='none'; modal.setAttribute('aria-hidden','true'); });
+  prevBtn?.addEventListener('click', ()=>{ collect(); if(step>0){step--; render();}});
+  nextBtn?.addEventListener('click', ()=>{ collect(); if (step<steps.length-1){ step++; render(); } else { 
+      const p = buildPrompt();
+      promptInput.value = p;
+      preview.textContent = p.length>160 ? p.slice(0,160)+'…' : p || 'Промпт ещё не задан';
+      modal.style.display='none'; modal.setAttribute('aria-hidden','true');
+    }});
+  modal.addEventListener('click', e=>{ if(e.target===modal) { modal.style.display='none'; modal.setAttribute('aria-hidden','true'); }});
+})();
+</script>
+
 <?php include 'footer.php'; ?>
 </body>
 </html>

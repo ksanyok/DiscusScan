@@ -122,6 +122,8 @@ if (!$isManual) {
 $apiKey = (string)get_setting('openai_api_key', '');
 $model  = (string)get_setting('openai_model', 'gpt-5-mini');
 $basePrompt = (string)get_setting('search_prompt', '');
+// Логируем фактический промпт отдельно
+try { app_log('info','scan_prompt','Effective prompt captured', ['prompt' => mb_substr($basePrompt,0,1000)]); } catch (Throwable $e) {}
 if ($apiKey === '' || $basePrompt === '') {
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode(['ok' => false, 'error' => 'Missing OpenAI API key or search prompt'], JSON_UNESCAPED_UNICODE);

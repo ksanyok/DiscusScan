@@ -2,6 +2,22 @@
 require_once __DIR__ . '/db.php';
 require_login();
 
+$notice = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && verify_csrf_token($_POST['csrf_token'] ?? '')) {
+    $action = $_POST['action'] ?? '';
+    if ($action === 'clear_domains') {
+        try { pdo()->exec("DELETE FROM sources"); } catch (Throwable $e) {}
+        try { pdo()->exec("DELETE FROM discovered_sources"); } catch (Throwable $e) {}
+        try { pdo()->exec("DELETE FROM links"); } catch (Throwable $e) {}
+        app_log('info','sources','All domains cleared via sources.php',[]);
+        $notice = 'Все домены и найденные ссылки удалены';
+    } elseif ($action === 'clear_links') {
+        try { pdo()->exec("DELETE FROM links"); } catch (Throwable $e) {}
+        app_log('info','sources','All links cleared via sources.php',[]);
+        $notice = 'Все ссылки удалены';
+    }
+}
+
 // Toggle domain activity (legacy)
 if (isset($_GET['toggle']) && ctype_digit($_GET['toggle'])) {
     $id = (int)$_GET['toggle'];
@@ -129,6 +145,9 @@ $pausedHosts = pdo()->query("SELECT host FROM sources WHERE COALESCE(is_paused,0
 <?php include 'header.php'; ?>
 
 <main class="container">
+  <?php if ($notice): ?>
+    <div class="alert success"><?=e($notice)?></div>
+  <?php endif; ?>
   <section class="grid domains">
     <div class="card glass left">
       <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
@@ -230,6 +249,16 @@ $pausedHosts = pdo()->query("SELECT host FROM sources WHERE COALESCE(is_paused,0
       <?php else: ?>
         <div class="alert">Выберите домен слева, чтобы увидеть ссылки.</div>
       <?php endif; ?>
+    </div>
+  </section>
+  <section class="grid">
+    <div class="card glass">
+      <div class="card-title">Очистка данных</div>
+      <form method="post" action="sources.php">
+        <input type="hidden" name="csrf_token" value="<?=e(generate_csrf_token())?>">
+        <button class="btn danger" name="action" value="clear_domains" onclick="return confirm('Удалить все домены и ссылки?')">Удалить все домены и ссылки</button>
+        <button class="btn danger" name="action" value="clear_links" onclick="return confirm('Удалить все ссылки?')">Удалить все ссылки</button>
+      </form>
     </div>
   </section>
 </main>

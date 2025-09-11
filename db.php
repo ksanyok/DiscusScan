@@ -249,18 +249,9 @@ function ensure_defaults(PDO $pdo): void {
         'scope_telegram_enabled' => false,
         'scope_forums_enabled' => true,
         'telegram_mode' => 'any',
-        // NEW DISCOVERY/HTTP defaults
-        'openai_enable_web_search' => true,
-        'discovery_daily_candidates' => 20,
-        'discovery_enabled' => true,
-        'verify_freshness_days_for_new_domain' => 90,
-        'http_timeout_sec' => 20,
-        'max_parallel_http' => 12,
-        // NEW: OpenAI parallel/tool settings
-        'openai_max_tool_calls' => 8,
-        'max_parallel_openai' => 6,
-        // NEW: LLM web search batch size per scan
-        'llm_search_domains_per_scan' => 30,
+        // Discovery/HTTP & tool concurrency настройки теперь управляются ядром и не задаются пользователем.
+        // (openai_enable_web_search, discovery_* , http_timeout_sec, max_parallel_http, openai_max_tool_calls,
+        //  max_parallel_openai, llm_search_domains_per_scan — удалены из defaults для чистоты.)
     ];
     $sel = $pdo->prepare("SELECT svalue FROM settings WHERE skey = ?");
     $ins = $pdo->prepare("INSERT INTO settings (skey, svalue) VALUES (?, ?) ON DUPLICATE KEY UPDATE svalue = VALUES(svalue)");
