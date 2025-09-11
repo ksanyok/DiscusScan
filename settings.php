@@ -162,6 +162,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $langs = array_values(array_unique(array_filter(array_map(function($l){$l=strtolower(preg_replace('~[^a-z]~','',$l));return strlen($l)===2?$l:null;}, $langs)))) ;
         $regs  = array_values(array_unique(array_filter(array_map(function($r){$r=strtoupper(preg_replace('~[^A-Za-z]~','',$r));return strlen($r)===2?$r:null;}, $regs))));
         $freshDays = max(1, (int)get_setting('freshness_days',7));
+        $bingKeyTmp = (string)get_setting('bing_api_key','');
         // Fallback suggestions
         $fallback = [];
         if ($step === 0) {
@@ -174,7 +175,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'Понимание тематики вопросов по установке'
             ];
         } else if ($step === 1) {
-            // derive from goal
+            // derive from goal (fallback simple)
             $derive = [];
             $gwords = preg_split('~\s+~u', mb_strtolower($goal));
             $stop = ['и','в','на','по','за','для','при','про','это','этот','эта','эти','мой','моего','моей','моё','упоминания','упоминание','о','поиск'];
@@ -184,13 +185,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (count($derive)>=10) break;
             }
             $fallback['keywords'] = array_values(array_unique(array_merge(array_keys($derive), ['review','issue','problem','feedback','ошибка','установка','обзор'])));
+
+            // === Доп. извлечение через веб-поиск (Bing приоритетно, fallback DuckDuckGo) ===
+            $webKeywords = [];
+            if ($goal !== '') {
+                try {
+                    $query = mb_substr($goal,0,160);
+                    $ua = 'DiscusScan/kw-extract';
+                    $titles = [];
+                    $didBing = false;
+                    if ($bingKeyTmp !== '' && function_exists('curl_init')) {
+                        $endpoint = 'https://api.bing.microsoft.com/v7.0/search?q=' . rawurlencode($query) . '&responseFilter=Webpages&count=10&mkt=ru-RU';
+                        $ch = curl_init($endpoint);
+                        curl_setopt_array($ch,[
+                            CURLOPT_RETURNTRANSFER=>true,
+                            CURLOPT_TIMEOUT=>6,
+                            CURLOPT_HTTPHEADER=>['Ocp-Apim-Subscription-Key: '.$bingKeyTmp],
+                            CURLOPT_USERAGENT=>$ua
+                        ]);
+                        $resp = curl_exec($ch);
+                        $code = curl_getinfo($ch,CURLINFO_HTTP_CODE);
+                        curl_close($ch);
+                        if ($code===200 && $resp){
+                            $jd = json_decode($resp,true);
+                            if (!empty($jd['webPages']['value']) && is_array($jd['webPages']['value'])) {
+                                foreach ($jd['webPages']['value'] as $it){
+                                    if (!empty($it['name'])) $titles[] = $it['name'];
+                                    if (!empty($it['snippet'])) $titles[] = $it['snippet'];
+                                }
+                                $didBing = true;
+                            }
+                        }
+                    }
+                    if (!$didBing) {
+                        // Fallback DuckDuckGo HTML
+                        $ddgUrl = 'https://duckduckgo.com/html/?q=' . urlencode($query);
+                        $html='';
+                        if (function_exists('curl_init')) {
+                            $ch = curl_init($ddgUrl);
+                            curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>true,CURLOPT_TIMEOUT=>6,CURLOPT_USERAGENT=>$ua]);
+                            $html = curl_exec($ch) ?: '';
+                            curl_close($ch);
+                        } else if (ini_get('allow_url_fopen')) {
+                            $html = @file_get_contents($ddgUrl);
+                        }
+                        if ($html && preg_match_all('~<a[^>]+class="result__a"[^>]*>(.*?)</a>~si', $html, $m)) {
+                            $titles = $m[1];
+                        }
+                    }
+                    if ($titles) {
+                        $accum = mb_strtolower(strip_tags(implode(' ', $titles)) . ' ' . $goal);
+                        $accum = preg_replace('~[\p{P}\p{S}]+~u',' ',$accum);
+                        $parts = preg_split('~\s+~u',$accum);
+                        $rusStop = ['это','эти','эта','такой','такие','также','ещё','если','или','для','при','что','где','когда','можно','нужно','решение','вопрос'];
+                        $engStop = ['this','that','from','there','about','which','where','when','with','have','will','would','could','should','after','before','while','their','there','some','other','than','those','these','then'];
+                        $stopset = array_unique(array_merge($stop,$rusStop,$engStop));
+                        $freq = [];
+                        foreach ($parts as $p){
+                            $p = trim($p);
+                            if (mb_strlen($p) < 4 || mb_strlen($p) > 24) continue;
+                            if (preg_match('~^[0-9]+$~',$p)) continue;
+                            if (in_array($p,$stopset,true)) continue;
+                            $freq[$p] = ($freq[$p] ?? 0) + 1;
+                        }
+                        arsort($freq);
+                        $webKeywords = array_slice(array_keys($freq),0,14);
+                    }
+                } catch (Throwable $e) { /* ignore */ }
+            }
+            if ($webKeywords) {
+                $merge = array_values(array_unique(array_merge($webKeywords, $fallback['keywords'])));
+                $fallback['keywords'] = array_slice($merge,0,16);
+            }
         } else if ($step === 2) {
-            $fallback['scope_presets'] = [
-                ['label'=>'Все','values'=>['домены','telegram','форумы']],
-                ['label'=>'Только форумы','values'=>['форумы']],
-                ['label'=>'Форумы + домены','values'=>['форумы','домены']],
-                ['label'=>'Форумы + Telegram','values'=>['форумы','telegram']]
-            ];
+            // Пользователь не хочет подсказок на этом шаге — ничего не добавляем
         } else if ($step === 3) {
             $fallback['languages'] = $langs ?: ['ru','en'];
             $fallback['regions'] = $regs ?: ['UA','EU','US'];
@@ -264,7 +332,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         // merge keeping only requested for step
                         if ($step===0 && !empty($cand['goals'])) $result['goals']=$cand['goals'];
                         if ($step===1 && !empty($cand['keywords'])) $result['keywords']=$cand['keywords'];
-                        if ($step===2 && !empty($cand['scope_presets'])) $result['scope_presets']=$cand['scope_presets'];
+                        if ($step===2 && !empty($cand['scope_presets'])) { /* подсказки отключены для шага 2 */ }
                         if ($step===3) {
                             if (!empty($cand['languages'])) $result['languages']=$cand['languages'];
                             if (!empty($cand['regions'])) $result['regions']=$cand['regions'];
@@ -380,6 +448,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $regs  = trim((string)($_POST['regions'] ?? ''));
         set_setting('languages', $langs === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $langs))))));
         set_setting('regions',  $regs  === '' ? [] : array_values(array_unique(array_filter(array_map('trim', explode(',', $regs))))));
+        // НОРМАЛИЗАЦИЯ языков и регионов при сохранении
+        $languagesNorm = [];
+        foreach ($languagesArr as $l){ $l = strtolower(preg_replace('~[^a-z]~','',$l)); if(strlen($l)===2) $languagesNorm[$l]=true; }
+        $regionsNorm = [];
+        foreach ($regionsArr as $r){ $r = strtoupper(preg_replace('~[^A-Za-z]~','',$r)); if(strlen($r)===2) $regionsNorm[$r]=true; }
+        set_setting('languages', array_keys($languagesNorm));
+        set_setting('regions', array_keys($regionsNorm));
+
+        set_setting('bing_api_key', trim($_POST['bing_api_key'] ?? ''));
 
         $ok = 'Сохранено';
         app_log('info', 'settings', 'Settings updated', []);
@@ -421,6 +498,8 @@ try {
         ->sub(new DateInterval('P' . max(1, (int)$freshnessDays) . 'D'))
         ->format('Y-m-d\TH:i:s\Z');
 } catch (Throwable $e) { $since = ''; }
+
+$bingKey = (string)get_setting('bing_api_key','');
 ?>
 <!doctype html>
 <html lang="ru">
@@ -474,6 +553,10 @@ try {
             <option value="<?=e($m)?>" <?=$m===$model?'selected':''?>><?=e($m)?></option>
           <?php endforeach; ?>
         </select>
+      </label>
+
+      <label>Bing API Key (для расширения ключевых слов)
+        <input type="password" name="bing_api_key" value="<?=e($bingKey)?>" placeholder="xxxxxxxxxxxxxxxx">
       </label>
 
       <div class="stack">
