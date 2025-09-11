@@ -323,11 +323,8 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             'format' => [
                 'type' => 'json_schema',
                 'name' => 'monitoring_output',
-                'json_schema' => [
-                    'name' => 'monitoring_output',
-                    'schema' => $schema,
-                    'strict' => $strictRequired
-                ]
+                'schema' => $schema,
+                'strict' => $strictRequired
             ]
         ]
     ];
@@ -378,7 +375,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             
             // If strict required — do not relax. Otherwise try relaxed schema once.
             if (empty($links) && !$strictRequired) {
-                $payload['text']['format']['json_schema']['strict'] = false;
+                $payload['text']['format']['strict'] = false;
                 $ch2 = curl_init($requestUrl);
                 curl_setopt_array($ch2, [
                     CURLOPT_POST => true,

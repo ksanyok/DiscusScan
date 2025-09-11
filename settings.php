@@ -38,16 +38,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'format' => [
                         'type' => 'json_schema',
                         'name' => 'ping',
-                        'json_schema' => [
-                            'name' => 'ping',
-                            'schema' => [
-                                'type' => 'object',
-                                'properties' => [ 'ok' => [ 'type' => 'boolean' ] ],
-                                'required' => ['ok'],
-                                'additionalProperties' => false
-                            ],
-                            'strict' => true
-                        ]
+                        'schema' => [
+                            'type' => 'object',
+                            'properties' => [ 'ok' => [ 'type' => 'boolean' ] ],
+                            'required' => ['ok'],
+                            'additionalProperties' => false
+                        ],
+                        'strict' => true
                     ]
                 ]
             ];
