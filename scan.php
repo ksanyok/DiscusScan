@@ -393,8 +393,6 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     $model = (string)get_setting('openai_model', 'gpt-5-mini');
     $strictRequired = (bool)get_setting('return_schema_required', true);
     $enableWeb = (bool)get_setting('openai_enable_web_search', false);
-    $temperature = (float)get_setting('openai_temperature', 0.2);
-    $reasonEffort = (string)get_setting('openai_reasoning_effort', 'low'); // low|medium|high
 
     $payload = [
         'model' => $model,
@@ -409,8 +407,6 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             ]
         ],
         'max_output_tokens' => $maxTokens,
-        'temperature' => $temperature,
-        'reasoning' => [ 'effort' => $reasonEffort ],
         'text' => [
             'format' => [
                 'type' => 'json_schema',
