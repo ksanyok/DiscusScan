@@ -250,7 +250,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     CURLOPT_CONNECTTIMEOUT=>10,
                     CURLOPT_HEADER=>true,
                     CURLOPT_SSL_VERIFYPEER=>true,
-                    CURLOPT_USERAGENT'=>$UA
+                    CURLOPT_USERAGENT=>$UA
                 ]);
                 $resp = curl_exec($ch);
                 $info = curl_getinfo($ch);
