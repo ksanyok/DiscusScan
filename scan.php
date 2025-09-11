@@ -1,16 +1,5 @@
 <?php
 require_once __DIR__ . '/version.php';
-// Ensure default app log path
-if (!defined('APP_LOG')) {
-    define('APP_LOG', __DIR__ . '/app.log');
-}
-/**
- * Scanner — Fresh-only monitoring
- * - Single OpenAI call using web_search, with strict JSON schema including published_at.
- * - Prompt-level filtering: paused/enabled hosts, freshness window, seen path fingerprints.
- * - Saves only valid fresh items; stores published_at (UTC) in DB.
- */
-
 require_once __DIR__ . '/db.php';
 
 $UA = 'DiscusScan/' . (defined('APP_VERSION') ? APP_VERSION : 'dev');
@@ -98,10 +87,6 @@ function getSeenPathFingerprints(PDO $pdo, int $limit = 300): array {
 // ----------------------- Access guards -----------------------
 $isCli = php_sapi_name() === 'cli';
 if (!$isCli) {
-    // Load auth helpers if available
-    if (file_exists(__DIR__ . '/auth.php')) {
-        require_once __DIR__ . '/auth.php';
-    }
     if (isset($_GET['manual'])) {
         if (function_exists('require_login')) {
             require_login();
@@ -135,7 +120,7 @@ if (!$isManual) {
 
 // ----------------------- Settings -----------------------
 $apiKey = (string)get_setting('openai_api_key', '');
-$model  = (string)get_setting('openai_model', 'gpt-5-mini');
+$model  = (string)get_setting('openai_model', 'gpt-4o-mini');
 $basePrompt = (string)get_setting('search_prompt', '');
 if ($apiKey === '' || $basePrompt === '') {
     header('Content-Type: application/json; charset=utf-8');
@@ -173,7 +158,7 @@ try {
 $MAX_OUTPUT_TOKENS   = (int)get_setting('openai_max_output_tokens', 4096);
 $OPENAI_HTTP_TIMEOUT = (int)get_setting('openai_timeout_sec', 300);
 
-$requestUrl = 'https://api.openai.com/v1/responses';
+$requestUrl = 'https://api.openai.com/v1/chat/completions';
 $requestHeaders = [
     'Content-Type: application/json',
     'Authorization: Bearer ' . $apiKey,
@@ -334,32 +319,31 @@ function extract_json_links_from_responses(string $body): array {
 // ----------------------- OpenAI call with retry logic -----------------------
 function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log): array {
     global $UA;
-    $model = (string)get_setting('openai_model', 'gpt-5-mini');
+    $model = (string)get_setting('openai_model', 'gpt-4o-mini');
     $strictRequired = (bool)get_setting('return_schema_required', true);
     $enableWeb = (bool)get_setting('openai_enable_web_search', true);
 
     $payload = [
         'model' => $model,
-        'input' => [
-            [
-                'role' => 'system',
-                'content' => [ ['type' => 'input_text', 'text' => $sys] ]
-            ],
-            [
-                'role' => 'user',
-                'content' => [ ['type' => 'input_text', 'text' => $user] ]
-            ]
+        'messages' => [
+            ['role' => 'system', 'content' => $sys],
+            ['role' => 'user', 'content' => $user]
         ],
-        'max_output_tokens' => $maxTokens,
-        'text' => [
-            'format' => [
-                'type' => 'json_schema',
+        'max_tokens' => $maxTokens,
+        'temperature' => 0
+    ];
+
+    // Enable structured output if supported
+    if ($strictRequired) {
+        $payload['response_format'] = [
+            'type' => 'json_schema',
+            'json_schema' => [
                 'name' => 'monitoring_output',
                 'schema' => $schema,
-                'strict' => $strictRequired
+                'strict' => true
             ]
-        ]
-    ];
+        ];
+    }
 
     // Enable OpenAI web search tool if allowed (for models that support it)
     if ($enableWeb) {
@@ -397,7 +381,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
         $log("OpenAI REQUEST [{$jobName}] (attempt {$attempt})", [ 
             'url' => $requestUrl, 
             'model' => $model, 
-            'max_output_tokens' => $maxTokens 
+            'max_tokens' => $maxTokens 
         ], json_encode($payload, JSON_UNESCAPED_UNICODE));
         
         $log("OpenAI RESPONSE [{$jobName}] (attempt {$attempt})", [ 
@@ -424,12 +408,12 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
         }
         
         if ($status === 200) {
-            // Success - parse response (Responses API)
-            $links = extract_json_links_from_responses((string)$body);
+            // Success - parse response (Chat Completions API)
+            $links = extract_json_links_from_chat_completion((string)$body);
             
-            // If strict required — do not relax. Otherwise try relaxed schema once.
+            // If strict required — do not relax. Otherwise try without schema once.
             if (empty($links) && !$strictRequired) {
-                $payload['text']['format']['strict'] = false;
+                unset($payload['response_format']);
                 $ch2 = curl_init($requestUrl);
                 curl_setopt_array($ch2, [
                     CURLOPT_POST => true,
@@ -455,7 +439,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
                 ], (string)$body2);
                 
                 if ($status2 === 200) {
-                    $links = extract_json_links_from_responses((string)$body2);
+                    $links = extract_json_links_from_chat_completion((string)$body2);
                 }
             }
             
