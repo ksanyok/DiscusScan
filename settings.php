@@ -14,7 +14,97 @@ $apiTestOk = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? 'save';
-    if (!verify_csrf_token($_POST['csrf_token'] ?? '')) {
+    // --- Новый backend для мастера: генерация промпта ---
+    if ($action === 'wizard_generate') {
+        header('Content-Type: application/json; charset=utf-8');
+        if (!verify_csrf_token($_POST['csrf_token'] ?? '')) {
+            echo json_encode(['ok'=>false,'error'=>'csrf']);
+            exit;
+        }
+        $goal = trim((string)($_POST['goal'] ?? ''));
+        $keywords = array_values(array_filter(array_map('trim', explode(',', (string)($_POST['keywords'] ?? '')))));
+        $where = (array)($_POST['where'] ?? []);
+        $langs = array_values(array_filter(array_map('trim', explode(',', (string)($_POST['languages'] ?? '')))));
+        $regs  = array_values(array_filter(array_map('trim', explode(',', (string)($_POST['regions'] ?? '')))));
+        $freshDays = max(1, (int)get_setting('freshness_days', 7));
+        // Базовый (fallback) промпт
+        $parts = [];
+        if ($goal) $parts[] = 'Цель: '.$goal;
+        if ($keywords) $parts[] = 'Ключевые слова: '.implode(', ', $keywords);
+        if ($where) $parts[] = 'Области: '.implode(', ', $where);
+        if ($langs) $parts[] = 'Языки: '.implode(', ', $langs);
+        if ($regs) $parts[] = 'Регионы: '.implode(', ', $regs);
+        $parts[] = 'Вернуть уникальные обсуждения за последние '.$freshDays.' дней.';
+        $fallbackPrompt = implode("\n", $parts);
+        $finalPrompt = $fallbackPrompt;
+        $apiKeyTmp = (string)get_setting('openai_api_key','');
+        $modelTmp  = (string)get_setting('openai_model','gpt-5-mini');
+        if ($apiKeyTmp !== '' && $goal !== '') {
+            try {
+                $UA = 'DiscusScan/' . (defined('APP_VERSION') ? APP_VERSION : 'dev');
+                $schema = [
+                    'type'=>'object',
+                    'properties'=>['prompt'=>['type'=>'string']],
+                    'required'=>['prompt'],
+                    'additionalProperties'=>false
+                ];
+                $sys = 'You are a Russian assistant that optimizes a concise monitoring search prompt. Output strict JSON with schema {"prompt": string}. Avoid duplication, keep under 700 characters, focus on intent, include only truly needed keywords & context.';
+                $payload = [
+                    'model'=>$modelTmp,
+                    'input'=>[
+                        ['role'=>'system','content'=>[['type'=>'input_text','text'=>$sys]]],
+                        ['role'=>'user','content'=>[[ 'type'=>'input_text','text'=> json_encode([
+                            'goal'=>$goal,
+                            'keywords'=>$keywords,
+                            'sources'=>$where,
+                            'languages'=>$langs,
+                            'regions'=>$regs,
+                            'freshness_days'=>$freshDays
+                        ], JSON_UNESCAPED_UNICODE) ]]]
+                    ],
+                    'max_output_tokens'=>256,
+                    'text'=>['format'=>[
+                        'type'=>'json_schema','name'=>'wizard_prompt','schema'=>$schema,'strict'=>true
+                    ]]
+                ];
+                $headers = [ 'Content-Type: application/json', 'Authorization: Bearer '.$apiKeyTmp ];
+                $ch = curl_init('https://api.openai.com/v1/responses');
+                curl_setopt_array($ch,[
+                    CURLOPT_POST=>true,
+                    CURLOPT_HTTPHEADER=>$headers,
+                    CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
+                    CURLOPT_RETURNTRANSFER=>true,
+                    CURLOPT_TIMEOUT=>60,
+                    CURLOPT_CONNECTTIMEOUT=>10,
+                    CURLOPT_HEADER=>true,
+                    CURLOPT_SSL_VERIFYPEER=>true,
+                    CURLOPT_USERAGENT=>$UA
+                ]);
+                $resp = curl_exec($ch);
+                $info = curl_getinfo($ch);
+                $status = (int)($info['http_code'] ?? 0);
+                $body = substr((string)$resp, (int)($info['header_size'] ?? 0));
+                curl_close($ch);
+                if ($status === 200) {
+                    $dec = json_decode($body, true);
+                    $candidate = null;
+                    if (isset($dec['output_parsed'][0]['prompt'])) $candidate = (string)$dec['output_parsed'][0]['prompt'];
+                    elseif (isset($dec['output_parsed']['prompt'])) $candidate = (string)$dec['output_parsed']['prompt'];
+                    elseif (preg_match('~\{\s*"prompt"\s*:\s*"(.*?)"~s', (string)($dec['output_text'] ?? ''), $m)) $candidate = stripcslashes($m[1]);
+                    if ($candidate) { $finalPrompt = $candidate; }
+                }
+            } catch (Throwable $e) {
+                app_log('warning','wizard','LLM prompt optimize failed',['err'=>$e->getMessage()]);
+            }
+        }
+        echo json_encode([
+            'ok'=>true,
+            'prompt'=>$finalPrompt,
+            'languages'=>$langs,
+            'regions'=>$regs
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    } else if (!verify_csrf_token($_POST['csrf_token'] ?? '')) {
         $err = 'Неверный токен безопасности';
         app_log('warning', 'settings', 'CSRF token mismatch', []);
     } else if ($action === 'test_openai') {
@@ -179,6 +269,9 @@ try {
     .taglist {display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.4rem;}
     .taglist span {background:#2c2d33;padding:.25rem .5rem;border-radius:6px;font-size:.75rem;}
     .danger-inline {background:#4d1f1f;color:#fff;}
+    .wizard-loading-overlay{position:absolute;inset:0;background:rgba(0,0,0,.65);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;color:#fff;font-size:.95rem;border-radius:12px;}
+    .loader-spinner{width:46px;height:46px;border:5px solid #2f3139;border-top-color:#4ea1ff;border-radius:50%;animation:spin 1s linear infinite;}
+    @keyframes spin{to{transform:rotate(360deg);}}
   </style>
 </head>
 <body>
@@ -343,6 +436,9 @@ try {
   const promptInput = document.getElementById('search_prompt');
   const preview = document.getElementById('wizardPromptPreview');
 
+  const langInput = document.querySelector('input[name="languages"]');
+  const regInput  = document.querySelector('input[name="regions"]');
+
   let step = 0;
   const data = { goal:'', where:[], keywords:[], languages:[], regions:[] };
 
@@ -376,6 +472,52 @@ try {
     }
   }
 
+  function showLoader(){
+    let overlay = bodyEl.querySelector('.wizard-loading-overlay');
+    if(!overlay){
+      overlay = document.createElement('div');
+      overlay.className='wizard-loading-overlay';
+      overlay.innerHTML='<div class="loader-spinner"></div><div>Генерация оптимального промпта…</div>';
+      bodyEl.appendChild(overlay);
+    }
+    overlay.style.display='flex';
+  }
+
+  function hideLoader(){
+    const overlay = bodyEl.querySelector('.wizard-loading-overlay');
+    if(overlay) overlay.style.display='none';
+  }
+
+  async function generatePrompt(){
+    const fd = new FormData();
+    fd.append('action','wizard_generate');
+    fd.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
+    fd.append('goal', data.goal);
+    fd.append('keywords', data.keywords.join(', '));
+    data.where.forEach(w=>fd.append('where[]', w));
+    fd.append('languages', data.languages.join(', '));
+    fd.append('regions', data.regions.join(', '));
+    try {
+      const r = await fetch(location.href, {method:'POST', body: fd});
+      const j = await r.json();
+      if(j.ok){
+        promptInput.value = j.prompt || '';
+        preview.textContent = (j.prompt||'').length>160 ? j.prompt.slice(0,160)+'…' : (j.prompt||'Промпт ещё не задан');
+        if(Array.isArray(j.languages) && langInput){ langInput.value = j.languages.join(', '); }
+        if(Array.isArray(j.regions) && regInput){ regInput.value = j.regions.join(', '); }
+        // авто-сохранение
+        if (promptInput.form) {
+          // Delay tiny to allow DOM update
+          setTimeout(()=> promptInput.form.requestSubmit(), 300);
+        }
+      } else {
+        alert('Не удалось сгенерировать промпт (fallback).');
+      }
+    } catch(e){
+      console.error(e); alert('Ошибка сети при генерации, использован локальный вариант.');
+    } finally { hideLoader(); modal.style.display='none'; modal.setAttribute('aria-hidden','true'); }
+  }
+
   const steps = [
     ()=>`<label>Что ищем?<textarea id="w_goal" rows="4" class="small-input" placeholder="Например: упоминания моего бренда и плагина ...">${data.goal||''}</textarea></label>`,
     ()=>`<label>Ключевые слова (через запятую)<input id="w_keywords" type="text" class="small-input" value="${data.keywords.join(', ')}" placeholder="бренд, плагин, домен"></label>`,
@@ -392,11 +534,8 @@ try {
   startBtn?.addEventListener('click', ()=>{ step=0; render(); modal.style.display='flex'; modal.setAttribute('aria-hidden','false'); });
   cancelBtn?.addEventListener('click', ()=>{ modal.style.display='none'; modal.setAttribute('aria-hidden','true'); });
   prevBtn?.addEventListener('click', ()=>{ collect(); if(step>0){step--; render();}});
-  nextBtn?.addEventListener('click', ()=>{ collect(); if (step<steps.length-1){ step++; render(); } else { 
-      const p = buildPrompt();
-      promptInput.value = p;
-      preview.textContent = p.length>160 ? p.slice(0,160)+'…' : p || 'Промпт ещё не задан';
-      modal.style.display='none'; modal.setAttribute('aria-hidden','true');
+  nextBtn?.addEventListener('click', ()=>{ collect(); if (step<steps.length-1){ step++; render(); } else {
+      showLoader(); generatePrompt();
     }});
   modal.addEventListener('click', e=>{ if(e.target===modal) { modal.style.display='none'; modal.setAttribute('aria-hidden','true'); }});
 })();
