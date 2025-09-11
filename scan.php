@@ -1,5 +1,9 @@
 <?php
 require_once __DIR__ . '/version.php';
+// Ensure default app log path
+if (!defined('APP_LOG')) {
+    define('APP_LOG', __DIR__ . '/app.log');
+}
 /**
  * Scanner — Fresh-only monitoring
  * - Single OpenAI call using web_search, with strict JSON schema including published_at.
@@ -78,22 +82,30 @@ function getSeenPathFingerprints(PDO $pdo, int $limit = 300): array {
         $st = $pdo->prepare("SELECT url FROM links ORDER BY id DESC LIMIT :lim");
         $st->bindValue(':lim', max(1, $limit), PDO::PARAM_INT);
         $st->execute();
-        $paths = [];
+        $fps = [];
         while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
             $u = (string)$row['url'];
+            $h = normalize_host(parse_url($u, PHP_URL_HOST) ?: '');
             $p = parse_url($u, PHP_URL_PATH) ?? '/';
             if ($p === '') $p = '/';
-            $paths[$p] = 1;
+            if ($h === '') continue;
+            $fps[$h . '|' . $p] = 1;
         }
-        return array_values(array_keys($paths));
+        return array_values(array_keys($fps));
     } catch (Throwable $e) { return []; }
 }
 
 // ----------------------- Access guards -----------------------
 $isCli = php_sapi_name() === 'cli';
 if (!$isCli) {
+    // Load auth helpers if available
+    if (file_exists(__DIR__ . '/auth.php')) {
+        require_once __DIR__ . '/auth.php';
+    }
     if (isset($_GET['manual'])) {
-        require_login();
+        if (function_exists('require_login')) {
+            require_login();
+        }
     } else {
         $secret = $_GET['secret'] ?? '';
         if ($secret !== (string)get_setting('cron_secret', '')) {
@@ -260,6 +272,26 @@ function extract_json_links_from_responses(string $body): array {
     $text = '';
 
     if (is_array($data)) {
+        // New: prefer parsed JSON when Responses JSON schema is used
+        if (isset($data['output_parsed'])) {
+            $parsed = $data['output_parsed'];
+            if (is_array($parsed) && isset($parsed['links']) && is_array($parsed['links'])) {
+                return $parsed['links'];
+            }
+            if (is_array($parsed) && isset($parsed[0]['links']) && is_array($parsed[0]['links'])) {
+                return $parsed[0]['links'];
+            }
+        }
+        if (isset($data['output']) && is_array($data['output'])) {
+            foreach ($data['output'] as $out) {
+                if (isset($out['parsed'])) {
+                    $p = $out['parsed'];
+                    if (is_array($p) && isset($p['links']) && is_array($p['links'])) {
+                        return $p['links'];
+                    }
+                }
+            }
+        }
         // 1) Newer responses format: top-level output_text
         if (isset($data['output_text']) && is_string($data['output_text'])) {
             $text .= (string)$data['output_text'];
@@ -356,7 +388,9 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
         $resp = curl_exec($ch);
         $info = curl_getinfo($ch);
         $status = (int)($info['http_code'] ?? 0);
-        $body = substr((string)$resp, (int)($info['header_size'] ?? 0));
+        $headerSize = (int)($info['header_size'] ?? 0);
+        $headersRaw = substr((string)$resp, 0, $headerSize);
+        $body = substr((string)$resp, $headerSize);
         $curlError = curl_error($ch);
         curl_close($ch);
 
@@ -374,6 +408,20 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
 
         // Проверяем на временные ошибки (rate limit, server errors)
         $isRetryable = in_array($status, [429, 500, 502, 503, 504]) || !empty($curlError);
+
+        // Разбор Retry-After
+        $retryAfterSecs = null;
+        if ($isRetryable && $headersRaw !== '') {
+            if (preg_match('~^Retry-After:\s*(.+)$~im', $headersRaw, $m)) {
+                $val = trim($m[1]);
+                if (ctype_digit($val)) {
+                    $retryAfterSecs = (int)$val;
+                } else {
+                    $ts = strtotime($val);
+                    if ($ts) { $retryAfterSecs = max(0, $ts - time()); }
+                }
+            }
+        }
         
         if ($status === 200) {
             // Success - parse response (Responses API)
@@ -397,7 +445,8 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
                 $resp2 = curl_exec($ch2);
                 $info2 = curl_getinfo($ch2);
                 $status2 = (int)($info2['http_code'] ?? 0);
-                $body2 = substr((string)$resp2, (int)($info2['header_size'] ?? 0));
+                $headerSize2 = (int)($info2['header_size'] ?? 0);
+                $body2 = substr((string)$resp2, $headerSize2);
                 curl_close($ch2);
 
                 $log("OpenAI RELAXED RESPONSE [{$jobName}]", [ 
@@ -418,20 +467,33 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             $log("OpenAI ERROR [{$jobName}] - Final attempt", [
                 'status' => $status,
                 'curl_error' => $curlError,
-                'attempt' => $attempt
+                'attempt' => $attempt,
+                'retry_after' => $retryAfterSecs
             ]);
             return [$status, 0, []];
         }
         
-        // Экспоненциальная задержка перед повторной попыткой
+        // Экспоненциальная задержка перед повторной попыткой + учет Retry-After + джиттер
         $delay = $baseDelay * pow(2, $attempt - 1);
-        sleep($delay);
-        
+        if ($retryAfterSecs !== null) {
+            $delay = max($delay, (float)$retryAfterSecs);
+        }
+        $jitter = random_int(50, 250) / 1000; // 50..250 ms
+        $delayWithJitter = $delay + $jitter;
+
         $log("OpenAI RETRY [{$jobName}]", [
             'status' => $status,
             'attempt' => $attempt,
-            'next_delay' => $delay * 2
+            'retry_after' => $retryAfterSecs,
+            'base_delay' => $delay,
+            'jitter' => $jitter,
+            'sleep' => $delayWithJitter
         ]);
+
+        $sec = (int)floor($delayWithJitter);
+        $usec = (int)round(($delayWithJitter - $sec) * 1_000_000);
+        if ($sec > 0) sleep($sec);
+        if ($usec > 0) usleep($usec);
     }
 
     return [$status, 0, []];
@@ -540,12 +602,12 @@ $seenPathSet = array_flip($seenPaths);
 foreach ((array)$returnedLinks as $item) {
     $url = canonicalize_url((string)arr_get($item, 'url', ''));
     $title = trim((string)arr_get($item, 'title', ''));
-    $domain = normalize_host((string)arr_get($item, 'domain', ''));
+    $domainReported = normalize_host((string)arr_get($item, 'domain', ''));
     $pub = trim((string)arr_get($item, 'published_at', ''));
 
-    if ($url === '' || $title === '' || $domain === '' || $pub === '') continue;
-    // Extract from URL if domain missing or mismatch
-    if ($domain === '') { $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: ''); }
+    if ($url === '' || $title === '' || $pub === '') continue;
+    // Always derive domain from URL (trust URL over model-provided domain)
+    $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
     if ($domain === '') continue;
 
     // Date parse and filter
@@ -561,9 +623,11 @@ foreach ((array)$returnedLinks as $item) {
         if (!in_array($domain, ['t.me', 'telegram.me'], true)) continue;
     }
 
-    // Seen path dedupe
+    // Seen fingerprint dedupe: host|path
     $path = parse_url($url, PHP_URL_PATH) ?? '/';
-    if (isset($seenPathSet[$path])) continue;
+    if ($path === '') $path = '/';
+    $fp = $domain . '|' . $path;
+    if (isset($seenPathSet[$fp])) continue;
 
     $valid[] = [
         'url' => $url,
