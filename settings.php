@@ -13,40 +13,89 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
     $userInput = trim($_POST['user_description'] ?? '');
     $apiKey = (string)get_setting('openai_api_key', '');
     $model = (string)get_setting('openai_model', 'gpt-5-mini');
+    $step = $_POST['wizard_step'] ?? 'clarify';
     
     if (!empty($userInput) && !empty($apiKey)) {
-        // Вызываем OpenAI для анализа пользовательского ввода
-        $wizardResult = processSmartWizard($userInput, $apiKey, $model);
-        
-        if ($wizardResult['ok']) {
-            // Сохраняем результаты обработки
-            set_setting('search_prompt', $wizardResult['prompt']);
-            if (!empty($wizardResult['languages'])) {
-                set_setting('detected_languages', json_encode($wizardResult['languages']));
-            }
-            if (!empty($wizardResult['regions'])) {
-                set_setting('detected_regions', json_encode($wizardResult['regions']));
-            }
+        if ($step === 'clarify') {
+            // Первый этап: анализ и генерация вопросов
+            $wizardResult = processSmartWizard($userInput, $apiKey, $model, 'clarify');
             
-            $ok = 'Промпт сформирован автоматически! Языки и регионы определены.';
-            
-            app_log('info', 'smart_wizard', 'Prompt generated', [
-                'user_input_length' => strlen($userInput),
-                'generated_prompt_length' => strlen($wizardResult['prompt']),
-                'languages' => $wizardResult['languages'] ?? [],
-                'regions' => $wizardResult['regions'] ?? []
-            ]);
-        } else {
-            $ok = 'Ошибка генерации промпта: ' . ($wizardResult['error'] ?? 'Неизвестная ошибка');
+            if ($wizardResult['ok']) {
+                if (empty($wizardResult['questions'])) {
+                    // Информации достаточно, сразу генерируем промпт
+                    $finalResult = processSmartWizard($userInput, $apiKey, $model, 'generate');
+                    
+                    if ($finalResult['ok']) {
+                        set_setting('search_prompt', $finalResult['prompt']);
+                        if (!empty($finalResult['languages'])) {
+                            set_setting('detected_languages', json_encode($finalResult['languages']));
+                        }
+                        if (!empty($finalResult['regions'])) {
+                            set_setting('detected_regions', json_encode($finalResult['regions']));
+                        }
+                        
+                        $ok = 'Промпт сформирован автоматически! Языки и регионы определены.';
+                        header('Location: settings.php?wizard_success=1');
+                        exit;
+                    } else {
+                        $ok = 'Ошибка генерации промпта: ' . ($finalResult['error'] ?? 'Неизвестная ошибка');
+                    }
+                } else {
+                    // Нужны уточняющие вопросы - сохраняем в сессии
+                    $_SESSION['wizard_data'] = [
+                        'original_input' => $userInput,
+                        'questions' => $wizardResult['questions'],
+                        'auto_detected' => $wizardResult['auto_detected'] ?? []
+                    ];
+                    header('Location: settings.php?wizard_questions=1');
+                    exit;
+                }
+            } else {
+                $ok = 'Ошибка анализа: ' . ($wizardResult['error'] ?? 'Неизвестная ошибка');
+            }
+        } elseif ($step === 'generate') {
+            // Второй этап: генерация финального промпта на основе ответов
+            $wizardData = $_SESSION['wizard_data'] ?? null;
+            if (!$wizardData) {
+                $ok = 'Ошибка: данные мастера не найдены';
+            } else {
+                // Объединяем оригинальное описание с ответами
+                $combinedInput = $wizardData['original_input'] . "\n\nДополнительная информация:\n";
+                
+                foreach ($wizardData['questions'] as $i => $question) {
+                    $answer = $_POST["question_$i"] ?? '';
+                    if (is_array($answer)) {
+                        $answer = implode(', ', $answer);
+                    }
+                    if (!empty($answer)) {
+                        $combinedInput .= $question['question'] . ": " . $answer . "\n";
+                    }
+                }
+                
+                $finalResult = processSmartWizard($combinedInput, $apiKey, $model, 'generate');
+                
+                if ($finalResult['ok']) {
+                    set_setting('search_prompt', $finalResult['prompt']);
+                    if (!empty($finalResult['languages'])) {
+                        set_setting('detected_languages', json_encode($finalResult['languages']));
+                    }
+                    if (!empty($finalResult['regions'])) {
+                        set_setting('detected_regions', json_encode($finalResult['regions']));
+                    }
+                    
+                    // Очищаем данные мастера
+                    unset($_SESSION['wizard_data']);
+                    
+                    $ok = 'Промпт сформирован с учетом ваших ответов! Языки и регионы определены.';
+                    header('Location: settings.php?wizard_success=1');
+                    exit;
+                } else {
+                    $ok = 'Ошибка генерации финального промпта: ' . ($finalResult['error'] ?? 'Неизвестная ошибка');
+                }
+            }
         }
     } else {
         $ok = 'Заполните описание и убедитесь что указан OpenAI API ключ';
-    }
-    
-    // Перезагружаем страницу чтобы показать обновленный промпт
-    if (strpos($ok, 'сформирован') !== false) {
-        header('Location: settings.php?wizard_success=1');
-        exit;
     }
 }
 
@@ -216,6 +265,7 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
       
       <form id="wizardForm" method="post">
         <input type="hidden" name="smart_wizard" value="1">
+        <input type="hidden" name="wizard_step" value="clarify">
         
         <label>Описание задачи
           <textarea name="user_description" rows="6" placeholder="Например: Хочу отслеживать упоминания моего стартапа по продаже органических овощей в Украине и Польше. Интересуют обсуждения на форумах про здоровое питание, отзывы покупателей, сравнения с конкурентами..." required></textarea>
@@ -294,6 +344,98 @@ setTimeout(function() {
   alert('✨ Промпт успешно сгенерирован! Проверьте поле "Промпт" выше.');
 }, 100);
 <?php endif; ?>
+
+// Показать вопросы если ИИ их сгенерировал
+<?php if (isset($_GET['wizard_questions']) && isset($_SESSION['wizard_data'])): ?>
+setTimeout(function() {
+  showQuestionsModal();
+}, 100);
+<?php endif; ?>
+
+function showQuestionsModal() {
+  const questionsData = <?= json_encode($_SESSION['wizard_data'] ?? null, JSON_UNESCAPED_UNICODE) ?>;
+  if (!questionsData || !questionsData.questions) return;
+  
+  const modal = document.getElementById('smartWizardModal');
+  const modalBody = modal.querySelector('.modal-body');
+  
+  let questionsHtml = '<p class="muted">ИИ проанализировал ваше описание и нуждается в уточнениях для создания оптимального промпта:</p>';
+  questionsHtml += '<form id="questionsForm" method="post">';
+  questionsHtml += '<input type="hidden" name="smart_wizard" value="1">';
+  questionsHtml += '<input type="hidden" name="wizard_step" value="generate">';
+  
+  questionsData.questions.forEach((question, index) => {
+    questionsHtml += '<div style="margin-bottom: 16px;">';
+    questionsHtml += '<label style="font-weight: 600; margin-bottom: 8px; display: block;">' + escapeHtml(question.question) + '</label>';
+    
+    if (question.type === 'single' && question.options) {
+      question.options.forEach((option, optIndex) => {
+        questionsHtml += '<label class="checkbox" style="margin-bottom: 4px;">';
+        questionsHtml += '<input type="radio" name="question_' + index + '" value="' + escapeHtml(option) + '">';
+        questionsHtml += '<span>' + escapeHtml(option) + '</span>';
+        questionsHtml += '</label>';
+      });
+    } else if (question.type === 'multiple' && question.options) {
+      question.options.forEach((option, optIndex) => {
+        questionsHtml += '<label class="checkbox" style="margin-bottom: 4px;">';
+        questionsHtml += '<input type="checkbox" name="question_' + index + '[]" value="' + escapeHtml(option) + '">';
+        questionsHtml += '<span>' + escapeHtml(option) + '</span>';
+        questionsHtml += '</label>';
+      });
+    } else {
+      questionsHtml += '<input type="text" name="question_' + index + '" placeholder="Ваш ответ...">';
+    }
+    
+    questionsHtml += '</div>';
+  });
+  
+  // Показываем автоматически определенные параметры
+  if (questionsData.auto_detected) {
+    const detected = questionsData.auto_detected;
+    if (detected.languages || detected.regions || detected.sources) {
+      questionsHtml += '<div style="background: rgba(91,140,255,0.1); padding: 12px; border-radius: 8px; margin: 16px 0; font-size: 13px;">';
+      questionsHtml += '<strong>ИИ автоматически определил:</strong><br>';
+      if (detected.languages && detected.languages.length > 0) {
+        questionsHtml += '🌐 Языки: ' + detected.languages.join(', ') + '<br>';
+      }
+      if (detected.regions && detected.regions.length > 0) {
+        questionsHtml += '📍 Регионы: ' + detected.regions.join(', ') + '<br>';
+      }
+      if (detected.sources && detected.sources.length > 0) {
+        questionsHtml += '📋 Источники: ' + detected.sources.join(', ');
+      }
+      questionsHtml += '</div>';
+    }
+  }
+  
+  questionsHtml += '<div class="modal-actions">';
+  questionsHtml += '<button type="button" class="btn btn-ghost" onclick="closeWizardModal()">Отмена</button>';
+  questionsHtml += '<button type="submit" class="btn primary">✨ Создать промпт</button>';
+  questionsHtml += '</div>';
+  questionsHtml += '</form>';
+  
+  questionsHtml += '<div id="questionsLoadingState" style="display: none; text-align: center; padding: 20px;">';
+  questionsHtml += '<div class="spinner"></div>';
+  questionsHtml += '<p>ИИ создает финальный промпт на основе ваших ответов...</p>';
+  questionsHtml += '</div>';
+  
+  modalBody.innerHTML = questionsHtml;
+  
+  // Обработчик формы с вопросами
+  document.getElementById('questionsForm').addEventListener('submit', function(e) {
+    document.getElementById('questionsForm').style.display = 'none';
+    document.getElementById('questionsLoadingState').style.display = 'block';
+  });
+  
+  modal.style.display = 'block';
+  document.body.style.overflow = 'hidden';
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
 </script>
 
 </body>

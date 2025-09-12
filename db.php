@@ -528,7 +528,7 @@ function notify_new(array $findings): void {
 /**
  * Умный мастер - анализ пользовательского ввода и генерация промпта
  */
-function processSmartWizard(string $userInput, string $apiKey, string $model): array {
+function processSmartWizard(string $userInput, string $apiKey, string $model, string $step = 'clarify'): array {
     $requestUrl = 'https://api.openai.com/v1/chat/completions';
     $requestHeaders = [
         'Content-Type: application/json',
@@ -536,39 +536,82 @@ function processSmartWizard(string $userInput, string $apiKey, string $model): a
         'Expect:'
     ];
     
-    $schema = [
-        'type' => 'object',
-        'properties' => [
-            'prompt' => ['type' => 'string'],
-            'languages' => ['type' => 'array', 'items' => ['type' => 'string']],
-            'regions' => ['type' => 'array', 'items' => ['type' => 'string']],
-            'reasoning' => ['type' => 'string']
-        ],
-        'required' => ['prompt', 'languages', 'regions'],
-        'additionalProperties' => false
-    ];
-    
-    $systemPrompt = "Ты эксперт по анализу текста для настройки системы мониторинга упоминаний в интернете.\n\n"
-                  . "Пользователь опишет что он хочет отслеживать. Твоя задача:\n"
-                  . "1. Создать оптимальный промпт для поиска упоминаний этой темы\n"
-                  . "2. Определить релевантные языки поиска (коды ISO: ru, uk, en, pl, de, fr и т.д.)\n"
-                  . "3. Определить релевантные регионы/страны (коды ISO: UA, PL, RU, DE, US и т.д.)\n\n"
-                  . "Промпт должен быть конкретным и включать:\n"
-                  . "- Ключевые термины и названия\n"
-                  . "- Синонимы и вариации\n"
-                  . "- Контекст использования\n"
-                  . "- Типы площадок для поиска\n\n"
-                  . "Языки определяй на основе:\n"
-                  . "- Языка описания пользователя\n"
-                  . "- Целевой аудитории продукта/услуги\n"
-                  . "- Географии бизнеса\n\n"
-                  . "Регионы определяй на основе:\n"
-                  . "- Упомянутых стран/рынков\n"
-                  . "- Языковых групп\n"
-                  . "- Домен-зон (.ua, .pl, .ru и т.д.)\n\n"
-                  . "Возвращай ТОЛЬКО JSON согласно схеме.";
-    
-    $userPrompt = "Проанализируй описание пользователя и сформируй настройки мониторинга:\n\n" . $userInput;
+    if ($step === 'clarify') {
+        // Этап 1: Генерация уточняющих вопросов
+        $schema = [
+            'type' => 'object',
+            'properties' => [
+                'questions' => [
+                    'type' => 'array',
+                    'items' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'question' => ['type' => 'string'],
+                            'options' => ['type' => 'array', 'items' => ['type' => 'string']],
+                            'type' => ['type' => 'string', 'enum' => ['single', 'multiple', 'text']]
+                        ],
+                        'required' => ['question', 'type']
+                    ]
+                ],
+                'auto_detected' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'languages' => ['type' => 'array', 'items' => ['type' => 'string']],
+                        'regions' => ['type' => 'array', 'items' => ['type' => 'string']],
+                        'sources' => ['type' => 'array', 'items' => ['type' => 'string']]
+                    ]
+                ]
+            ],
+            'required' => ['questions'],
+            'additionalProperties' => false
+        ];
+        
+        $systemPrompt = "Ты эксперт по настройке мониторинга упоминаний в интернете.\n\n"
+                      . "Пользователь описал что хочет отслеживать. Проанализируй описание и:\n"
+                      . "1. Если информации достаточно для создания промпта - верни пустой массив questions\n"
+                      . "2. Если нужны уточнения - создай 2-4 вопроса для получения недостающей информации\n\n"
+                      . "Типы вопросов:\n"
+                      . "- single: выбор одного варианта (радиокнопки)\n"
+                      . "- multiple: выбор нескольких вариантов (чекбоксы)\n"
+                      . "- text: свободный ввод текста\n\n"
+                      . "В auto_detected попытайся определить из описания:\n"
+                      . "- languages: коды языков (ru, uk, en, pl, de, fr)\n"
+                      . "- regions: коды стран (UA, PL, RU, DE, US, FR)\n"
+                      . "- sources: типы площадок (forums, telegram, social, news)\n\n"
+                      . "Возвращай ТОЛЬКО JSON согласно схеме.";
+        
+        $userPrompt = "Проанализируй описание пользователя и определи нужны ли уточняющие вопросы:\n\n" . $userInput;
+        
+    } else {
+        // Этап 2: Генерация финального промпта
+        $schema = [
+            'type' => 'object',
+            'properties' => [
+                'prompt' => ['type' => 'string'],
+                'languages' => ['type' => 'array', 'items' => ['type' => 'string']],
+                'regions' => ['type' => 'array', 'items' => ['type' => 'string']],
+                'sources' => ['type' => 'array', 'items' => ['type' => 'string']],
+                'reasoning' => ['type' => 'string']
+            ],
+            'required' => ['prompt', 'languages', 'regions', 'sources'],
+            'additionalProperties' => false
+        ];
+        
+        $systemPrompt = "Ты эксперт по анализу текста для настройки системы мониторинга упоминаний в интернете.\n\n"
+                      . "На основе первоначального описания пользователя и его ответов на уточняющие вопросы создай:\n"
+                      . "1. Оптимальный промпт для поиска упоминаний\n"
+                      . "2. Список языков поиска (коды ISO: ru, uk, en, pl, de, fr)\n"
+                      . "3. Список регионов (коды ISO: UA, PL, RU, DE, US, FR)\n"
+                      . "4. Список источников (forums, telegram, social, news)\n\n"
+                      . "Промпт должен быть конкретным и включать:\n"
+                      . "- Ключевые термины и названия\n"
+                      . "- Синонимы и вариации\n"
+                      . "- Контекст использования\n"
+                      . "- Специфику отрасли/темы\n\n"
+                      . "Возвращай ТОЛЬКО JSON согласно схеме.";
+        
+        $userPrompt = $userInput; // Здесь будет объединенная информация
+    }
     
     $payload = [
         'model' => $model,
@@ -579,12 +622,12 @@ function processSmartWizard(string $userInput, string $apiKey, string $model): a
         'response_format' => [
             'type' => 'json_schema',
             'json_schema' => [
-                'name' => 'monitoring_settings',
+                'name' => 'wizard_response',
                 'schema' => $schema,
                 'strict' => true
             ]
         ],
-        'max_tokens' => 1000,
+        'max_tokens' => 1500,
         'temperature' => 0.3
     ];
     
@@ -605,32 +648,59 @@ function processSmartWizard(string $userInput, string $apiKey, string $model): a
     curl_close($ch);
     
     app_log('info', 'smart_wizard', 'OpenAI request', [
+        'step' => $step,
         'status' => $status,
         'user_input_length' => strlen($userInput),
         'response_length' => strlen($body)
     ]);
     
     if ($status !== 200) {
-        return ['ok' => false, 'error' => 'OpenAI request failed', 'status' => $status];
+        // Более детальная диагностика ошибки
+        $errorDetails = [
+            'status' => $status,
+            'curl_error' => curl_error($ch),
+            'body_preview' => substr($body, 0, 500)
+        ];
+        
+        app_log('error', 'smart_wizard', 'OpenAI request failed', $errorDetails);
+        
+        return [
+            'ok' => false, 
+            'error' => "Ошибка запроса к OpenAI (код $status). Проверьте API ключ и интернет-соединение.",
+            'details' => $errorDetails
+        ];
     }
     
     $responseData = json_decode($body, true);
     if (!$responseData || !isset($responseData['choices'][0]['message']['content'])) {
-        return ['ok' => false, 'error' => 'Invalid OpenAI response format'];
+        app_log('error', 'smart_wizard', 'Invalid OpenAI response format', ['body' => $body]);
+        return ['ok' => false, 'error' => 'Некорректный формат ответа от OpenAI'];
     }
     
     $content = $responseData['choices'][0]['message']['content'];
     $result = json_decode($content, true);
     
-    if (!$result || !isset($result['prompt'])) {
-        return ['ok' => false, 'error' => 'Failed to parse generated settings'];
+    if (!$result) {
+        app_log('error', 'smart_wizard', 'Failed to parse JSON content', ['content' => $content]);
+        return ['ok' => false, 'error' => 'Не удалось разобрать ответ от ИИ'];
     }
     
-    return [
-        'ok' => true,
-        'prompt' => $result['prompt'],
-        'languages' => $result['languages'] ?? [],
-        'regions' => $result['regions'] ?? [],
-        'reasoning' => $result['reasoning'] ?? ''
-    ];
+    if ($step === 'clarify') {
+        return [
+            'ok' => true,
+            'step' => 'clarify',
+            'questions' => $result['questions'] ?? [],
+            'auto_detected' => $result['auto_detected'] ?? []
+        ];
+    } else {
+        return [
+            'ok' => true,
+            'step' => 'generate',
+            'prompt' => $result['prompt'] ?? '',
+            'languages' => $result['languages'] ?? [],
+            'regions' => $result['regions'] ?? [],
+            'sources' => $result['sources'] ?? [],
+            'reasoning' => $result['reasoning'] ?? ''
+        ];
+    }
 }
