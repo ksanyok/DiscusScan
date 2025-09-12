@@ -586,47 +586,25 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $userPrompt = "Проанализируй описание пользователя и определи нужны ли уточняющие вопросы:\n\n" . $userInput;
         
     } else {
-        // Этап 2: Генерация финального промпта
+        // Этап 2: Генерация финального промпта (упрощили схему, reasoning не обязателен)
         $schema = [
             'type' => 'object',
             'properties' => [
                 'prompt' => ['type' => 'string'],
-                'languages' => [
-                    'type' => 'array',
-                    'items' => ['type' => 'string']
-                ],
-                'regions' => [
-                    'type' => 'array',
-                    'items' => ['type' => 'string']
-                ],
-                'sources' => [
-                    'type' => 'array',
-                    'items' => ['type' => 'string']
-                ],
+                'languages' => ['type' => 'array','items' => ['type' => 'string']],
+                'regions' => ['type' => 'array','items' => ['type' => 'string']],
+                'sources' => ['type' => 'array','items' => ['type' => 'string']],
                 'reasoning' => ['type' => 'string']
             ],
-            'required' => ['prompt', 'languages', 'regions', 'sources', 'reasoning'],
+            'required' => ['prompt','languages','regions','sources'],
             'additionalProperties' => false
         ];
-        
-        $systemPrompt = "Ты эксперт по анализу текста для настройки системы мониторинга упоминаний в интернете.\n\n"
-                      . "На основе первоначального описания пользователя и его ответов на уточняющие вопросы создай:\n"
-                      . "1. Оптимальный промпт для поиска упоминаний\n"
-                      . "2. Список языков поиска (коды ISO: ru, uk, en, pl, de, fr)\n"
-                      . "3. Список регионов (коды ISO: UA, PL, RU, DE, US, FR)\n"
-                      . "4. Список источников (forums, telegram, social, news)\n\n"
-                      . "Промпт должен быть конкретным и включать:\n"
-                      . "- Ключевые термины и названия\n"
-                      . "- Синонимы и вариации\n"
-                      . "- Контекст использования\n"
-                      . "- Специфику отрасли/темы\n\n"
-                      . "Возвращай ТОЛЬКО JSON согласно схеме.";
-        
+        $systemPrompt = "Ты эксперт по настройке мониторинга. Сформируй JSON с ключами prompt, languages, regions, sources. Без лишнего текста. prompt: конкретный, включает ключевые слова, синонимы, контекст. languages/regions/sources — массивы. Если не уверен — ставь пустой массив.";
         $userPrompt = $userInput;
     }
     
     // Динамический лимит токенов (уменьшаем для clarify чтобы снизить риск лимита)
-    $outTokens = $step === 'clarify' ? 800 : 2200;
+    $outTokens = $step === 'clarify' ? 700 : 1200; // уменьшили лимит generate, чтобы избежать length
     // Новая универсальная переменная параметра токенов (для текущих моделей нужен max_completion_tokens)
     $tokenParamName = 'max_completion_tokens';
     
@@ -790,7 +768,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         app_log('error', 'smart_wizard', 'Invalid OpenAI response format', ['body' => $body]);
         return ['ok' => false, 'error' => 'Некорректный формат ответа от OpenAI'];
     }
-    
+    $finishReason = $responseData['choices'][0]['finish_reason'] ?? '';
     $msgNode = $responseData['choices'][0]['message'] ?? null;
     $content = '';
     if (is_array($msgNode)) {
@@ -814,6 +792,51 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $content = $m[2];
     }
     $content = trim($content);
+    
+    // Fallback: для generate если контент пустой или finish_reason=length
+    if ($step === 'generate' && (trim($content)==='' || $finishReason==='length')) {
+        app_log('warning','smart_wizard','Empty or truncated content on generate, fallback retry',[
+            'finish_reason'=>$finishReason,
+            'resp_len'=>strlen($body)
+        ]);
+        // Повторяем без response_format и без reasoning поля в подсказке
+        $fallbackSystem = "Верни строго JSON: {\"prompt\":string,\"languages\":[...],\"regions\":[...],\"sources\":[...]}. Никакого текста вне JSON.";
+        $fallbackPayload = [
+            'model' => $model,
+            'messages' => [
+                ['role' => 'system', 'content' => $fallbackSystem],
+                ['role' => 'user', 'content' => $userPrompt]
+            ],
+            $tokenParamName => 1600
+        ];
+        $chG = curl_init($requestUrl);
+        curl_setopt_array($chG, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => $requestHeaders,
+            CURLOPT_POSTFIELDS => json_encode($fallbackPayload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 90,
+            CURLOPT_HEADER => true
+        ]);
+        $respG = curl_exec($chG);
+        $infoG = curl_getinfo($chG);
+        $statusG = (int)($infoG['http_code'] ?? 0);
+        $headerSizeG = (int)($infoG['header_size'] ?? 0);
+        $bodyG = substr((string)$respG, $headerSizeG);
+        curl_close($chG);
+        if ($statusG === 200) {
+            $responseData = json_decode($bodyG, true) ?: $responseData; // перезапись
+            if (isset($responseData['choices'][0]['message']['content'])) {
+                $content = $responseData['choices'][0]['message']['content'];
+                if (preg_match('~```(json)?\s*(.+?)```~is', $content, $mm)) { $content = $mm[2]; }
+                $content = trim($content);
+            }
+            $finishReason = $responseData['choices'][0]['finish_reason'] ?? $finishReason;
+            app_log('info','smart_wizard','Fallback generate retry success',['finish_reason'=>$finishReason,'len'=>strlen($content)]);
+        } else {
+            app_log('error','smart_wizard','Fallback generate retry failed',['status'=>$statusG,'body_preview'=>substr($bodyG,0,300)]);
+        }
+    }
     
     $result = $content !== '' ? json_decode($content, true) : null;
     
