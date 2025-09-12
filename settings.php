@@ -148,30 +148,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
                 
                 foreach ($wizardData['questions'] as $i => $question) {
                     $answer = $_POST["question_$i"] ?? '';
-                    if (is_array($answer)) {
-                        $answer = implode(', ', $answer);
-                    }
-                    if (!empty($answer)) {
+                    if (is_array($answer)) { $answer = implode(', ', $answer); }
+                    $answer = trim($answer);
+                    if ($answer !== '') {
                         $combinedInput .= $question['question'] . ": " . $answer . "\n";
                     }
                 }
 
-                // Новые блоки: явно указанные языки и регионы из формы
-                $langs = $_POST['wizard_languages'] ?? [];
-                $customLangs = trim($_POST['wizard_languages_custom'] ?? '');
-                if ($customLangs !== '') {
-                    $extra = preg_split('~[;,\s]+~u', $customLangs, -1, PREG_SPLIT_NO_EMPTY);
-                    if ($extra) { $langs = array_merge($langs, $extra); }
+                // Новые блоки: свободный ввод языков и регионов (без чекбоксов)
+                // Поддерживаем обратную совместимость: если пришли wizard_languages[] (старый формат) — добавим их тоже
+                $langs = [];
+                $freeLangs = trim($_POST['wizard_languages_custom'] ?? '');
+                if ($freeLangs !== '') {
+                    $langs = preg_split('~[;:,\n\r\t\s]+~u', $freeLangs, -1, PREG_SPLIT_NO_EMPTY);
+                } elseif (!empty($_POST['wizard_languages']) && is_array($_POST['wizard_languages'])) { // fallback
+                    $langs = $_POST['wizard_languages'];
                 }
                 $langs = array_values(array_unique(array_filter(array_map('trim', $langs))));
                 if ($langs) {
                     $combinedInput .= "Предпочитаемые языки: " . implode(', ', $langs) . "\n";
                 }
-                $regions = $_POST['wizard_regions'] ?? [];
-                $customRegions = trim($_POST['wizard_regions_custom'] ?? '');
-                if ($customRegions !== '') {
-                    $extraR = preg_split('~[;,\s]+~u', $customRegions, -1, PREG_SPLIT_NO_EMPTY);
-                    if ($extraR) { $regions = array_merge($regions, $extraR); }
+                
+                $regions = [];
+                $freeRegs = trim($_POST['wizard_regions_custom'] ?? '');
+                if ($freeRegs !== '') {
+                    $regions = preg_split('~[;:,\n\r\t\s]+~u', $freeRegs, -1, PREG_SPLIT_NO_EMPTY);
+                } elseif (!empty($_POST['wizard_regions']) && is_array($_POST['wizard_regions'])) { // fallback
+                    $regions = $_POST['wizard_regions'];
                 }
                 $regions = array_values(array_unique(array_filter(array_map('trim', $regions))));
                 if ($regions) {
@@ -565,7 +568,7 @@ function showQuestionsModal() {
   if (!questionsData || !questionsData.questions) return;
   const modal = document.getElementById('smartWizardModal');
   const modalBody = modal.querySelector('.modal-body');
-  let questionsHtml = '<p class="muted">ИИ проанализировал ваше описание и предлагает уточнить некоторые детали (рекомендации). Вы можете скорректировать языки и регионы или добавить свои.</p>';
+  let questionsHtml = '<p class="muted">Уточните детали в свободной форме. Ответьте текстом — никаких чекбоксов, просто впишите что считаете нужным. Можно пропускать вопросы.</p>';
   if (Array.isArray(questionsData.recommendations) && questionsData.recommendations.length) {
     questionsHtml += '<div style="margin:12px 0 18px; padding:10px 14px; border:1px solid var(--border); border-radius:10px; background:rgba(255,255,255,0.04);">';
     questionsHtml += '<div style="font-weight:600; font-size:13px; margin-bottom:6px;">Рекомендации улучшения</div><ul style="margin:0; padding-left:18px; font-size:12.5px; line-height:1.45;">';
@@ -578,26 +581,8 @@ function showQuestionsModal() {
   
   questionsData.questions.forEach((question, index) => {
     questionsHtml += '<div style="margin-bottom: 16px;">';
-    questionsHtml += '<label style="font-weight: 600; margin-bottom: 8px; display: block;">' + escapeHtml(question.question) + '</label>';
-    
-    if (question.type === 'single' && question.options) {
-      question.options.forEach((option) => {
-        questionsHtml += '<label class="checkbox" style="margin-bottom: 4px; display:flex; align-items:center; gap:6px;">';
-        questionsHtml += '<input type="radio" name="question_' + index + '" value="' + escapeHtml(option) + '">';
-        questionsHtml += '<span>' + escapeHtml(option) + '</span>';
-        questionsHtml += '</label>';
-      });
-    } else if (question.type === 'multiple' && question.options) {
-      question.options.forEach((option) => {
-        questionsHtml += '<label class="checkbox" style="margin-bottom: 4px; display:flex; align-items:center; gap:6px;">';
-        questionsHtml += '<input type="checkbox" name="question_' + index + '[]" value="' + escapeHtml(option) + '">';
-        questionsHtml += '<span>' + escapeHtml(option) + '</span>';
-        questionsHtml += '</label>';
-      });
-    } else {
-      questionsHtml += '<input type="text" name="question_' + index + '" placeholder="Ваш ответ...">';
-    }
-    
+    questionsHtml += '<label style="font-weight: 600; margin-bottom: 6px; display:block;">' + escapeHtml(question.question) + '</label>';
+    questionsHtml += '<textarea name="question_' + index + '" rows="2" placeholder="Ваш ответ..." style="width:100%; resize:vertical;"></textarea>';
     questionsHtml += '</div>';
   });
   
@@ -605,29 +590,21 @@ function showQuestionsModal() {
     const detected = questionsData.auto_detected;
     const langs = Array.isArray(detected.languages) ? detected.languages : [];
     const regions = Array.isArray(detected.regions) ? detected.regions : [];
-    questionsHtml += '<div style="margin:20px 0; padding:12px; border:1px solid var(--border); border-radius:10px; background:rgba(91,140,255,0.07);">';
-    questionsHtml += '<strong style="display:block; margin-bottom:6px;">Рекомендованные языки</strong>';
-    questionsHtml += '<div class="inline-group">';
-    if (langs.length) {
-      langs.forEach(l => { questionsHtml += '<label><input type="checkbox" name="wizard_languages[]" value="' + escapeHtml(l) + '" checked> ' + escapeHtml(l) + '</label>'; });
-    } else {
-      questionsHtml += '<span class="muted" style="font-size:12px;">Не определены</span>';
+    if (langs.length || regions.length) {
+      questionsHtml += '<div style="margin:20px 0; padding:12px; border:1px solid var(--border); border-radius:10px; background:rgba(91,140,255,0.07);">';
+      if (langs.length) {
+        questionsHtml += '<div style="margin-bottom:10px;"><strong>Предполагаемые языки:</strong> '+escapeHtml(langs.join(', '))+'</div>';
+      }
+      questionsHtml += '<label style="display:block; font-size:12px; margin-bottom:4px;">Языки (коды через запятую)</label>';
+      questionsHtml += '<input type="text" name="wizard_languages_custom" placeholder="ru, en, uk..." value="'+escapeHtml(langs.join(', '))+'" style="width:100%; margin-bottom:12px;">';
+      if (regions.length) {
+        questionsHtml += '<div style="margin-bottom:10px;"><strong>Предполагаемые регионы:</strong> '+escapeHtml(regions.join(', '))+'</div>';
+      }
+      questionsHtml += '<label style="display:block; font-size:12px; margin-bottom:4px;">Регионы (коды стран через запятую)</label>';
+      questionsHtml += '<input type="text" name="wizard_regions_custom" placeholder="UA, PL, DE..." value="'+escapeHtml(regions.join(', '))+'" style="width:100%;">';
+      questionsHtml += '<div class="small-note" style="margin-top:8px;">Можно удалить лишнее или добавить свои через запятую.</div>';
+      questionsHtml += '</div>';
     }
-    questionsHtml += '</div>';
-    questionsHtml += '<input type="text" name="wizard_languages_custom" placeholder="Добавить свои (через запятую)">';
-    questionsHtml += '<div class="small-note">Можно оставить как есть или дописать свои коды (ru, en, uk ...)</div>';
-    questionsHtml += '<hr style="margin:14px 0; border:none; border-top:1px solid var(--border);">';
-    questionsHtml += '<strong style="display:block; margin-bottom:6px;">Рекомендованные регионы</strong>';
-    questionsHtml += '<div class="inline-group">';
-    if (regions.length) {
-      regions.forEach(r => { questionsHtml += '<label><input type="checkbox" name="wizard_regions[]" value="' + escapeHtml(r) + '" checked> ' + escapeHtml(r) + '</label>'; });
-    } else {
-      questionsHtml += '<span class="muted" style="font-size:12px;">Не определены</span>';
-    }
-    questionsHtml += '</div>';
-    questionsHtml += '<input type="text" name="wizard_regions_custom" placeholder="Добавить свои (через запятую)">';
-    questionsHtml += '<div class="small-note">Можно оставить как есть или дописать свои коды стран (UA, PL, DE ...)</div>';
-    questionsHtml += '</div>';
   }
   
   questionsHtml += '<div class="modal-actions">';
