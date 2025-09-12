@@ -544,7 +544,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'required' => ['languages','regions','questions'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Ты извлекаешь языки и регионы из пользовательского описания мониторинга. Верни СТРОГО JSON по схеме. Никакого текста вне JSON.\nПравила:\n1. languages: массив уникальных 2-буквенных кодов ISO 639-1 (lower-case) явно или неявно выведенных из текста.\n2. regions: массив уникальных 2-буквенных кодов ISO 3166-1 alpha-2 (upper-case).\n3. Распознавай упоминания на естественном языке: 'русский'->ru, 'украинском'->uk, 'по-английски'->en и т.д.\n4. Фразы вида 'вся европа', 'европа', 'europe', 'в Европе' — разворачивай в список стран Европы: AL,AD,AT,BY,BE,BA,BG,HR,CY,CZ,DK,EE,FI,FR,DE,GR,HU,IS,IE,IT,LV,LI,LT,LU,MT,MD,MC,ME,NL,MK,NO,PL,PT,RO,RU,SM,RS,SK,SI,ES,SE,CH,TR,UA,GB,VA.\n5. Не добавляй домыслы: если невозможно достоверно определить язык/регион — не включай.\n6. Если из контекста уже можно работать (есть хотя бы 1 язык ИЛИ хотя бы 1 регион) — questions = [].\n7. Если ни одного языка и ни одного региона извлечь нельзя — questions = ['Укажите языки (ISO 639-1, через запятую)','Укажите страны или регионы (ISO 3166-1 alpha-2, через запятую). Можно \'Европа\''].\n8. Не включай источники, не перечисляй соцсети. Только языки/регионы.\n9. Порядок кодов произвольный, но без повторов.\n10. Строго соблюдай регистр: языки lower-case, регионы upper-case.";
+        $systemPrompt = "Ты извлекаешь языки и регионы из пользовательского описания мониторинга. Верни СТРОГО JSON по схеме. Никакого текста вне JSON.\nПравила:\n1. languages: массив уникальных 2-буквенных кодов ISO 639-1 (lower-case) явно или неявно выведенных из текста.\n2. regions: массив уникальных 2-буквенных кодов ISO 3166-1 alpha-2 (upper-case).\n3. Распознавай упоминания на естественном языке: 'русский'->ru, 'украинском'->uk, 'по-английски'->en и т.д.\n4. Фразы вида 'вся европа', 'европа', 'europe', 'в Европе' — разворачивай в список стран Европы: AL,AD,AT,BY,BE,BA,BG,HR,CY,CZ,DK,EE,FI,FR,DE,GR,HU,IS,IE,IT,LV,LI,LT,LU,MT,MD,MC,ME,NL,MK,NO,PL,PT,RO,RU,SM,RS,SK,SI,ES,SE,CH,TR,UA,GB,VA.\n5. Не добавляй домыслы: если невозможно достоверно определить язык/регион — не включай.\n6. Если найден хотя бы один язык ИЛИ хотя бы один регион — questions = [].\n7. Если НЕ найден ни один язык И И ни один регион — questions = ['Укажите языки и регионы (произвольный текст, можно \"Европа\", перечислите страны / языки)'].\n8. Не включай источники, не перечисляй соцсети. Только языки/регионы.\n9. Порядок кодов произвольный, но без повторов.\n10. Строго соблюдай регистр: языки lower-case, регионы upper-case.";
         $userPrompt = $userInput;
         
         // Собираем payload (минимальный, без response_format strict schema даст компактный ответ)
@@ -592,8 +592,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'ok' => true,
                 'step' => 'clarify',
                 'questions' => [
-                    'Укажите языки (ISO 639-1, через запятую)',
-                    'Укажите страны или регионы (ISO 3166-1 alpha-2, через запятую). Можно "Европа"'
+                    'Укажите языки и регионы (произвольный текст, можно "Европа", перечислите страны / языки)'
                 ],
                 'auto_detected' => ['languages'=>[], 'regions'=>[]],
                 'recommendations' => []
@@ -605,7 +604,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $parsed = json_decode(trim($content), true);
         if (!is_array($parsed)) {
             app_log('error','smart_wizard','Clarify parse fail',[ 'content_preview'=>substr($content,0,200)]);
-            $parsed = ['languages'=>[],'regions'=>[],'questions'=>[ 'Укажите языки (ISO 639-1, через запятую)','Укажите страны или регионы (ISO 3166-1 alpha-2, через запятую). Можно "Европа"' ]];
+            $parsed = ['languages'=>[],'regions'=>[],'questions'=>[ 'Укажите языки и регионы (произвольный текст, можно "Европа", перечислите страны / языки)' ]];
         }
         // Нормализация
         $langs = [];
@@ -626,5 +625,119 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'recommendations' => []
         ];
     }
-    // ...existing code after (generate logic остаётся без изменений)...
+    
+    // === GENERATE ШАГ (восстановлен, чтобы функция всегда возвращала значение) ===
+    if ($step === 'generate') {
+        // Схема ожидаемого ответа от ИИ
+        $schema = [
+            'type' => 'object',
+            'properties' => [
+                'prompt' => ['type'=>'string'],
+                'languages' => [ 'type'=>'array', 'items'=>['type'=>'string'] ],
+                'regions' => [ 'type'=>'array', 'items'=>['type'=>'string'] ],
+                'sources' => [ 'type'=>'array', 'items'=>['type'=>'string'] ],
+                'reasoning' => ['type'=>'string']
+            ],
+            'required' => ['prompt','languages','regions','sources'],
+            'additionalProperties' => false
+        ];
+        $systemPrompt = "Сформируй финальный monitoring prompt. Правила:\n- Кратко и конкретно: цель мониторинга + ключевые бренды/термины/варианты + аспекты интереса (например: отзывы, проблемы, сравнения) + временной фокус если он есть в тексте.\n- НЕ перечисляй типы источников (forums, telegram, social, news, reviews) внутри текста prompt.\n- Не добавляй служебных комментариев.\n- languages: массив ISO 639-1 (lower-case) из контекста (не придумывай).\n- regions: массив ISO 3166-1 alpha-2 (upper-case). Расширяй 'Европа' -> список стран если явно присутствует.\n- sources: если они очевидно упомянуты явно (например в явном перечислении), верни нормализованные значения из: forums, telegram, social, news, reviews; иначе пустой массив. НЕ вставляй их в сам prompt.\n- reasoning: краткое описание (может быть опущено моделью при усечении). Возвращай СТРОГО JSON по схеме.";
+        $userPrompt = $userInput;
+        
+        $requestUrl = 'https://api.openai.com/v1/chat/completions';
+        $requestHeaders = [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $apiKey,
+            'Expect:'
+        ];
+        $payload = [
+            'model' => $model,
+            'messages' => [
+                ['role'=>'system','content'=>$systemPrompt],
+                ['role'=>'user','content'=>$userPrompt]
+            ],
+            'response_format' => [
+                'type' => 'json_schema',
+                'json_schema' => [
+                    'name' => 'wizard_generate',
+                    'schema' => $schema,
+                    'strict' => true
+                ]
+            ],
+            'max_tokens' => 900,
+            'temperature' => 0
+        ];
+        
+        $ch = curl_init($requestUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => $requestHeaders,
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 60
+        ]);
+        $raw = curl_exec($ch);
+        $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+        
+        if ($status !== 200 || !$raw) {
+            app_log('error','smart_wizard','Generate AI request failed',[ 'status'=>$status,'curl_error'=>$curlErr,'body_preview'=>substr((string)$raw,0,300)]);
+            // Простейший fallback – берём первые строки пользовательского ввода
+            $fallbackPrompt = trim(mb_substr(preg_replace('~\s+~u',' ', $userInput),0,400));
+            return [
+                'ok' => true,
+                'step' => 'generate',
+                'prompt' => $fallbackPrompt,
+                'languages' => [],
+                'regions' => [],
+                'sources' => [],
+            ];
+        }
+        $data = json_decode($raw,true);
+        $content = $data['choices'][0]['message']['content'] ?? '';
+        if (preg_match('~```json\s*(.+?)```~is',$content,$m)) { $content = $m[1]; }
+        $parsed = json_decode(trim($content), true);
+        if (!is_array($parsed)) {
+            app_log('error','smart_wizard','Generate parse fail',[ 'content_preview'=>substr($content,0,200)]);
+            $parsed = [
+                'prompt' => trim(mb_substr(preg_replace('~\s+~u',' ', $userInput),0,400)),
+                'languages' => [],
+                'regions' => [],
+                'sources' => []
+            ];
+        }
+        // Санитизация prompt от источников
+        $prompt = (string)($parsed['prompt'] ?? '');
+        $before = $prompt;
+        $prompt = preg_replace('~\b(forums?|telegram|social media|social networks?|news sites?|review sites?|reviews)\b~iu','', $prompt);
+        $prompt = preg_replace('~\s{2,}~u',' ', trim($prompt));
+        if ($before !== $prompt) {
+            app_log('info','smart_wizard','Stripped sources from prompt',[ 'before'=>$before,'after'=>$prompt ]);
+        }
+        // Нормализация списков
+        $langs = [];
+        foreach (($parsed['languages']??[]) as $l){ $l=strtolower(trim($l)); if(preg_match('~^[a-z]{2}$~',$l)) $langs[]=$l; }
+        $langs = array_values(array_unique($langs));
+        $regs = [];
+        foreach (($parsed['regions']??[]) as $r){ $r=strtoupper(trim($r)); if(preg_match('~^[A-Z]{2}$~',$r)) $regs[]=$r; }
+        $regs = array_values(array_unique($regs));
+        $sources = [];
+        $allowedSources = ['forums','telegram','social','news','reviews'];
+        foreach (($parsed['sources']??[]) as $s){
+            $s = strtolower(trim($s));
+            if (in_array($s,$allowedSources,true) && !in_array($s,$sources,true)) $sources[]=$s;
+        }
+        return [
+            'ok' => true,
+            'step' => 'generate',
+            'prompt' => $prompt,
+            'languages' => $langs,
+            'regions' => $regs,
+            'sources' => $sources
+        ];
+    }
+    
+    // Если передан неизвестный шаг
+    return [ 'ok'=>false, 'error'=>'Unsupported step' ];
 }
