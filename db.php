@@ -592,7 +592,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'ok' => true,
                 'step' => 'clarify',
                 'questions' => [
-                    'Укажите языки и регионы (произвольный текст, можно "Европа", перечислите страны / языки)'
+                    ['question'=>'Укажите языки и регионы (произвольный текст, можно "Европа", перечислите страны / языки)','type'=>'text']
                 ],
                 'auto_detected' => ['languages'=>[], 'regions'=>[]],
                 'recommendations' => []

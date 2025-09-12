@@ -568,7 +568,24 @@ function showQuestionsModal() {
   if (!questionsData || !questionsData.questions) return;
   const modal = document.getElementById('smartWizardModal');
   const modalBody = modal.querySelector('.modal-body');
-  let questionsHtml = '<p class="muted">Уточните детали в свободной форме. Ответьте текстом — никаких чекбоксов, просто впишите что считаете нужным. Можно пропускать вопросы.</p>';
+  const detected = questionsData.auto_detected || {};
+  const hasLangs = Array.isArray(detected.languages) && detected.languages.length>0;
+  const hasRegions = Array.isArray(detected.regions) && detected.regions.length>0;
+  const singleFallback = questionsData.questions.length===1 && /языки и регионы/i.test(questionsData.questions[0].question || '');
+
+  let questionsHtml = '';
+  if (singleFallback && !hasLangs && !hasRegions) {
+    questionsHtml += '<p class="muted" style="margin-bottom:10px;">Укажите любые подсказки по языкам и географии для мониторинга. Можно в свободной форме.</p>';
+    questionsHtml += '<div style="margin:0 0 14px; padding:10px 14px; border:1px solid var(--border); border-radius:10px; font-size:12.5px; line-height:1.5; background:rgba(255,255,255,0.04);">'
+      + '<strong>Примеры:</strong><br>'
+      + '– ru, en; регионы: UA, PL, DE<br>'
+      + '– Хочу русскоязычные и украинские обсуждения в Украине, Польше и Германии<br>'
+      + '– Европа (значит AL, AT, BE, BY, ... GB, UA и т.п.)<br>'
+      + '– Английский в США и Канаде<br>'
+      + 'Можно написать группами: “Европа”, “СНГ”, “Латинская Америка” — ИИ сам постарается развернуть.</div>';
+  } else {
+    questionsHtml += '<p class="muted">Уточните детали в свободной форме. Ответьте текстом — никаких чекбоксов, просто впишите что считаете нужным. Можно пропустить вопросы.</p>';
+  }
   if (Array.isArray(questionsData.recommendations) && questionsData.recommendations.length) {
     questionsHtml += '<div style="margin:12px 0 18px; padding:10px 14px; border:1px solid var(--border); border-radius:10px; background:rgba(255,255,255,0.04);">';
     questionsHtml += '<div style="font-weight:600; font-size:13px; margin-bottom:6px;">Рекомендации улучшения</div><ul style="margin:0; padding-left:18px; font-size:12.5px; line-height:1.45;">';
@@ -580,31 +597,32 @@ function showQuestionsModal() {
   questionsHtml += '<input type="hidden" name="wizard_step" value="generate">';
   
   questionsData.questions.forEach((question, index) => {
+    let placeholder = 'Ваш ответ...';
+    if (singleFallback) {
+      placeholder = 'Например: ru, en; регионы: UA, PL, DE / или: Европа; или: rus, uk + Украина и Польша';
+    }
     questionsHtml += '<div style="margin-bottom: 16px;">';
     questionsHtml += '<label style="font-weight: 600; margin-bottom: 6px; display:block;">' + escapeHtml(question.question) + '</label>';
-    questionsHtml += '<textarea name="question_' + index + '" rows="2" placeholder="Ваш ответ..." style="width:100%; resize:vertical;"></textarea>';
+    questionsHtml += '<textarea name="question_' + index + '" rows="3" placeholder="'+escapeHtml(placeholder)+'" style="width:100%; resize:vertical;"></textarea>';
     questionsHtml += '</div>';
   });
   
-  if (questionsData.auto_detected) {
-    const detected = questionsData.auto_detected;
-    const langs = Array.isArray(detected.languages) ? detected.languages : [];
-    const regions = Array.isArray(detected.regions) ? detected.regions : [];
-    if (langs.length || regions.length) {
-      questionsHtml += '<div style="margin:20px 0; padding:12px; border:1px solid var(--border); border-radius:10px; background:rgba(91,140,255,0.07);">';
-      if (langs.length) {
-        questionsHtml += '<div style="margin-bottom:10px;"><strong>Предполагаемые языки:</strong> '+escapeHtml(langs.join(', '))+'</div>';
-      }
-      questionsHtml += '<label style="display:block; font-size:12px; margin-bottom:4px;">Языки (коды через запятую)</label>';
-      questionsHtml += '<input type="text" name="wizard_languages_custom" placeholder="ru, en, uk..." value="'+escapeHtml(langs.join(', '))+'" style="width:100%; margin-bottom:12px;">';
-      if (regions.length) {
-        questionsHtml += '<div style="margin-bottom:10px;"><strong>Предполагаемые регионы:</strong> '+escapeHtml(regions.join(', '))+'</div>';
-      }
-      questionsHtml += '<label style="display:block; font-size:12px; margin-bottom:4px;">Регионы (коды стран через запятую)</label>';
-      questionsHtml += '<input type="text" name="wizard_regions_custom" placeholder="UA, PL, DE..." value="'+escapeHtml(regions.join(', '))+'" style="width:100%;">';
-      questionsHtml += '<div class="small-note" style="margin-top:8px;">Можно удалить лишнее или добавить свои через запятую.</div>';
-      questionsHtml += '</div>';
+  if (hasLangs || hasRegions) {
+    const langs = hasLangs ? detected.languages : [];
+    const regions = hasRegions ? detected.regions : [];
+    questionsHtml += '<div style="margin:20px 0; padding:12px; border:1px solid var(--border); border-radius:10px; background:rgba(91,140,255,0.07);">';
+    if (langs.length) {
+      questionsHtml += '<div style="margin-bottom:10px;"><strong>Предполагаемые языки:</strong> '+escapeHtml(langs.join(', '))+'</div>';
     }
+    questionsHtml += '<label style="display:block; font-size:12px; margin-bottom:4px;">Языки (коды через запятую)</label>';
+    questionsHtml += '<input type="text" name="wizard_languages_custom" placeholder="ru, en, uk..." value="'+escapeHtml(langs.join(', '))+'" style="width:100%; margin-bottom:12px;">';
+    if (regions.length) {
+      questionsHtml += '<div style="margin-bottom:10px;"><strong>Предполагаемые регионы:</strong> '+escapeHtml(regions.join(', '))+'</div>';
+    }
+    questionsHtml += '<label style="display:block; font-size:12px; margin-bottom:4px;">Регионы (коды стран через запятую)</label>';
+    questionsHtml += '<input type="text" name="wizard_regions_custom" placeholder="UA, PL, DE..." value="'+escapeHtml(regions.join(', '))+'" style="width:100%;">';
+    questionsHtml += '<div class="small-note" style="margin-top:8px;">Можно удалить лишнее или добавить свои через запятую. “Европа” автоматически развернётся.</div>';
+    questionsHtml += '</div>';
   }
   
   questionsHtml += '<div class="modal-actions">';
