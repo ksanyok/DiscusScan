@@ -150,6 +150,13 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
       <div class="hint">CLI: <code>php <?=e(__DIR__ . '/scan.php')?></code></div>
 
       <button class="btn primary">Сохранить</button>
+      
+      <hr>
+      <div class="card-title">Оркестрация поиска</div>
+      <div class="hint" style="margin-bottom: 12px;">
+        Настройте автоматический поиск новых результатов по расписанию с сохранением состояния и группировкой по доменам.
+      </div>
+      <a href="monitoring_wizard.php" class="btn btn-ghost">🎯 Мастер настроек оркестрации</a>
     </form>
   </div>
 </main>

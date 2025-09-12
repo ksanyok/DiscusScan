@@ -139,6 +139,52 @@ function install_schema(PDO $pdo): void {
             error TEXT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     ");
+    
+    // domains (семплированные домены для оркестрации)
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS domains (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            domain VARCHAR(255) NOT NULL,
+            lang_hint VARCHAR(10),
+            region VARCHAR(10),
+            score FLOAT DEFAULT 0,
+            is_paused TINYINT(1) DEFAULT 0,
+            last_scan_at TIMESTAMP NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uniq_domain (domain)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    ");
+    
+    // topics (найденные темы/треды)
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS topics (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            domain_id INT,
+            title TEXT,
+            url TEXT NOT NULL,
+            published_at TIMESTAMP NULL,
+            author VARCHAR(255),
+            snippet TEXT,
+            score FLOAT DEFAULT 0,
+            seen_hash VARCHAR(64),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
+            UNIQUE KEY uniq_seen_hash (seen_hash)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    ");
+    
+    // runs (запуски оркестрированного поиска)
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS runs (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP NULL,
+            found_count INT DEFAULT 0,
+            window_from TIMESTAMP NULL,
+            window_to TIMESTAMP NULL,
+            status VARCHAR(30) DEFAULT 'started'
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    ");
 }
 
 // --- НАСТРОЙКИ ---
@@ -176,7 +222,21 @@ function ensure_defaults(PDO $pdo): void {
         'telegram_token' => '',
         'telegram_chat_id' => '',
         'cron_secret' => bin2hex(random_bytes(12)),
-        'last_scan_at' => null
+        'last_scan_at' => null,
+        
+        // Настройки оркестрации
+        'orchestration_topic' => '',
+        'orchestration_sources' => json_encode(['forums']),
+        'orchestration_languages' => json_encode(['ru', 'uk', 'en']),
+        'orchestration_regions' => json_encode(['UA', 'PL']),
+        'orchestration_freshness_window_hours' => 72,
+        'orchestration_per_domain_limit' => 5,
+        'orchestration_total_limit' => 50,
+        'orchestration_paused_domains' => json_encode([]),
+        'orchestration_include_domains' => json_encode([]),
+        'orchestration_exclude_domains' => json_encode([]),
+        'orchestration_enabled' => false,
+        'orchestration_last_run' => null
     ];
     foreach ($defaults as $k => $v) {
         if (get_setting($k, '__missing__') === '__missing__') {
@@ -212,4 +272,255 @@ function e(string $s): string {
 function host_from_url(string $url): string {
     $h = parse_url($url, PHP_URL_HOST) ?: '';
     return strtolower(preg_replace('~^www\.~i', '', $h));
+}
+
+// --- ПУБЛИЧНЫЕ ФУНКЦИИ ОРКЕСТРАЦИИ ---
+
+/**
+ * Запуск семплинга доменов
+ */
+function run_seed_domains(array $settings): void {
+    $result = [];
+    $topic = $settings['topic'] ?? '';
+    if (empty($topic)) {
+        throw new Exception('Topic is required for domain seeding');
+    }
+    
+    // Сохраняем настройки перед запуском
+    set_setting('orchestration_topic', $topic);
+    set_setting('orchestration_sources', json_encode($settings['sources'] ?? ['forums']));
+    set_setting('orchestration_languages', json_encode($settings['languages'] ?? ['ru']));
+    set_setting('orchestration_regions', json_encode($settings['regions'] ?? ['UA']));
+    
+    // Вызываем функцию семплинга через HTTP (для избежания дублирования кода)
+    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://') 
+              . ($_SERVER['HTTP_HOST'] ?? 'localhost')
+              . dirname($_SERVER['SCRIPT_NAME']);
+    $secret = get_setting('cron_secret', '');
+    $url = $baseUrl . '/monitoring_cron.php?action=seed_domains&secret=' . urlencode($secret);
+    
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 300,
+        CURLOPT_FOLLOWLOCATION => true
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode !== 200) {
+        throw new Exception("Domain seeding failed with HTTP code: $httpCode");
+    }
+    
+    app_log('info', 'orchestration', 'Domain seeding triggered via API', $settings);
+}
+
+/**
+ * Запуск периодического сканирования
+ */
+function run_scan(array $settings): array {
+    $topic = $settings['topic'] ?? get_setting('orchestration_topic', '');
+    if (empty($topic)) {
+        throw new Exception('Topic is required for scanning');
+    }
+    
+    // Обновляем настройки если переданы
+    if (isset($settings['freshness_window_hours'])) {
+        set_setting('orchestration_freshness_window_hours', (int)$settings['freshness_window_hours']);
+    }
+    if (isset($settings['per_domain_limit'])) {
+        set_setting('orchestration_per_domain_limit', (int)$settings['per_domain_limit']);
+    }
+    if (isset($settings['total_limit'])) {
+        set_setting('orchestration_total_limit', (int)$settings['total_limit']);
+    }
+    
+    // Запускаем сканирование
+    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://') 
+              . ($_SERVER['HTTP_HOST'] ?? 'localhost')
+              . dirname($_SERVER['SCRIPT_NAME']);
+    $secret = get_setting('cron_secret', '');
+    $url = $baseUrl . '/monitoring_cron.php?action=scan&secret=' . urlencode($secret);
+    
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 600,
+        CURLOPT_FOLLOWLOCATION => true
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode !== 200) {
+        throw new Exception("Scan failed with HTTP code: $httpCode");
+    }
+    
+    $result = json_decode($response, true) ?: ['ok' => false, 'error' => 'Invalid response'];
+    
+    app_log('info', 'orchestration', 'Scan triggered via API', array_merge($settings, $result));
+    
+    return $result;
+}
+
+/**
+ * Управление паузой домена
+ */
+function toggle_domain_pause(string $domain, bool $isPaused): void {
+    $stmt = pdo()->prepare("UPDATE domains SET is_paused = ? WHERE domain = ?");
+    $stmt->execute([$isPaused ? 1 : 0, $domain]);
+    
+    if ($stmt->rowCount() === 0) {
+        throw new Exception("Domain not found: $domain");
+    }
+    
+    app_log('info', 'orchestration', 'Domain pause toggled', [
+        'domain' => $domain, 
+        'is_paused' => $isPaused
+    ]);
+}
+
+/**
+ * Получение результатов, сгруппированных по доменам
+ */
+function get_results_grouped_by_domain(array $params = []): array {
+    $limit = max(1, min(1000, (int)($params['limit'] ?? 100)));
+    $offset = max(0, (int)($params['offset'] ?? 0));
+    $source = $params['source'] ?? 'all'; // all, forums, telegram
+    $language = $params['language'] ?? 'all';
+    $region = $params['region'] ?? 'all';
+    $minScore = (float)($params['min_score'] ?? 0);
+    $daysBack = max(1, (int)($params['days_back'] ?? 30));
+    
+    $whereConditions = ["t.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)"];
+    $whereParams = [$daysBack];
+    
+    if ($minScore > 0) {
+        $whereConditions[] = "t.score >= ?";
+        $whereParams[] = $minScore;
+    }
+    
+    if ($language !== 'all') {
+        $whereConditions[] = "d.lang_hint = ?";
+        $whereParams[] = $language;
+    }
+    
+    if ($region !== 'all') {
+        $whereConditions[] = "d.region = ?";
+        $whereParams[] = strtoupper($region);
+    }
+    
+    $whereClause = 'WHERE ' . implode(' AND ', $whereConditions);
+    
+    $sql = "
+        SELECT 
+            d.domain,
+            d.lang_hint,
+            d.region,
+            d.is_paused,
+            COUNT(t.id) as topics_count,
+            AVG(t.score) as avg_score,
+            MAX(t.created_at) as latest_topic_at,
+            JSON_ARRAYAGG(
+                JSON_OBJECT(
+                    'title', t.title,
+                    'url', t.url,
+                    'published_at', t.published_at,
+                    'author', t.author,
+                    'snippet', LEFT(t.snippet, 200),
+                    'score', t.score,
+                    'created_at', t.created_at
+                )
+            ) as topics
+        FROM domains d
+        INNER JOIN topics t ON t.domain_id = d.id
+        $whereClause
+        GROUP BY d.id, d.domain, d.lang_hint, d.region, d.is_paused
+        ORDER BY topics_count DESC, avg_score DESC
+        LIMIT ? OFFSET ?
+    ";
+    
+    $whereParams[] = $limit;
+    $whereParams[] = $offset;
+    
+    $stmt = pdo()->prepare($sql);
+    $stmt->execute($whereParams);
+    $results = $stmt->fetchAll();
+    
+    // Декодируем JSON topics
+    foreach ($results as &$result) {
+        $topics = json_decode($result['topics'], true);
+        if (is_array($topics)) {
+            // Убираем null записи и сортируем по score
+            $topics = array_filter($topics, fn($t) => $t !== null);
+            usort($topics, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
+            $result['topics'] = $topics;
+        } else {
+            $result['topics'] = [];
+        }
+    }
+    
+    return $results;
+}
+
+/**
+ * Отправка уведомлений о новых находках
+ */
+function notify_new(array $findings): void {
+    if (empty($findings)) return;
+    
+    $tgToken = (string)get_setting('telegram_token', '');
+    $tgChat = (string)get_setting('telegram_chat_id', '');
+    
+    if (empty($tgToken) || empty($tgChat)) {
+        app_log('warning', 'orchestration', 'Telegram notification skipped - no token/chat configured');
+        return;
+    }
+    
+    $totalNew = count($findings);
+    $domainsCount = count(array_unique(array_column($findings, 'domain')));
+    
+    $message = "🎯 Новые результаты мониторинга\n\n";
+    $message .= "📊 Найдено тем: $totalNew\n";
+    $message .= "🌐 Доменов затронуто: $domainsCount\n\n";
+    
+    // Показываем топ-5 результатов
+    $topFindings = array_slice($findings, 0, 5);
+    foreach ($topFindings as $finding) {
+        $title = mb_substr($finding['title'] ?? '', 0, 60);
+        $domain = $finding['domain'] ?? '';
+        $message .= "• $title\n  $domain\n\n";
+    }
+    
+    if ($totalNew > 5) {
+        $message .= "... и ещё " . ($totalNew - 5) . " результатов\n\n";
+    }
+    
+    $message .= "⏰ " . date('Y-m-d H:i');
+    
+    $tgUrl = "https://api.telegram.org/bot{$tgToken}/sendMessage";
+    $ch = curl_init($tgUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POSTFIELDS => [
+            'chat_id' => $tgChat,
+            'text' => $message,
+            'disable_web_page_preview' => 1
+        ],
+        CURLOPT_TIMEOUT => 15
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    app_log('info', 'orchestration', 'Notification sent', [
+        'findings_count' => $totalNew,
+        'domains_count' => $domainsCount,
+        'telegram_status' => $httpCode
+    ]);
 }
