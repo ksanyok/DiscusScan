@@ -955,45 +955,102 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     }
     
     if ($step === 'clarify') {
+        // Fallback: если модель не задала вопросов, но ввод размытый — генерируем базовый набор
+        $questions = $result['questions'] ?? [];
+        $auto = $result['auto_detected'] ?? [
+            'languages' => [], 'regions' => [], 'sources' => []
+        ];
+        $needsLang = !preg_match('~\b(ru|en|uk|pl|de|fr|es)\b~i', $userInput);
+        $needsRegion = !preg_match('~\b(UA|RU|PL|DE|US|GB|FR|ES|IT)\b~i', $userInput);
+        $needsTime = !preg_match('~(последн|дней|недел|месяц|месяцев|год|202[0-9]|20[1-2][0-9])~ui', $userInput);
+        $needsSources = !preg_match('~(форум|forum|telegram|tg|соцсет|social|отзыв|reviews|news|новост)~ui', $userInput);
+        $tooKeywordy = count($questions) === 0; // модель вернула только список ключевых слов
+        if ($tooKeywordy && ($needsLang || $needsRegion || $needsTime || $needsSources)) {
+            $questions = [
+                [
+                    'question' => 'Какие языки мониторить? (коды)',
+                    'type' => 'multiple',
+                    'options' => ['ru','en','uk','pl','de','fr','es']
+                ],
+                [
+                    'question' => 'Какие регионы / страны важны? (коды)',
+                    'type' => 'multiple',
+                    'options' => ['RU','UA','PL','DE','US','GB']
+                ],
+                [
+                    'question' => 'Какие типы источников интересуют?',
+                    'type' => 'multiple',
+                    'options' => ['forums','social','reviews','news','telegram']
+                ],
+                [
+                    'question' => 'Какой временной диапазон анализировать?',
+                    'type' => 'single',
+                    'options' => ['30d','90d','6m','12m']
+                ]
+            ];
+            // если автоопределение пустое — оставляем как есть
+            if (!isset($auto['languages'])) $auto['languages']=[];
+            if (!isset($auto['regions'])) $auto['regions']=[];
+            if (!isset($auto['sources'])) $auto['sources']=[];
+            $result['recommendations'] = $result['recommendations'] ?? [];
+            $result['recommendations'][] = 'Уточнены базовые параметры (языки, регионы, источники, период)';
+            app_log('info','smart_wizard','Injected fallback clarify questions',[ 'needsLang'=>$needsLang,'needsRegion'=>$needsRegion,'needsTime'=>$needsTime,'needsSources'=>$needsSources ]);
+        }
         return [
             'ok' => true,
             'step' => 'clarify',
-            'questions' => $result['questions'] ?? [],
-            'auto_detected' => $result['auto_detected'] ?? [],
+            'questions' => $questions,
+            'auto_detected' => $auto,
             'recommendations' => $result['recommendations'] ?? []
         ];
     } else {
-        // Нормализация кодов
-        $normLangs = [];
-        foreach (($result['languages'] ?? []) as $l) {
-            $l = strtolower(trim($l));
-            if (preg_match('~^[a-z]{2}$~', $l)) $normLangs[] = $l;
-        }
-        $normLangs = array_values(array_unique($normLangs));
-        $normRegs = [];
-        foreach (($result['regions'] ?? []) as $r) {
-            $r = strtoupper(trim($r));
-            if (preg_match('~^[A-Z]{2}$~', $r)) $normRegs[] = $r;
-        }
-        $normRegs = array_values(array_unique($normRegs));
-        $promptText = trim($result['prompt'] ?? '');
-        if ($promptText === '') {
-            // Поиск prompt рекурсивно
-            $stack = [$result];
-            while ($stack) { $node = array_pop($stack); if (is_array($node)) { foreach ($node as $k=>$v){ if (is_string($k)&&strtolower($k)==='prompt'&&is_string($v)&&trim($v)!==''){ $promptText = trim($v); break 2;} if (is_array($v)) $stack[]=$v; } } }
-        }
-        if ($promptText === '') {
-            app_log('error','smart_wizard','Empty prompt extracted after normalization',[ 'keys'=>array_keys($result)]);
-            return ['ok'=>false,'error'=>'ИИ вернул пустой промпт. Повторите еще раз.'];
-        }
-        return [
-            'ok' => true,
-            'step' => 'generate',
-            'prompt' => $promptText,
-            'languages' => $normLangs,
-            'regions' => $normRegs,
-            'sources' => $result['sources'] ?? [],
-            'reasoning' => $result['reasoning'] ?? ''
+        // Этап 2: Генерация финального промпта (упрощили схему, reasoning не обязателен)
+        $schema = [
+            'type' => 'object',
+            'properties' => [
+                'prompt' => ['type' => 'string'],
+                'languages' => ['type' => 'array','items' => ['type' => 'string']],
+                'regions' => ['type' => 'array','items' => ['type' => 'string']],
+                'sources' => ['type' => 'array','items' => ['type' => 'string']],
+                'reasoning' => ['type' => 'string']
+            ],
+            'required' => ['prompt','languages','regions','sources'],
+            'additionalProperties' => false
         ];
+        $systemPrompt = "Сформируй финальный JSON. prompt: сжатый, конкретный, содержит ключевые слова/синонимы, контекст цели мониторинга и фильтры (если есть). languages: ISO 639-1 lowercase, regions: ISO 3166-1 alpha-2 uppercase. Только коды, без названий. sources из ограниченного списка [forums,telegram,social,news,reviews]. Никакого текста вне JSON.";
+        $userPrompt = $userInput;
     }
+    
+    // Нормализация кодов
+    $normLangs = [];
+    foreach (($result['languages'] ?? []) as $l) {
+        $l = strtolower(trim($l));
+        if (preg_match('~^[a-z]{2}$~', $l)) $normLangs[] = $l;
+    }
+    $normLangs = array_values(array_unique($normLangs));
+    $normRegs = [];
+    foreach (($result['regions'] ?? []) as $r) {
+        $r = strtoupper(trim($r));
+        if (preg_match('~^[A-Z]{2}$~', $r)) $normRegs[] = $r;
+    }
+    $normRegs = array_values(array_unique($normRegs));
+    $promptText = trim($result['prompt'] ?? '');
+    if ($promptText === '') {
+        // Поиск prompt рекурсивно
+        $stack = [$result];
+        while ($stack) { $node = array_pop($stack); if (is_array($node)) { foreach ($node as $k=>$v){ if (is_string($k)&&strtolower($k)==='prompt'&&is_string($v)&&trim($v)!==''){ $promptText = trim($v); break 2;} if (is_array($v)) $stack[]=$v; } } }
+    }
+    if ($promptText === '') {
+        app_log('error','smart_wizard','Empty prompt extracted after normalization',[ 'keys'=>array_keys($result)]);
+        return ['ok'=>false,'error'=>'ИИ вернул пустой промпт. Повторите еще раз.'];
+    }
+    return [
+        'ok' => true,
+        'step' => 'generate',
+        'prompt' => $promptText,
+        'languages' => $normLangs,
+        'regions' => $normRegs,
+        'sources' => $result['sources'] ?? [],
+        'reasoning' => $result['reasoning'] ?? ''
+    ];
 }
