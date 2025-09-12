@@ -657,13 +657,14 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         'max_completion_tokens' => 1500
     ];
     
+    $timeout = ($step === 'generate') ? 90 : 45; // увеличили таймаут
     $ch = curl_init($requestUrl);
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
         CURLOPT_HTTPHEADER => $requestHeaders,
         CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 30,
+        CURLOPT_TIMEOUT => $timeout,
         CURLOPT_HEADER => true
     ]);
     
@@ -710,12 +711,56 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         return ['ok' => false, 'error' => 'Некорректный формат ответа от OpenAI'];
     }
     
-    $content = $responseData['choices'][0]['message']['content'];
-    $result = json_decode($content, true);
+    $msgNode = $responseData['choices'][0]['message'] ?? null;
+    $content = '';
+    if (is_array($msgNode)) {
+        // Формат может быть строкой
+        if (isset($msgNode['content']) && is_string($msgNode['content'])) {
+            $content = $msgNode['content'];
+        } elseif (isset($msgNode['content']) && is_array($msgNode['content'])) {
+            // Новый формат: массив блоков
+            $parts = [];
+            foreach ($msgNode['content'] as $part) {
+                if (is_array($part) && isset($part['text'])) { $parts[] = $part['text']; }
+                elseif (is_string($part)) { $parts[] = $part; }
+            }
+            $content = implode("\n", $parts);
+        }
+        // Иногда JSON в parsed
+        if ($content === '' && isset($msgNode['parsed']) && is_array($msgNode['parsed'])) {
+            $content = json_encode($msgNode['parsed'], JSON_UNESCAPED_UNICODE);
+        }
+    }
+    
+    $rawContentForLog = $content;
+    // Очистка от возможных markdown-кодов
+    if (preg_match('~```(json)?\s*(.+?)```~is', $content, $m)) {
+        $content = $m[2];
+    }
+    $content = trim($content);
+    
+    $result = $content !== '' ? json_decode($content, true) : null;
     
     if (!$result) {
-        app_log('error', 'smart_wizard', 'Failed to parse JSON content', ['content' => $content]);
-        return ['ok' => false, 'error' => 'Не удалось разобрать ответ от ИИ'];
+        // Фолбэк: попытка вытащить первый JSON-объект из всего тела
+        $extracted = null;
+        if (preg_match('{\{(?:[^{}]|(?R))*\}}u', $body, $mm)) { // рекурсивный паттерн
+            $candidate = $mm[0];
+            $decoded = json_decode($candidate, true);
+            if (is_array($decoded)) { $extracted = $decoded; $result = $decoded; $content = $candidate; }
+        }
+        if (!$result && $rawContentForLog !== '' && $rawContentForLog !== $content) {
+            $decoded = json_decode($rawContentForLog, true);
+            if (is_array($decoded)) { $result = $decoded; }
+        }
+        if (!$result) {
+            app_log('error', 'smart_wizard', 'Failed to parse JSON content', [
+                'content_preview' => mb_substr($content,0,400),
+                'raw_message_node' => $msgNode,
+                'body_preview' => mb_substr($body,0,800)
+            ]);
+            return ['ok' => false, 'error' => 'Не удалось разобрать ответ ИИ (пустой или не-JSON). Повторите еще раз.'];
+        }
     }
     
     if ($step === 'clarify') {
