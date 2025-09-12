@@ -627,7 +627,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'strict' => true
             ]
         ],
-        'max_tokens' => 1500,
+        'max_completion_tokens' => 1500,
         'temperature' => 0.3
     ];
     
