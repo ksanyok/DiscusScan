@@ -524,3 +524,113 @@ function notify_new(array $findings): void {
         'telegram_status' => $httpCode
     ]);
 }
+
+/**
+ * Умный мастер - анализ пользовательского ввода и генерация промпта
+ */
+function processSmartWizard(string $userInput, string $apiKey, string $model): array {
+    $requestUrl = 'https://api.openai.com/v1/chat/completions';
+    $requestHeaders = [
+        'Content-Type: application/json',
+        'Authorization: Bearer ' . $apiKey,
+        'Expect:'
+    ];
+    
+    $schema = [
+        'type' => 'object',
+        'properties' => [
+            'prompt' => ['type' => 'string'],
+            'languages' => ['type' => 'array', 'items' => ['type' => 'string']],
+            'regions' => ['type' => 'array', 'items' => ['type' => 'string']],
+            'reasoning' => ['type' => 'string']
+        ],
+        'required' => ['prompt', 'languages', 'regions'],
+        'additionalProperties' => false
+    ];
+    
+    $systemPrompt = "Ты эксперт по анализу текста для настройки системы мониторинга упоминаний в интернете.\n\n"
+                  . "Пользователь опишет что он хочет отслеживать. Твоя задача:\n"
+                  . "1. Создать оптимальный промпт для поиска упоминаний этой темы\n"
+                  . "2. Определить релевантные языки поиска (коды ISO: ru, uk, en, pl, de, fr и т.д.)\n"
+                  . "3. Определить релевантные регионы/страны (коды ISO: UA, PL, RU, DE, US и т.д.)\n\n"
+                  . "Промпт должен быть конкретным и включать:\n"
+                  . "- Ключевые термины и названия\n"
+                  . "- Синонимы и вариации\n"
+                  . "- Контекст использования\n"
+                  . "- Типы площадок для поиска\n\n"
+                  . "Языки определяй на основе:\n"
+                  . "- Языка описания пользователя\n"
+                  . "- Целевой аудитории продукта/услуги\n"
+                  . "- Географии бизнеса\n\n"
+                  . "Регионы определяй на основе:\n"
+                  . "- Упомянутых стран/рынков\n"
+                  . "- Языковых групп\n"
+                  . "- Домен-зон (.ua, .pl, .ru и т.д.)\n\n"
+                  . "Возвращай ТОЛЬКО JSON согласно схеме.";
+    
+    $userPrompt = "Проанализируй описание пользователя и сформируй настройки мониторинга:\n\n" . $userInput;
+    
+    $payload = [
+        'model' => $model,
+        'messages' => [
+            ['role' => 'system', 'content' => $systemPrompt],
+            ['role' => 'user', 'content' => $userPrompt]
+        ],
+        'response_format' => [
+            'type' => 'json_schema',
+            'json_schema' => [
+                'name' => 'monitoring_settings',
+                'schema' => $schema,
+                'strict' => true
+            ]
+        ],
+        'max_tokens' => 1000,
+        'temperature' => 0.3
+    ];
+    
+    $ch = curl_init($requestUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => $requestHeaders,
+        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_HEADER => true
+    ]);
+    
+    $resp = curl_exec($ch);
+    $info = curl_getinfo($ch);
+    $status = (int)($info['http_code'] ?? 0);
+    $body = substr((string)$resp, (int)($info['header_size'] ?? 0));
+    curl_close($ch);
+    
+    app_log('info', 'smart_wizard', 'OpenAI request', [
+        'status' => $status,
+        'user_input_length' => strlen($userInput),
+        'response_length' => strlen($body)
+    ]);
+    
+    if ($status !== 200) {
+        return ['ok' => false, 'error' => 'OpenAI request failed', 'status' => $status];
+    }
+    
+    $responseData = json_decode($body, true);
+    if (!$responseData || !isset($responseData['choices'][0]['message']['content'])) {
+        return ['ok' => false, 'error' => 'Invalid OpenAI response format'];
+    }
+    
+    $content = $responseData['choices'][0]['message']['content'];
+    $result = json_decode($content, true);
+    
+    if (!$result || !isset($result['prompt'])) {
+        return ['ok' => false, 'error' => 'Failed to parse generated settings'];
+    }
+    
+    return [
+        'ok' => true,
+        'prompt' => $result['prompt'],
+        'languages' => $result['languages'] ?? [],
+        'regions' => $result['regions'] ?? [],
+        'reasoning' => $result['reasoning'] ?? ''
+    ];
+}

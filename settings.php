@@ -7,7 +7,51 @@ $models = [
 ];
 
 $ok = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+// Обработка умного мастера
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
+    $userInput = trim($_POST['user_description'] ?? '');
+    $apiKey = (string)get_setting('openai_api_key', '');
+    $model = (string)get_setting('openai_model', 'gpt-5-mini');
+    
+    if (!empty($userInput) && !empty($apiKey)) {
+        // Вызываем OpenAI для анализа пользовательского ввода
+        $wizardResult = processSmartWizard($userInput, $apiKey, $model);
+        
+        if ($wizardResult['ok']) {
+            // Сохраняем результаты обработки
+            set_setting('search_prompt', $wizardResult['prompt']);
+            if (!empty($wizardResult['languages'])) {
+                set_setting('detected_languages', json_encode($wizardResult['languages']));
+            }
+            if (!empty($wizardResult['regions'])) {
+                set_setting('detected_regions', json_encode($wizardResult['regions']));
+            }
+            
+            $ok = 'Промпт сформирован автоматически! Языки и регионы определены.';
+            
+            app_log('info', 'smart_wizard', 'Prompt generated', [
+                'user_input_length' => strlen($userInput),
+                'generated_prompt_length' => strlen($wizardResult['prompt']),
+                'languages' => $wizardResult['languages'] ?? [],
+                'regions' => $wizardResult['regions'] ?? []
+            ]);
+        } else {
+            $ok = 'Ошибка генерации промпта: ' . ($wizardResult['error'] ?? 'Неизвестная ошибка');
+        }
+    } else {
+        $ok = 'Заполните описание и убедитесь что указан OpenAI API ключ';
+    }
+    
+    // Перезагружаем страницу чтобы показать обновленный промпт
+    if (strpos($ok, 'сформирован') !== false) {
+        header('Location: settings.php?wizard_success=1');
+        exit;
+    }
+}
+
+// Обработка обычных настроек
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['smart_wizard'])) {
     // базовые настройки
     set_setting('openai_api_key', trim($_POST['openai_api_key'] ?? ''));
     set_setting('openai_model', in_array($_POST['openai_model'] ?? '', $models, true) ? $_POST['openai_model'] : 'gpt-5-mini');
@@ -92,6 +136,10 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
       </label>
 
       <label>Промпт (что и где искать)
+        <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+          <button type="button" id="smartWizardBtn" class="btn small btn-ghost">🤖 Умный мастер</button>
+          <span class="muted" style="font-size: 12px;">Опишите что хотите отслеживать, ИИ сформирует промпт</span>
+        </div>
         <textarea name="search_prompt" rows="5" placeholder="Опиши задачу для агента..."><?=e($prompt)?></textarea>
       </label>
 
@@ -150,16 +198,103 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
       <div class="hint">CLI: <code>php <?=e(__DIR__ . '/scan.php')?></code></div>
 
       <button class="btn primary">Сохранить</button>
-      
-      <hr>
-      <div class="card-title">Оркестрация поиска</div>
-      <div class="hint" style="margin-bottom: 12px;">
-        Настройте автоматический поиск новых результатов по расписанию с сохранением состояния и группировкой по доменам.
-      </div>
-      <a href="monitoring_wizard.php" class="btn btn-ghost">🎯 Мастер настроек оркестрации</a>
     </form>
   </div>
 </main>
 <?php include 'footer.php'; ?>
+
+<!-- Модальное окно умного мастера -->
+<div id="smartWizardModal" class="modal" style="display: none;">
+  <div class="modal-backdrop"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>🤖 Умный мастер промптов</h3>
+      <button type="button" class="modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted">Опишите в произвольной форме что вы хотите отслеживать. ИИ автоматически сформирует промпт и определит языки/регионы для поиска.</p>
+      
+      <form id="wizardForm" method="post">
+        <input type="hidden" name="smart_wizard" value="1">
+        
+        <label>Описание задачи
+          <textarea name="user_description" rows="6" placeholder="Например: Хочу отслеживать упоминания моего стартапа по продаже органических овощей в Украине и Польше. Интересуют обсуждения на форумах про здоровое питание, отзывы покупателей, сравнения с конкурентами..." required></textarea>
+        </label>
+        
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" onclick="closeWizardModal()">Отмена</button>
+          <button type="submit" class="btn primary" id="generateBtn">✨ Сгенерировать промпт</button>
+        </div>
+      </form>
+      
+      <div id="loadingState" style="display: none; text-align: center; padding: 20px;">
+        <div class="spinner"></div>
+        <p>ИИ анализирует ваше описание и формирует промпт...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+.modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; }
+.modal-backdrop { position: absolute; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); }
+.modal-content { position: relative; max-width: 600px; margin: 5% auto; background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px 16px; border-bottom: 1px solid var(--border); }
+.modal-header h3 { margin: 0; }
+.modal-close { background: none; border: none; font-size: 24px; color: var(--muted); cursor: pointer; line-height: 1; }
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 20px 24px; }
+.modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px; }
+
+.spinner { width: 40px; height: 40px; border: 4px solid var(--border); border-top: 4px solid var(--pri); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px; }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+</style>
+
+<script>
+function openWizardModal() {
+  document.getElementById('smartWizardModal').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeWizardModal() {
+  document.getElementById('smartWizardModal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// Открытие модального окна
+document.getElementById('smartWizardBtn').addEventListener('click', openWizardModal);
+
+// Закрытие по клику на backdrop
+document.querySelector('.modal-backdrop').addEventListener('click', closeWizardModal);
+
+// Закрытие по ESC
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeWizardModal();
+});
+
+// Обработка формы
+document.getElementById('wizardForm').addEventListener('submit', function(e) {
+  const description = this.user_description.value.trim();
+  if (!description) {
+    e.preventDefault();
+    alert('Пожалуйста, опишите что вы хотите отслеживать');
+    return;
+  }
+  
+  // Показываем загрузку
+  document.querySelector('.modal-body form').style.display = 'none';
+  document.getElementById('loadingState').style.display = 'block';
+  
+  // Форма отправится автоматически
+});
+
+// Показать сообщение об успехе если пришли после генерации
+<?php if (isset($_GET['wizard_success'])): ?>
+setTimeout(function() {
+  alert('✨ Промпт успешно сгенерирован! Проверьте поле "Промпт" выше.');
+}, 100);
+<?php endif; ?>
+</script>
+
 </body>
 </html>
