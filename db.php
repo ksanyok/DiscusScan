@@ -644,8 +644,8 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'strict' => true
             ]
         ],
-        $tokenParamName => $outTokens,
-        'temperature' => 0.2
+        $tokenParamName => $outTokens
+        // temperature убран (модель не поддерживает)
     ];
     
     $timeout = ($step === 'generate') ? 90 : 45;
@@ -694,6 +694,30 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             curl_close($ch2);
             if ($status2 === 200) { $body = $body2; $status = 200; } else { app_log('error','smart_wizard','Retry failed',['status'=>$status2,'curl_error'=>$curlErr2,'body_preview'=>substr($body2,0,300)]); }
         }
+    }
+    
+    if ($status === 400 && (strpos($body, 'Invalid schema for response_format') !== false || strpos($body,'response_format') !== false)) {
+        // Повторяем без response_format
+        unset($payload['response_format']);
+        app_log('info','smart_wizard','Retry without response_format', ['step'=>$step]);
+        $chR = curl_init($requestUrl);
+        curl_setopt_array($chR,[
+            CURLOPT_POST=>true,
+            CURLOPT_HTTPHEADER=>$requestHeaders,
+            CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_RETURNTRANSFER=>true,
+            CURLOPT_TIMEOUT=>$timeout,
+            CURLOPT_HEADER=>true
+        ]);
+        $respR = curl_exec($chR);
+        $infoR = curl_getinfo($chR);
+        $statusR = (int)($infoR['http_code'] ?? 0);
+        $headerSizeR = (int)($infoR['header_size'] ?? 0);
+        $bodyR = substr((string)$respR, $headerSizeR);
+        $curlErrR = curl_error($chR);
+        curl_close($chR);
+        if ($statusR === 200) { $status = 200; $body = $bodyR; $curlErr = $curlErrR; }
+        else { app_log('error','smart_wizard','Retry without response_format failed',['status'=>$statusR,'body_preview'=>substr($bodyR,0,300)]); }
     }
     
     // Второй fallback: если всё ещё не 200 и step=clarify — пробуем без json_schema
