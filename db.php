@@ -538,6 +538,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     
     if ($step === 'clarify') {
         // Этап 1: Генерация уточняющих вопросов
+        // FIX: Добавили 'auto_detected' в required для strict схемы (ошибка Missing 'auto_detected')
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -548,7 +549,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                         'properties' => [
                             'question' => ['type' => 'string'],
                             'options' => [
-                                'type' => 'array', 
+                                'type' => 'array',
                                 'items' => ['type' => 'string']
                             ],
                             'type' => ['type' => 'string', 'enum' => ['single', 'multiple', 'text']]
@@ -561,15 +562,15 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                     'type' => 'object',
                     'properties' => [
                         'languages' => [
-                            'type' => 'array', 
+                            'type' => 'array',
                             'items' => ['type' => 'string']
                         ],
                         'regions' => [
-                            'type' => 'array', 
+                            'type' => 'array',
                             'items' => ['type' => 'string']
                         ],
                         'sources' => [
-                            'type' => 'array', 
+                            'type' => 'array',
                             'items' => ['type' => 'string']
                         ]
                     ],
@@ -577,7 +578,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                     'additionalProperties' => false
                 ]
             ],
-            'required' => ['questions'],
+            'required' => ['questions', 'auto_detected'], // <-- исправлено
             'additionalProperties' => false
         ];
         
@@ -599,25 +600,26 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         
     } else {
         // Этап 2: Генерация финального промпта
+        // FIX: Добавили 'reasoning' в required чтобы удовлетворить строгой схеме
         $schema = [
             'type' => 'object',
             'properties' => [
                 'prompt' => ['type' => 'string'],
                 'languages' => [
-                    'type' => 'array', 
+                    'type' => 'array',
                     'items' => ['type' => 'string']
                 ],
                 'regions' => [
-                    'type' => 'array', 
+                    'type' => 'array',
                     'items' => ['type' => 'string']
                 ],
                 'sources' => [
-                    'type' => 'array', 
+                    'type' => 'array',
                     'items' => ['type' => 'string']
                 ],
                 'reasoning' => ['type' => 'string']
             ],
-            'required' => ['prompt', 'languages', 'regions', 'sources'],
+            'required' => ['prompt', 'languages', 'regions', 'sources', 'reasoning'], // <-- добавлено reasoning
             'additionalProperties' => false
         ];
         
@@ -667,7 +669,9 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     $resp = curl_exec($ch);
     $info = curl_getinfo($ch);
     $status = (int)($info['http_code'] ?? 0);
-    $body = substr((string)$resp, (int)($info['header_size'] ?? 0));
+    $headerSize = (int)($info['header_size'] ?? 0);
+    $body = substr((string)$resp, $headerSize);
+    $curlErr = curl_error($ch); // FIX: сохранить до закрытия
     curl_close($ch);
     
     app_log('info', 'smart_wizard', 'OpenAI request', [
@@ -678,19 +682,24 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     ]);
     
     if ($status !== 200) {
-        // Более детальная диагностика ошибки
         $errorDetails = [
             'status' => $status,
-            'curl_error' => curl_error($ch),
+            'curl_error' => $curlErr,
             'body_preview' => substr($body, 0, 500)
         ];
-        
         app_log('error', 'smart_wizard', 'OpenAI request failed', $errorDetails);
         
+        // Специальная подсказка при ошибке схемы
+        $hint = '';
+        if (strpos($body, 'Invalid schema') !== false) {
+            $hint = 'Похоже, что OpenAI ожидает все свойства в required при strict=true. Мы обновили схему.';
+        }
+        
         return [
-            'ok' => false, 
+            'ok' => false,
             'error' => "Ошибка запроса к OpenAI (код $status). Проверьте API ключ и интернет-соединение.",
-            'details' => $errorDetails
+            'details' => $errorDetails,
+            'hint' => $hint
         ];
     }
     
