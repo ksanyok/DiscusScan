@@ -553,7 +553,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                             ],
                             'type' => ['type' => 'string', 'enum' => ['single', 'multiple', 'text']]
                         ],
-                        'required' => ['question', 'type'],
+                        'required' => ['question', 'options', 'type'],
                         'additionalProperties' => false
                     ]
                 ],
