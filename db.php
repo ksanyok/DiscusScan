@@ -573,6 +573,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                             'items' => ['type' => 'string']
                         ]
                     ],
+                    'required' => ['languages', 'regions', 'sources'],
                     'additionalProperties' => false
                 ]
             ],
