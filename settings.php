@@ -124,11 +124,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
                         $ok = 'Ошибка генерации промпта: ' . ($finalResult['error'] ?? 'Неизвестная ошибка');
                     }
                 } else {
-                    // Нужны уточняющие вопросы - сохраняем в сессии
+                    // Нужны уточняющие вопросы - сохраняем в сессии (добавлены recommendations)
                     $_SESSION['wizard_data'] = [
                         'original_input' => $userInput,
                         'questions' => $wizardResult['questions'],
-                        'auto_detected' => $wizardResult['auto_detected'] ?? []
+                        'auto_detected' => $wizardResult['auto_detected'] ?? [],
+                        'recommendations' => $wizardResult['recommendations'] ?? []
                     ];
                     header('Location: settings.php?wizard_questions=1');
                     exit;
@@ -562,11 +563,15 @@ setTimeout(function() {
 function showQuestionsModal() {
   const questionsData = <?= json_encode($_SESSION['wizard_data'] ?? null, JSON_UNESCAPED_UNICODE) ?>;
   if (!questionsData || !questionsData.questions) return;
-  
   const modal = document.getElementById('smartWizardModal');
   const modalBody = modal.querySelector('.modal-body');
-  
   let questionsHtml = '<p class="muted">ИИ проанализировал ваше описание и предлагает уточнить некоторые детали (рекомендации). Вы можете скорректировать языки и регионы или добавить свои.</p>';
+  if (Array.isArray(questionsData.recommendations) && questionsData.recommendations.length) {
+    questionsHtml += '<div style="margin:12px 0 18px; padding:10px 14px; border:1px solid var(--border); border-radius:10px; background:rgba(255,255,255,0.04);">';
+    questionsHtml += '<div style="font-weight:600; font-size:13px; margin-bottom:6px;">Рекомендации улучшения</div><ul style="margin:0; padding-left:18px; font-size:12.5px; line-height:1.45;">';
+    questionsData.recommendations.forEach(r => { questionsHtml += '<li>'+escapeHtml(r)+'</li>'; });
+    questionsHtml += '</ul></div>';
+  }
   questionsHtml += '<form id="questionsForm" method="post">';
   questionsHtml += '<input type="hidden" name="smart_wizard" value="1">';
   questionsHtml += '<input type="hidden" name="wizard_step" value="generate">';

@@ -554,7 +554,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                             ],
                             'type' => ['type' => 'string', 'enum' => ['single', 'multiple', 'text']]
                         ],
-                        'required' => ['question', 'options', 'type'],
+                        'required' => ['question', 'type'],
                         'additionalProperties' => false
                     ]
                 ],
@@ -576,15 +576,17 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                     ],
                     'required' => ['languages', 'regions', 'sources'],
                     'additionalProperties' => false
+                ],
+                'recommendations' => [
+                    'type' => 'array',
+                    'items' => ['type' => 'string']
                 ]
             ],
             'required' => ['questions', 'auto_detected'],
             'additionalProperties' => false
         ];
-        
-        $systemPrompt = "Ты эксперт по настройке мониторинга. Если инфы действительно достаточно (есть явное упоминание темы, целей, а также явно указаны или легко выводимы языки и регионы) — questions=[]; ИНАЧЕ задай 2-4 лаконичных вопроса. Обязательно задай хотя бы один вопрос про языки или регионы, если пользователь их не упомянул. Вопросы короткие. Не более 6 опций. Используй тип single/multiple/text. Если не уверен — лучше спроси. Автоопредели languages (ru,en,uk,pl,de,fr), regions (UA,PL,DE,US,FR,RU), sources (forums,telegram,social,news). Верни строго JSON по схеме.";
-        $userPrompt = "Проанализируй описание пользователя и определи нужны ли уточняющие вопросы:\n\n" . $userInput;
-        
+        $systemPrompt = "Ты помощник по настройке мониторинга. ВСЕГДА генерируй 2-4 уточняющих вопроса (questions) кроме крайне редкого случая, когда: 1) явно указана цель мониторинга, 2) перечислены целевые типы источников, 3) заданы КОДЫ языков (ISO 639-1: ru,en,uk,pl,de,fr,es) и КОДЫ стран (ISO 3166-1 alpha-2: UA,PL,DE,US,FR,RU,GB,ES,IT) и 4) понятны временные рамки и intent. Если хотя бы один из критериев не выполнен — задай вопросы.\nФормат вопросов: короткие, без вводных, без номера. Для выбора нескольких — type=multiple, для одного — single, свободный ввод — text. Не более 6 опций.\nДобавь recommendations (до 3 лаконичных подсказок по улучшению описания или уточнению нишевых тем).\nАвтоопредели languages (только ISO коды в lower-case), regions (только ISO country codes upper-case), sources (forums, telegram, social, news, reviews).\nВерни СТРОГО JSON по схеме без пояснений.";
+        $userPrompt = "Описание пользователя:\n\n" . $userInput . "\n\nОпредели, что не хватает и задай вопросы.";
     } else {
         // Этап 2: Генерация финального промпта (упрощили схему, reasoning не обязателен)
         $schema = [
@@ -599,7 +601,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'required' => ['prompt','languages','regions','sources'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Ты эксперт по настройке мониторинга. Сформируй JSON с ключами prompt, languages, regions, sources. Без лишнего текста. prompt: конкретный, включает ключевые слова, синонимы, контекст. languages/regions/sources — массивы. Если не уверен — ставь пустой массив.";
+        $systemPrompt = "Сформируй финальный JSON. prompt: сжатый, конкретный, содержит ключевые слова/синонимы, контекст цели мониторинга и фильтры (если есть). languages: ISO 639-1 lowercase, regions: ISO 3166-1 alpha-2 uppercase. Только коды, без названий. sources из ограниченного списка [forums,telegram,social,news,reviews]. Никакого текста вне JSON.";
         $userPrompt = $userInput;
     }
     
@@ -957,37 +959,39 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'ok' => true,
             'step' => 'clarify',
             'questions' => $result['questions'] ?? [],
-            'auto_detected' => $result['auto_detected'] ?? []
+            'auto_detected' => $result['auto_detected'] ?? [],
+            'recommendations' => $result['recommendations'] ?? []
         ];
     } else {
-        // Fallback извлечения prompt если пустой
+        // Нормализация кодов
+        $normLangs = [];
+        foreach (($result['languages'] ?? []) as $l) {
+            $l = strtolower(trim($l));
+            if (preg_match('~^[a-z]{2}$~', $l)) $normLangs[] = $l;
+        }
+        $normLangs = array_values(array_unique($normLangs));
+        $normRegs = [];
+        foreach (($result['regions'] ?? []) as $r) {
+            $r = strtoupper(trim($r));
+            if (preg_match('~^[A-Z]{2}$~', $r)) $normRegs[] = $r;
+        }
+        $normRegs = array_values(array_unique($normRegs));
         $promptText = trim($result['prompt'] ?? '');
         if ($promptText === '') {
-            // Попытка рекурсивно найти ключ prompt
+            // Поиск prompt рекурсивно
             $stack = [$result];
-            while ($stack) {
-                $node = array_pop($stack);
-                if (is_array($node)) {
-                    foreach ($node as $k=>$v) {
-                        if (is_string($k) && strtolower($k)==='prompt' && is_string($v) && trim($v)!=='') {
-                            $promptText = trim($v); break 2;
-                        }
-                        if (is_array($v)) $stack[] = $v;
-                    }
-                }
-            }
-            // Попытка regex из оригинального сырого контента (rawContentForLog/body недоступны здесь, поэтому сохраним заранее)
+            while ($stack) { $node = array_pop($stack); if (is_array($node)) { foreach ($node as $k=>$v){ if (is_string($k)&&strtolower($k)==='prompt'&&is_string($v)&&trim($v)!==''){ $promptText = trim($v); break 2;} if (is_array($v)) $stack[]=$v; } } }
         }
         if ($promptText === '') {
-            app_log('error','smart_wizard','Empty prompt extracted from generate result',[ 'keys'=>array_keys($result), 'result_preview'=>mb_substr(json_encode($result,JSON_UNESCAPED_UNICODE),0,500)]);
-            return ['ok'=>false,'error'=>'ИИ вернул пустой промпт. Повторите еще раз или уточните описание.'];
+            app_log('error','smart_wizard','Empty prompt extracted after normalization',[ 'keys'=>array_keys($result)]);
+            return ['ok'=>false,'error'=>'ИИ вернул пустой промпт. Повторите еще раз.'];
         }
         return [
             'ok' => true,
             'step' => 'generate',
             'prompt' => $promptText,
-            'languages' => $result['languages'] ?? [],
-            'regions' => $result['regions'] ?? [],
+            'languages' => $normLangs,
+            'regions' => $normRegs,
             'sources' => $result['sources'] ?? [],
             'reasoning' => $result['reasoning'] ?? ''
         ];
