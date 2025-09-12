@@ -547,19 +547,33 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                         'type' => 'object',
                         'properties' => [
                             'question' => ['type' => 'string'],
-                            'options' => ['type' => 'array', 'items' => ['type' => 'string']],
+                            'options' => [
+                                'type' => 'array', 
+                                'items' => ['type' => 'string']
+                            ],
                             'type' => ['type' => 'string', 'enum' => ['single', 'multiple', 'text']]
                         ],
-                        'required' => ['question', 'type']
+                        'required' => ['question', 'type'],
+                        'additionalProperties' => false
                     ]
                 ],
                 'auto_detected' => [
                     'type' => 'object',
                     'properties' => [
-                        'languages' => ['type' => 'array', 'items' => ['type' => 'string']],
-                        'regions' => ['type' => 'array', 'items' => ['type' => 'string']],
-                        'sources' => ['type' => 'array', 'items' => ['type' => 'string']]
-                    ]
+                        'languages' => [
+                            'type' => 'array', 
+                            'items' => ['type' => 'string']
+                        ],
+                        'regions' => [
+                            'type' => 'array', 
+                            'items' => ['type' => 'string']
+                        ],
+                        'sources' => [
+                            'type' => 'array', 
+                            'items' => ['type' => 'string']
+                        ]
+                    ],
+                    'additionalProperties' => false
                 ]
             ],
             'required' => ['questions'],
@@ -588,9 +602,18 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'type' => 'object',
             'properties' => [
                 'prompt' => ['type' => 'string'],
-                'languages' => ['type' => 'array', 'items' => ['type' => 'string']],
-                'regions' => ['type' => 'array', 'items' => ['type' => 'string']],
-                'sources' => ['type' => 'array', 'items' => ['type' => 'string']],
+                'languages' => [
+                    'type' => 'array', 
+                    'items' => ['type' => 'string']
+                ],
+                'regions' => [
+                    'type' => 'array', 
+                    'items' => ['type' => 'string']
+                ],
+                'sources' => [
+                    'type' => 'array', 
+                    'items' => ['type' => 'string']
+                ],
                 'reasoning' => ['type' => 'string']
             ],
             'required' => ['prompt', 'languages', 'regions', 'sources'],
