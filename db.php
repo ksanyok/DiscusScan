@@ -529,6 +529,7 @@ function notify_new(array $findings): void {
  * Умный мастер - анализ пользовательского ввода и генерация промпта
  */
 function processSmartWizard(string $userInput, string $apiKey, string $model, string $step = 'clarify'): array {
+    $userInput = mb_substr($userInput, 0, 4000); // защита от слишком длинного ввода
     $requestUrl = 'https://api.openai.com/v1/chat/completions';
     $requestHeaders = [
         'Content-Type: application/json',
@@ -538,7 +539,6 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     
     if ($step === 'clarify') {
         // Этап 1: Генерация уточняющих вопросов
-        // FIX: Добавили 'auto_detected' в required для strict схемы (ошибка Missing 'auto_detected')
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -578,30 +578,15 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                     'additionalProperties' => false
                 ]
             ],
-            'required' => ['questions', 'auto_detected'], // <-- исправлено
+            'required' => ['questions', 'auto_detected'],
             'additionalProperties' => false
         ];
         
-        $systemPrompt = "Ты эксперт по настройке мониторинга упоминаний в интернете.\n\n"
-                      . "Пользователь описал что хочет отслеживать. Проанализируй описание и:\n"
-                      . "1. Если информации достаточно для создания промпта - верни пустой массив questions\n"
-                      . "2. Если нужны уточнения - создай 2-4 вопроса для получения недостающей информации\n\n"
-                      . "Типы вопросов:\n"
-                      . "- single: выбор одного варианта (радиокнопки)\n"
-                      . "- multiple: выбор нескольких вариантов (чекбоксы)\n"
-                      . "- text: свободный ввод текста\n\n"
-                      . "ОГРАНИЧЕНИЯ: не более 6 вариантов в одном вопросе. Если вариантов очень много — сгруппируй или спроси текстом. Не генерируй гигантские списки.\n\n"
-                      . "В auto_detected попытайся определить из описания:\n"
-                      . "- languages: коды языков (ru, uk, en, pl, de, fr)\n"
-                      . "- regions: коды стран (UA, PL, RU, DE, US, FR)\n"
-                      . "- sources: типы площадок (forums, telegram, social, news)\n\n"
-                      . "Возвращай ТОЛЬКО JSON согласно схеме.";
-        
+        $systemPrompt = "Ты эксперт по настройке мониторинга. Если инфы хватает — questions=[]; иначе 2-4 лаконичных вопроса. Не более 6 опций в вопросе. Автоопредели languages (ru,en,uk,pl,de,fr), regions (UA,PL,DE,US,FR,RU), sources (forums,telegram,social,news). Верни строго JSON по схеме.";
         $userPrompt = "Проанализируй описание пользователя и определи нужны ли уточняющие вопросы:\n\n" . $userInput;
         
     } else {
         // Этап 2: Генерация финального промпта
-        // FIX: Добавили 'reasoning' в required чтобы удовлетворить строгой схеме
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -620,7 +605,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 ],
                 'reasoning' => ['type' => 'string']
             ],
-            'required' => ['prompt', 'languages', 'regions', 'sources', 'reasoning'], // <-- добавлено reasoning
+            'required' => ['prompt', 'languages', 'regions', 'sources', 'reasoning'],
             'additionalProperties' => false
         ];
         
@@ -637,8 +622,11 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                       . "- Специфику отрасли/темы\n\n"
                       . "Возвращай ТОЛЬКО JSON согласно схеме.";
         
-        $userPrompt = $userInput; // Здесь будет объединенная информация
+        $userPrompt = $userInput;
     }
+    
+    // Динамический лимит токенов (уменьшаем для clarify чтобы снизить риск лимита)
+    $outTokens = $step === 'clarify' ? 800 : 2200;
     
     $payload = [
         'model' => $model,
@@ -654,10 +642,11 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'strict' => true
             ]
         ],
-        'max_completion_tokens' => 1500
+        'max_tokens' => $outTokens,
+        'temperature' => 0.2
     ];
     
-    $timeout = ($step === 'generate') ? 90 : 45; // увеличили таймаут
+    $timeout = ($step === 'generate') ? 90 : 45;
     $ch = curl_init($requestUrl);
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
@@ -673,8 +662,75 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     $status = (int)($info['http_code'] ?? 0);
     $headerSize = (int)($info['header_size'] ?? 0);
     $body = substr((string)$resp, $headerSize);
-    $curlErr = curl_error($ch); // FIX: сохранить до закрытия
+    $curlErr = curl_error($ch);
     curl_close($ch);
+    
+    if ($status === 400 && strpos($body, 'max_tokens') !== false && strpos($body, 'higher') !== false) {
+        // Fallback: повторяем запрос с повышенным лимитом если не превышает 4000
+        if ($outTokens < 3500) {
+            $payload['max_tokens'] = $outTokens + 800;
+            app_log('info', 'smart_wizard', 'Retry with higher max_tokens', ['step' => $step, 'new_max_tokens' => $payload['max_tokens']]);
+            $ch2 = curl_init($requestUrl);
+            curl_setopt_array($ch2, [
+                CURLOPT_POST => true,
+                CURLOPT_HTTPHEADER => $requestHeaders,
+                CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => $timeout,
+                CURLOPT_HEADER => true
+            ]);
+            $resp2 = curl_exec($ch2);
+            $info2 = curl_getinfo($ch2);
+            $status2 = (int)($info2['http_code'] ?? 0);
+            $headerSize2 = (int)($info2['header_size'] ?? 0);
+            $body2 = substr((string)$resp2, $headerSize2);
+            $curlErr2 = curl_error($ch2);
+            curl_close($ch2);
+            if ($status2 === 200) {
+                $body = $body2;
+                $status = 200;
+            } else {
+                app_log('error', 'smart_wizard', 'Retry failed', ['status' => $status2, 'curl_error' => $curlErr2, 'body_preview' => substr($body2,0,300)]);
+            }
+        }
+    }
+    
+    // Второй fallback: если всё ещё не 200 и step=clarify — пробуем без json_schema
+    if ($status !== 200 && $step === 'clarify') {
+        $fallbackSystem = "Верни кратчайший возможный валидный JSON вида {\"questions\":[],\"auto_detected\":{\"languages\":[],\"regions\":[],\"sources\":[]}}. Не добавляй текст вне JSON. Нужно 0 вопросов если достаточно данных или 2-4 вопроса (single/multiple/text). Опций максимум 6.";
+        $fallbackPayload = [
+            'model' => $model,
+            'messages' => [
+                ['role' => 'system', 'content' => $fallbackSystem],
+                ['role' => 'user', 'content' => $userPrompt]
+            ],
+            'max_tokens' => 600,
+            'temperature' => 0.1
+        ];
+        $ch3 = curl_init($requestUrl);
+        curl_setopt_array($ch3, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => $requestHeaders,
+            CURLOPT_POSTFIELDS => json_encode($fallbackPayload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_HEADER => true
+        ]);
+        $resp3 = curl_exec($ch3);
+        $info3 = curl_getinfo($ch3);
+        $status3 = (int)($info3['http_code'] ?? 0);
+        $headerSize3 = (int)($info3['header_size'] ?? 0);
+        $body3 = substr((string)$resp3, $headerSize3);
+        $curlErr3 = curl_error($ch3);
+        curl_close($ch3);
+        app_log('info', 'smart_wizard', 'Fallback clarify no-schema request', ['status' => $status3, 'len' => strlen($body3)]);
+        if ($status3 === 200) {
+            $status = 200; $body = $body3; $curlErr = $curlErr3; // перезаписываем для дальнейшего парсинга (ниже общий парсер)
+            // Парсер ниже не ожидает schema, просто найдём JSON
+        } else {
+            app_log('error', 'smart_wizard', 'Fallback clarify failed', ['status' => $status3, 'curl_error' => $curlErr3, 'body_preview' => substr($body3,0,300)]);
+        }
+    }
     
     app_log('info', 'smart_wizard', 'OpenAI request', [
         'step' => $step,
@@ -691,7 +747,6 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         ];
         app_log('error', 'smart_wizard', 'OpenAI request failed', $errorDetails);
         
-        // Специальная подсказка при ошибке схемы
         $hint = '';
         if (strpos($body, 'Invalid schema') !== false) {
             $hint = 'Похоже, что OpenAI ожидает все свойства в required при strict=true. Мы обновили схему.';
@@ -714,11 +769,9 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     $msgNode = $responseData['choices'][0]['message'] ?? null;
     $content = '';
     if (is_array($msgNode)) {
-        // Формат может быть строкой
         if (isset($msgNode['content']) && is_string($msgNode['content'])) {
             $content = $msgNode['content'];
         } elseif (isset($msgNode['content']) && is_array($msgNode['content'])) {
-            // Новый формат: массив блоков
             $parts = [];
             foreach ($msgNode['content'] as $part) {
                 if (is_array($part) && isset($part['text'])) { $parts[] = $part['text']; }
@@ -726,14 +779,12 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             }
             $content = implode("\n", $parts);
         }
-        // Иногда JSON в parsed
         if ($content === '' && isset($msgNode['parsed']) && is_array($msgNode['parsed'])) {
             $content = json_encode($msgNode['parsed'], JSON_UNESCAPED_UNICODE);
         }
     }
     
     $rawContentForLog = $content;
-    // Очистка от возможных markdown-кодов
     if (preg_match('~```(json)?\s*(.+?)```~is', $content, $m)) {
         $content = $m[2];
     }
@@ -742,9 +793,8 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     $result = $content !== '' ? json_decode($content, true) : null;
     
     if (!$result) {
-        // Фолбэк: попытка вытащить первый JSON-объект из всего тела
         $extracted = null;
-        if (preg_match('{\{(?:[^{}]|(?R))*\}}u', $body, $mm)) { // рекурсивный паттерн
+        if (preg_match('{\{(?:[^{}]|(?R))*\}}u', $body, $mm)) {
             $candidate = $mm[0];
             $decoded = json_decode($candidate, true);
             if (is_array($decoded)) { $extracted = $decoded; $result = $decoded; $content = $candidate; }
