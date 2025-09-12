@@ -27,11 +27,11 @@ if (file_exists($envPath)) {
 }
 
 // --- БАЗОВЫЕ НАСТРОЙКИ БД (можно переопределить в config.php или .env) ---
-if (!defined('DB_HOST')) define('DB_HOST', $_ENV['DB_HOST'] ?? 'localhost');
-if (!defined('DB_NAME')) define('DB_NAME', $_ENV['DB_NAME'] ?? 'discusscan');
-if (!defined('DB_USER')) define('DB_USER', $_ENV['DB_USER'] ?? 'root');
-if (!defined('DB_PASS')) define('DB_PASS', $_ENV['DB_PASS'] ?? '');
-if (!defined('DB_CHARSET')) define('DB_CHARSET', $_ENV['DB_CHARSET'] ?? 'utf8mb4');
+if (!defined('DB_HOST')) define('DB_HOST', 'topbit.mysql.tools');
+if (!defined('DB_NAME')) define('DB_NAME', 'topbit_monitor');
+if (!defined('DB_USER')) define('DB_USER', 'topbit_monitor');
+if (!defined('DB_PASS')) define('DB_PASS', '(766hxMXd~');
+if (!defined('DB_CHARSET')) define('DB_CHARSET', 'utf8mb4');
 
 // --- ЛОГИРОВАНИЕ ---
 if (!defined('LOG_DIR')) define('LOG_DIR', __DIR__ . '/logs');
@@ -78,31 +78,6 @@ function pdo(): PDO {
     install_schema($pdo);
     ensure_defaults($pdo);
     return $pdo;
-}
-
-// --- ВСПОМОГАТЕЛЬНЫЕ МИГРАЦИИ (idempotent) ---
-function ensure_column_exists(PDO $pdo, string $table, string $column, string $ddl): void {
-    try {
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?");
-        $stmt->execute([$table, $column]);
-        if ((int)$stmt->fetchColumn() === 0) {
-            $pdo->exec("ALTER TABLE `{$table}` ADD COLUMN {$ddl}");
-        }
-    } catch (Throwable $e) {
-        try { $pdo->exec("ALTER TABLE `{$table}` ADD COLUMN IF NOT EXISTS {$ddl}"); } catch (Throwable $e2) { /* ignore */ }
-    }
-}
-
-function ensure_index_exists(PDO $pdo, string $table, string $index, string $ddl): void {
-    try {
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?");
-        $stmt->execute([$table, $index]);
-        if ((int)$stmt->fetchColumn() === 0) {
-            $pdo->exec($ddl);
-        }
-    } catch (Throwable $e) {
-        try { $pdo->exec(preg_replace('~CREATE\\s+INDEX~i', 'CREATE INDEX IF NOT EXISTS', $ddl)); } catch (Throwable $e2) { /* ignore */ }
-    }
 }
 
 // --- СХЕМА ---
@@ -164,41 +139,6 @@ function install_schema(PDO $pdo): void {
             error TEXT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     ");
-
-    // --- МИГРАЦИИ ---
-    // links.published_at DATETIME NULL
-    ensure_column_exists($pdo, 'links', 'published_at', "`published_at` DATETIME NULL AFTER `last_seen`");
-    // indexes for links
-    ensure_index_exists($pdo, 'links', 'idx_links_published_at', "CREATE INDEX idx_links_published_at ON links (published_at)");
-    ensure_index_exists($pdo, 'links', 'idx_links_domain_published_at', "CREATE INDEX idx_links_domain_published_at ON links ((substring_index(substring_index(url,'//' , -1),'/',1)), published_at)");
-    ensure_index_exists($pdo, 'links', 'idx_links_status', "CREATE INDEX idx_links_status ON links (status)");
-    ensure_index_exists($pdo, 'links', 'idx_links_last_seen', "CREATE INDEX idx_links_last_seen ON links (last_seen)");
-    // Note: domain is derived from url; if you have a dedicated 'domain' column, adjust accordingly.
-
-    // sources.is_enabled, sources.is_paused
-    ensure_column_exists($pdo, 'sources', 'is_enabled', "`is_enabled` TINYINT(1) NOT NULL DEFAULT 1 AFTER `is_active`");
-    ensure_column_exists($pdo, 'sources', 'is_paused',  "`is_paused`  TINYINT(1) NOT NULL DEFAULT 0 AFTER `is_enabled`");
-
-    // NEW: sources.platform + sources.discovered_via
-    ensure_column_exists($pdo, 'sources', 'platform', "`platform` ENUM('discourse','phpbb','vbulletin','ips','vanilla','flarum','wp-forum','github','stackexchange','unknown') NULL AFTER `url`");
-    ensure_column_exists($pdo, 'sources', 'discovered_via', "`discovered_via` VARCHAR(64) NULL AFTER `platform`");
-
-    // NEW: discovered_sources table
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS discovered_sources (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            domain VARCHAR(255) NOT NULL,
-            proof_url TEXT NOT NULL,
-            platform_guess VARCHAR(32) NOT NULL,
-            reason TEXT NOT NULL,
-            activity_hint VARCHAR(255) NOT NULL,
-            score TINYINT DEFAULT 0,
-            status ENUM('new','verified','rejected','failed') DEFAULT 'new',
-            first_seen_at DATETIME NOT NULL,
-            last_checked_at DATETIME NULL,
-            UNIQUE KEY uniq_discovered_domain (domain)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    ");
 }
 
 // --- НАСТРОЙКИ ---
@@ -226,41 +166,21 @@ function ensure_defaults(PDO $pdo): void {
         $stmt->execute(['admin', password_hash('admin', PASSWORD_DEFAULT)]);
         app_log('info', 'auth', 'Default admin user created', ['username' => 'admin', 'password' => 'admin']);
     }
-    // дефолтные настройки — без get_setting()/set_setting() чтобы избежать рекурсии
+    // дефолтные настройки
     $defaults = [
         'openai_api_key' => '',
         'openai_model' => 'gpt-5-mini',
-        'openai_timeout_sec' => 300,
-        'openai_max_output_tokens' => 4096,
         'scan_period_min' => 15,
         'search_prompt' => 'Искать упоминания моих плагинов и бренда BuyReadySite на русскоязычных форумах и сайтах за последние 30 дней. Возвращать только уникальные треды/темы.',
         'preferred_sources_enabled' => false,
         'telegram_token' => '',
         'telegram_chat_id' => '',
         'cron_secret' => bin2hex(random_bytes(12)),
-        'last_scan_at' => null,
-        'freshness_days' => 7,
-        'enabled_sources_only' => true,
-        'max_results_per_scan' => 80,
-        'return_schema_required' => true,
-        'languages' => [],
-        'regions' => [],
-        'scope_domains_enabled' => false,
-        'scope_telegram_enabled' => false,
-        'scope_forums_enabled' => true,
-        'telegram_mode' => 'any',
-        // Discovery/HTTP & tool concurrency настройки теперь управляются ядром и не задаются пользователем.
-        // (openai_enable_web_search, discovery_* , http_timeout_sec, max_parallel_http, openai_max_tool_calls,
-        //  max_parallel_openai, llm_search_domains_per_scan — удалены из defaults для чистоты.)
+        'last_scan_at' => null
     ];
-    $sel = $pdo->prepare("SELECT svalue FROM settings WHERE skey = ?");
-    $ins = $pdo->prepare("INSERT INTO settings (skey, svalue) VALUES (?, ?) ON DUPLICATE KEY UPDATE svalue = VALUES(svalue)");
     foreach ($defaults as $k => $v) {
-        $sel->execute([$k]);
-        $exists = $sel->fetchColumn();
-        if ($exists === false) {
-            $val = is_string($v) ? $v : json_encode($v, JSON_UNESCAPED_UNICODE);
-            $ins->execute([$k, $val]);
+        if (get_setting($k, '__missing__') === '__missing__') {
+            set_setting($k, $v);
         }
     }
 }
@@ -284,77 +204,6 @@ function current_user(): ?array {
     return null;
 }
 
-// CSRF Protection
-function generate_csrf_token(): string {
-    if (!session_id()) session_start();
-    if (!isset($_SESSION['csrf_token'])) {
-        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-    }
-    return $_SESSION['csrf_token'];
-}
-
-function verify_csrf_token(string $token): bool {
-    if (!session_id()) session_start();
-    return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
-}
-
-function csrf_field(): string {
-    return '<input type="hidden" name="csrf_token" value="' . e(generate_csrf_token()) . '">';
-}
-
-// Rate Limiting для защиты от атак
-function check_rate_limit(string $action, string $identifier, int $maxAttempts = 5, int $windowSeconds = 300): bool {
-    $key = md5($action . '|' . $identifier);
-    $cacheFile = LOG_DIR . '/rate_limit_' . $key . '.json';
-    
-    $now = time();
-    $data = ['attempts' => [], 'blocked_until' => 0];
-    
-    if (file_exists($cacheFile)) {
-        $cached = json_decode(file_get_contents($cacheFile), true);
-        if (is_array($cached)) {
-            $data = array_merge($data, $cached);
-        }
-    }
-    
-    // Проверяем блокировку
-    if ($data['blocked_until'] > $now) {
-        return false; // заблокирован
-    }
-    
-    // Очищаем старые попытки
-    $data['attempts'] = array_filter($data['attempts'], fn($t) => $t > $now - $windowSeconds);
-    
-    // Добавляем текущую попытку
-    $data['attempts'][] = $now;
-    
-    // Проверяем лимит
-    if (count($data['attempts']) > $maxAttempts) {
-        $data['blocked_until'] = $now + $windowSeconds;
-        app_log('warning', 'rate_limit', 'Rate limit exceeded', [
-            'action' => $action, 
-            'identifier' => $identifier,
-            'attempts' => count($data['attempts'])
-        ]);
-    }
-    
-    // Сохраняем данные
-    file_put_contents($cacheFile, json_encode($data));
-    
-    return $data['blocked_until'] <= $now;
-}
-
-function get_client_ip(): string {
-    $headers = ['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'REMOTE_ADDR'];
-    foreach ($headers as $header) {
-        if (!empty($_SERVER[$header])) {
-            $ips = explode(',', $_SERVER[$header]);
-            return trim($ips[0]);
-        }
-    }
-    return $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-}
-
 // --- ПОЛЕЗНЯК ---
 function e(string $s): string {
     return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -363,44 +212,4 @@ function e(string $s): string {
 function host_from_url(string $url): string {
     $h = parse_url($url, PHP_URL_HOST) ?: '';
     return strtolower(preg_replace('~^www\.~i', '', $h));
-}
-
-// --- DISCOVERY HELPERS ---
-function db_upsert_discovered(array $row): void {
-    // $row: domain, proof_url, platform_guess, reason, activity_hint, score?, status?
-    $domain = strtolower(trim($row['domain'] ?? ''));
-    if ($domain === '') return;
-    $proof = (string)($row['proof_url'] ?? '');
-    $plat  = (string)($row['platform_guess'] ?? 'unknown');
-    $reason= (string)($row['reason'] ?? '');
-    $hint  = (string)($row['activity_hint'] ?? '');
-    $score = (int)($row['score'] ?? 0);
-    $status= (string)($row['status'] ?? 'new');
-    $sql = "INSERT INTO discovered_sources (domain, proof_url, platform_guess, reason, activity_hint, score, status, first_seen_at, last_checked_at)
-            VALUES (?,?,?,?,?,?,?,NOW(),NULL)
-            ON DUPLICATE KEY UPDATE 
-                proof_url=VALUES(proof_url), platform_guess=VALUES(platform_guess), reason=VALUES(reason), activity_hint=VALUES(activity_hint),
-                last_checked_at=VALUES(last_checked_at)";
-    $st = pdo()->prepare($sql);
-    $st->execute([$domain, $proof, $plat, $reason, $hint, $score, $status]);
-}
-
-function db_mark_discovered_status(string $domain, string $status, int $score = 0): void {
-    $domain = strtolower(trim($domain));
-    if ($domain === '') return;
-    $st = pdo()->prepare("UPDATE discovered_sources SET status=?, score=?, last_checked_at=NOW() WHERE domain=?");
-    $st->execute([$status, $score, $domain]);
-}
-
-function db_sources_existing_domains(): array {
-    $domains = [];
-    try {
-        $rows = pdo()->query("SELECT host FROM sources")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-        foreach ($rows as $h) { $h = strtolower(preg_replace('~^www\\.~i', '', trim($h))); if ($h) $domains[$h] = true; }
-    } catch (Throwable $e) {}
-    try {
-        $rows2 = pdo()->query("SELECT domain FROM discovered_sources")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-        foreach ($rows2 as $h) { $h = strtolower(preg_replace('~^www\\.~i', '', trim($h))); if ($h) $domains[$h] = true; }
-    } catch (Throwable $e) {}
-    return array_keys($domains);
 }
