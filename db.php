@@ -605,25 +605,29 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     
     // Динамический лимит токенов (уменьшаем для clarify чтобы снизить риск лимита)
     $outTokens = $step === 'clarify' ? 700 : 1200; 
-    // chat/completions ожидает max_tokens, ранее использовался неверный ключ => модель резала ответ
+    // Автоопределение поддерживаемого параметра — пробуем сначала max_tokens, при 400 с Unsupported переключаемся
     $tokenParamName = 'max_tokens';
+    $altTokenParamName = 'max_completion_tokens';
     
-    $payload = [
-        'model' => $model,
-        'messages' => [
-            ['role' => 'system', 'content' => $systemPrompt],
-            ['role' => 'user', 'content' => $userPrompt]
-        ],
-        'response_format' => [
-            'type' => 'json_schema',
-            'json_schema' => [
-                'name' => 'wizard_response',
-                'schema' => $schema,
-                'strict' => true
-            ]
-        ],
-        $tokenParamName => $outTokens
-    ];
+    $buildPayload = function($paramName,$limit) use ($model,$systemPrompt,$userPrompt,$schema){
+        return [
+            'model' => $model,
+            'messages' => [
+                ['role' => 'system', 'content' => $systemPrompt],
+                ['role' => 'user', 'content' => $userPrompt]
+            ],
+            'response_format' => [
+                'type' => 'json_schema',
+                'json_schema' => [
+                    'name' => 'wizard_response',
+                    'schema' => $schema,
+                    'strict' => true
+                ]
+            ],
+            $paramName => $limit
+        ];
+    };
+    $payload = $buildPayload($tokenParamName,$outTokens);
     
     $timeout = ($step === 'generate') ? 90 : 45;
     $ch = curl_init($requestUrl);
@@ -643,6 +647,58 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     $body = substr((string)$resp, $headerSize);
     $curlErr = curl_error($ch);
     curl_close($ch);
+    
+    // Переключение параметра ограничения токенов при ошибке
+    if ($status === 400 && strpos($body,'Unsupported parameter') !== false) {
+        if (strpos($body, $tokenParamName) !== false) {
+            $prev = $tokenParamName;
+            $tokenParamName = ($tokenParamName === 'max_tokens') ? $altTokenParamName : 'max_tokens';
+            app_log('info','smart_wizard','Retry with alternate token param', ['from'=>$prev,'to'=>$tokenParamName]);
+            $payload = $buildPayload($tokenParamName,$outTokens);
+            $chA = curl_init($requestUrl);
+            curl_setopt_array($chA,[
+                CURLOPT_POST=>true,
+                CURLOPT_HTTPHEADER=>$requestHeaders,
+                CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER=>true,
+                CURLOPT_TIMEOUT=>$timeout,
+                CURLOPT_HEADER=>true
+            ]);
+            $respA = curl_exec($chA);
+            $infoA = curl_getinfo($chA);
+            $status = (int)($infoA['http_code'] ?? 0);
+            $headerSize = (int)($infoA['header_size'] ?? 0);
+            $body = substr((string)$respA, $headerSize);
+            $curlErr = curl_error($chA);
+            curl_close($chA);
+        }
+    }
+    
+    // Адаптация под сообщение о необходимости увеличить лимит для второго варианта параметра
+    if ($status === 400 && strpos($body, $tokenParamName) !== false && strpos($body,'higher') !== false) {
+        if ($outTokens < 3500) {
+            $outTokens += 800;
+            $payload = $buildPayload($tokenParamName,$outTokens);
+            app_log('info','smart_wizard','Retry with higher token limit', ['step'=>$step,'param'=>$tokenParamName,'new_limit'=>$outTokens]);
+            $ch2 = curl_init($requestUrl);
+            curl_setopt_array($ch2,[
+                CURLOPT_POST=>true,
+                CURLOPT_HTTPHEADER=>$requestHeaders,
+                CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER=>true,
+                CURLOPT_TIMEOUT=>$timeout,
+                CURLOPT_HEADER=>true
+            ]);
+            $resp2 = curl_exec($ch2);
+            $info2 = curl_getinfo($ch2);
+            $status2 = (int)($info2['http_code'] ?? 0);
+            $headerSize2 = (int)($info2['header_size'] ?? 0);
+            $body2 = substr((string)$resp2, $headerSize2);
+            $curlErr2 = curl_error($ch2);
+            curl_close($ch2);
+            if ($status2 === 200) { $body = $body2; $status = 200; } else { app_log('error','smart_wizard','Retry failed',['status'=>$status2,'curl_error'=>$curlErr2,'body_preview'=>substr($body2,0,300)]); }
+        }
+    }
     
     if ($status === 400 && strpos($body, 'max_tokens') !== false && strpos($body, 'not supported') !== false) {
         // Модель не поддерживает старый параметр; уже используем новый — просто лог
