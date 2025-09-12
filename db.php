@@ -846,10 +846,32 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'auto_detected' => $result['auto_detected'] ?? []
         ];
     } else {
+        // Fallback извлечения prompt если пустой
+        $promptText = trim($result['prompt'] ?? '');
+        if ($promptText === '') {
+            // Попытка рекурсивно найти ключ prompt
+            $stack = [$result];
+            while ($stack) {
+                $node = array_pop($stack);
+                if (is_array($node)) {
+                    foreach ($node as $k=>$v) {
+                        if (is_string($k) && strtolower($k)==='prompt' && is_string($v) && trim($v)!=='') {
+                            $promptText = trim($v); break 2;
+                        }
+                        if (is_array($v)) $stack[] = $v;
+                    }
+                }
+            }
+            // Попытка regex из оригинального сырого контента (rawContentForLog/body недоступны здесь, поэтому сохраним заранее)
+        }
+        if ($promptText === '') {
+            app_log('error','smart_wizard','Empty prompt extracted from generate result',[ 'keys'=>array_keys($result), 'result_preview'=>mb_substr(json_encode($result,JSON_UNESCAPED_UNICODE),0,500)]);
+            return ['ok'=>false,'error'=>'ИИ вернул пустой промпт. Повторите еще раз или уточните описание.'];
+        }
         return [
             'ok' => true,
             'step' => 'generate',
-            'prompt' => $result['prompt'] ?? '',
+            'prompt' => $promptText,
             'languages' => $result['languages'] ?? [],
             'regions' => $result['regions'] ?? [],
             'sources' => $result['sources'] ?? [],
