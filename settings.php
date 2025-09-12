@@ -144,15 +144,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
                 $ok = 'Ошибка: данные мастера не найдены';
             } else {
                 // Объединяем оригинальное описание с ответами
-                $combinedInput = $wizardData['original_input'] . "\n\nДополнительная информация:\n";
-                
+                $answersBlock = '';
                 foreach ($wizardData['questions'] as $i => $question) {
                     $answer = $_POST["question_$i"] ?? '';
                     if (is_array($answer)) { $answer = implode(', ', $answer); }
                     $answer = trim($answer);
-                    if ($answer !== '') {
-                        $combinedInput .= $question['question'] . ": " . $answer . "\n";
+                    if ($answer === '') continue;
+                    $qText = $question['question'] ?? '';
+                    // Пропускаем служебный fallback-вопрос про языки/регионы
+                    if (preg_match('~укажите\s+языки\s+и\s+регионы~iu', $qText)) {
+                        // Ответ все равно может содержать языки/регионы — просто добавим их позже через специальные поля
+                        // Сохраним чтобы не терять потенциально полезное: временно складываем в переменную
+                        $fallbackLR = $answer;
+                        continue;
                     }
+                    $answersBlock .= $qText . ": " . $answer . "\n";
+                }
+                $combinedInput = $wizardData['original_input'];
+                if ($answersBlock !== '') {
+                    $combinedInput .= "\n\nДополнительная информация:\n" . $answersBlock;
+                }
+                // Если пользователь ввел языки/регионы в ответ на fallback, добавим их к кастомным полям, если те пусты
+                if (!empty($fallbackLR ?? '') && empty($_POST['wizard_languages_custom'] ?? '') && empty($_POST['wizard_regions_custom'] ?? '')) {
+                    // Попробуем простым разбором вытащить из свободного текста коды
+                    $tmp = local_extract_langs_regions($fallbackLR);
+                    if ($tmp['languages']) { $_POST['wizard_languages_custom'] = implode(', ', $tmp['languages']); }
+                    if ($tmp['regions']) { $_POST['wizard_regions_custom'] = implode(', ', $tmp['regions']); }
                 }
 
                 // Новые блоки: свободный ввод языков и регионов (без чекбоксов)
@@ -564,7 +581,7 @@ setTimeout(function() {
 <?php endif; ?>
 
 function showQuestionsModal() {
-  const questionsData = <?= json_encode($_SESSION['wizard_data'] ?? null, JSON_UNESCAPED_UNICODE) ?>;
+  const questionsData = JSON.parse('<?= addslashes(json_encode($_SESSION['wizard_data'] ?? null, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT)) ?>');
   if (!questionsData || !questionsData.questions) return;
   const modal = document.getElementById('smartWizardModal');
   const modalBody = modal.querySelector('.modal-body');

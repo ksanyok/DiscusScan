@@ -530,10 +530,22 @@ function notify_new(array $findings): void {
  */
 function processSmartWizard(string $userInput, string $apiKey, string $model, string $step = 'clarify'): array {
     $userInput = mb_substr($userInput, 0, 4000);
-    
-    // === НОВЫЙ CLARIFY ЧЕРЕЗ ИИ: только извлечение языков и регионов ===
-    // Используем ИИ чтобы извлечь ISO коды. Вопросы возвращаем только если НИЧЕГО не удалось определить.
+    // ЛОКАЛЬНАЯ ЭВРИСТИКА (используем и для clarify и для generate fallback)
+    $local = local_extract_langs_regions($userInput);
     if ($step === 'clarify') {
+        // Если локально уже извлекли хотя бы язык или регион — сразу возвращаем без запроса к ИИ
+        if ($local['languages'] || $local['regions']) {
+            return [
+                'ok'=>true,
+                'step'=>'clarify',
+                'questions'=>[],
+                'auto_detected'=>[
+                    'languages'=>$local['languages'],
+                    'regions'=>$local['regions']
+                ],
+                'recommendations'=>[]
+            ];
+        }
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -547,7 +559,6 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $systemPrompt = "Ты извлекаешь языки и регионы из пользовательского описания мониторинга. Верни СТРОГО JSON по схеме. Никакого текста вне JSON.\nПравила:\n1. languages: массив уникальных 2-буквенных кодов ISO 639-1 (lower-case) явно или неявно выведенных из текста.\n2. regions: массив уникальных 2-буквенных кодов ISO 3166-1 alpha-2 (upper-case).\n3. Распознавай упоминания на естественном языке: 'русский'->ru, 'украинском'->uk, 'по-английски'->en и т.д.\n4. Фразы вида 'вся европа', 'европа', 'europe', 'в Европе' — разворачивай в список стран Европы: AL,AD,AT,BY,BE,BA,BG,HR,CY,CZ,DK,EE,FI,FR,DE,GR,HU,IS,IE,IT,LV,LI,LT,LU,MT,MD,MC,ME,NL,MK,NO,PL,PT,RO,RU,SM,RS,SK,SI,ES,SE,CH,TR,UA,GB,VA.\n5. Не добавляй домыслы: если невозможно достоверно определить язык/регион — не включай.\n6. Если найден хотя бы один язык ИЛИ хотя бы один регион — questions = [].\n7. Если НЕ найден ни один язык И И ни один регион — questions = ['Укажите языки и регионы (произвольный текст, можно \"Европа\", перечислите страны / языки)'].\n8. Не включай источники, не перечисляй соцсети. Только языки/регионы.\n9. Порядок кодов произвольный, но без повторов.\n10. Строго соблюдай регистр: языки lower-case, регионы upper-case.";
         $userPrompt = $userInput;
         
-        // Собираем payload (минимальный, без response_format strict schema даст компактный ответ)
         $requestUrl = 'https://api.openai.com/v1/chat/completions';
         $requestHeaders = [
             'Content-Type: application/json',
@@ -568,7 +579,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                     'strict' => true
                 ]
             ],
-            'max_tokens' => 400,
+            'max_completion_tokens' => 400,
             'temperature' => 0
         ];
         
@@ -587,7 +598,6 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         
         if ($status !== 200 || !$raw) {
             app_log('error','smart_wizard','Clarify AI request failed',[ 'status'=>$status,'curl_error'=>$curlErr,'body_preview'=>substr((string)$raw,0,300)]);
-            // Fallback: вернём пустые чтобы интерфейс спросил вручную
             return [
                 'ok' => true,
                 'step' => 'clarify',
@@ -606,15 +616,17 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             app_log('error','smart_wizard','Clarify parse fail',[ 'content_preview'=>substr($content,0,200)]);
             $parsed = ['languages'=>[],'regions'=>[],'questions'=>[ 'Укажите языки и регионы (произвольный текст, можно "Европа", перечислите страны / языки)' ]];
         }
-        // Нормализация
         $langs = [];
         foreach (($parsed['languages']??[]) as $l){ $l=strtolower(trim($l)); if(preg_match('~^[a-z]{2}$~',$l)) $langs[]=$l; }
         $langs = array_values(array_unique($langs));
         $regs = [];
         foreach (($parsed['regions']??[]) as $r){ $r=strtoupper(trim($r)); if(preg_match('~^[A-Z]{2}$~',$r)) $regs[]=$r; }
         $regs = array_values(array_unique($regs));
-        $questions = ($langs || $regs) ? [] : ($parsed['questions'] ?? []);
-        // Превращаем плоские вопросы (строки) в формат мастера
+        if (!$langs && !$regs && empty($parsed['questions'])) {
+            $questions = ['Укажите языки и регионы (произвольный текст, можно "Европа", перечислите страны / языки)'];
+        } else {
+            $questions = $parsed['questions'] ?? [];
+        }
         $questionsFormatted = [];
         foreach ($questions as $q){ if(is_string($q)&&trim($q)!==''){ $questionsFormatted[] = ['question'=>$q,'type'=>'text']; } }
         return [
@@ -626,9 +638,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         ];
     }
     
-    // === GENERATE ШАГ (восстановлен, чтобы функция всегда возвращала значение) ===
     if ($step === 'generate') {
-        // Схема ожидаемого ответа от ИИ
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -664,7 +674,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                     'strict' => true
                 ]
             ],
-            'max_tokens' => 900,
+            'max_completion_tokens' => 900,
             'temperature' => 0
         ];
         
@@ -683,7 +693,6 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         
         if ($status !== 200 || !$raw) {
             app_log('error','smart_wizard','Generate AI request failed',[ 'status'=>$status,'curl_error'=>$curlErr,'body_preview'=>substr((string)$raw,0,300)]);
-            // Простейший fallback – берём первые строки пользовательского ввода
             $fallbackPrompt = trim(mb_substr(preg_replace('~\s+~u',' ', $userInput),0,400));
             return [
                 'ok' => true,
@@ -707,7 +716,6 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'sources' => []
             ];
         }
-        // Санитизация prompt от источников
         $prompt = (string)($parsed['prompt'] ?? '');
         $before = $prompt;
         $prompt = preg_replace('~\b(forums?|telegram|social media|social networks?|news sites?|review sites?|reviews)\b~iu','', $prompt);
@@ -715,7 +723,6 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         if ($before !== $prompt) {
             app_log('info','smart_wizard','Stripped sources from prompt',[ 'before'=>$before,'after'=>$prompt ]);
         }
-        // Нормализация списков
         $langs = [];
         foreach (($parsed['languages']??[]) as $l){ $l=strtolower(trim($l)); if(preg_match('~^[a-z]{2}$~',$l)) $langs[]=$l; }
         $langs = array_values(array_unique($langs));
@@ -728,6 +735,11 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             $s = strtolower(trim($s));
             if (in_array($s,$allowedSources,true) && !in_array($s,$sources,true)) $sources[]=$s;
         }
+        if (empty($langs) && empty($regs)) {
+            $local2 = local_extract_langs_regions($userInput);
+            if ($local2['languages']) $langs = array_values(array_unique(array_merge($langs,$local2['languages'])));
+            if ($local2['regions']) $regs = array_values(array_unique(array_merge($regs,$local2['regions'])));
+        }
         return [
             'ok' => true,
             'step' => 'generate',
@@ -738,6 +750,57 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         ];
     }
     
-    // Если передан неизвестный шаг
     return [ 'ok'=>false, 'error'=>'Unsupported step' ];
+}
+
+// Локальное извлечение языков и регионов без ИИ
+function local_extract_langs_regions(string $text): array {
+    $orig = $text;
+    $l = mb_strtolower($text,'UTF-8');
+    $langs = [];
+    $regs = [];
+    // Карты языков (подстроковое сопоставление)
+    $langMap = [
+        'рус' => 'ru','rus'=>'ru','russian'=>'ru','руск'=>'ru','руси'=>'ru','руський'=>'ru',
+        'укр' => 'uk','укра' => 'uk','украи' => 'uk','ukr'=>'uk',
+        'англ' => 'en','english'=>'en','англи' => 'en','eng '=>'en','en '=>'en',
+        'немец' => 'de','german'=>'de','герма' => 'de','немецк'=>'de','de '=>'de',
+        'польс' => 'pl','polish'=>'pl','pol '=>'pl',
+        'испан' => 'es','spanish'=>'es','espan'=>'es',
+        'франц' => 'fr','french'=>'fr','fran' => 'fr',
+        'италь' => 'it','ital' => 'it',
+        'кит' => 'zh','кита' => 'zh','chinese'=>'zh',
+        'япон' => 'ja','japan'=>'ja','japanese'=>'ja',
+    ];
+    foreach ($langMap as $needle=>$code) {
+        if (mb_stripos($l,$needle,0,'UTF-8')!==false) $langs[]=$code;
+    }
+    // ISO явные двухбуквенные
+    if (preg_match_all('~\b([a-z]{2})\b~u',$l,$m)) {
+        foreach ($m[1] as $c) if (in_array($c,['ru','uk','en','de','pl','es','fr','it','zh','ja'])) $langs[]=$c;
+    }
+    // Карта стран/регионов
+    $regMap = [
+        'украин' => 'UA','украї' => 'UA','poland'=>'PL','польш' => 'PL','герман' => 'DE','german'=>'DE','deutsch'=>'DE',
+        'рим' => 'IT','итал' => 'IT','italy'=>'IT','испан' => 'ES','spain'=>'ES','франц' => 'FR','france'=>'FR',
+        'росси' => 'RU','russia'=>'RU','белару' => 'BY','минск'=>'BY','португал' => 'PT','чех' => 'CZ','czech'=>'CZ',
+        'латв' => 'LV','литв' => 'LT','эст' => 'EE','estonia'=>'EE','казах' => 'KZ','kz '=>'KZ','izra' => 'IL','израил'=>'IL','израиль'=>'IL','israel'=>'IL',
+        'прибалти' => 'EE','балти' => 'EE',
+        'азерб' => 'AZ','армени' => 'AM','грузин' => 'GE','молд' => 'MD','серби' => 'RS','хорват' => 'HR'
+    ];
+    foreach ($regMap as $needle=>$code) {
+        if (mb_stripos($l,$needle,0,'UTF-8')!==false) $regs[]=$code;
+    }
+    // Явные ISO 3166-1
+    if (preg_match_all('~\b([A-Z]{2})\b~u',$orig,$m2)) {
+        foreach ($m2[1] as $cc) if (preg_match('~^[A-Z]{2}$~',$cc)) $regs[]=$cc;
+    }
+    // Европа
+    if (preg_match('~европ|europe~u',$l)) {
+        $europe = ['AL','AD','AT','BY','BE','BA','BG','HR','CY','CZ','DK','EE','FI','FR','DE','GR','HU','IS','IE','IT','LV','LI','LT','LU','MT','MD','MC','ME','NL','MK','NO','PL','PT','RO','RU','SM','RS','SK','SI','ES','SE','CH','TR','UA','GB','VA'];
+        $regs = array_merge($regs,$europe);
+    }
+    $langs = array_values(array_unique($langs));
+    $regs = array_values(array_unique($regs));
+    return ['languages'=>$langs,'regions'=>$regs];
 }
