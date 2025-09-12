@@ -590,6 +590,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                       . "- single: выбор одного варианта (радиокнопки)\n"
                       . "- multiple: выбор нескольких вариантов (чекбоксы)\n"
                       . "- text: свободный ввод текста\n\n"
+                      . "ОГРАНИЧЕНИЯ: не более 6 вариантов в одном вопросе. Если вариантов очень много — сгруппируй или спроси текстом. Не генерируй гигантские списки.\n\n"
                       . "В auto_detected попытайся определить из описания:\n"
                       . "- languages: коды языков (ru, uk, en, pl, de, fr)\n"
                       . "- regions: коды стран (UA, PL, RU, DE, US, FR)\n"
