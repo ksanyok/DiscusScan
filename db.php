@@ -627,6 +627,8 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     
     // Динамический лимит токенов (уменьшаем для clarify чтобы снизить риск лимита)
     $outTokens = $step === 'clarify' ? 800 : 2200;
+    // Новая универсальная переменная параметра токенов (для текущих моделей нужен max_completion_tokens)
+    $tokenParamName = 'max_completion_tokens';
     
     $payload = [
         'model' => $model,
@@ -642,7 +644,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'strict' => true
             ]
         ],
-        'max_tokens' => $outTokens,
+        $tokenParamName => $outTokens,
         'temperature' => 0.2
     ];
     
@@ -665,11 +667,15 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     $curlErr = curl_error($ch);
     curl_close($ch);
     
-    if ($status === 400 && strpos($body, 'max_tokens') !== false && strpos($body, 'higher') !== false) {
-        // Fallback: повторяем запрос с повышенным лимитом если не превышает 4000
+    if ($status === 400 && strpos($body, 'max_tokens') !== false && strpos($body, 'not supported') !== false) {
+        // Модель не поддерживает старый параметр; уже используем новый — просто лог
+        app_log('error', 'smart_wizard', 'Model rejected token param', ['used_param' => $tokenParamName, 'body_preview' => substr($body,0,200)]);
+        return ['ok'=>false,'error'=>'Модель не принимает параметр ограничения токенов. Попробуйте другую модель.'];
+    }
+    if ($status === 400 && strpos($body, 'max_completion_tokens') !== false && strpos($body, 'higher') !== false) {
         if ($outTokens < 3500) {
-            $payload['max_tokens'] = $outTokens + 800;
-            app_log('info', 'smart_wizard', 'Retry with higher max_tokens', ['step' => $step, 'new_max_tokens' => $payload['max_tokens']]);
+            $payload[$tokenParamName] = $outTokens + 800;
+            app_log('info', 'smart_wizard', 'Retry with higher token limit', ['step'=>$step,'new_limit'=>$payload[$tokenParamName]]);
             $ch2 = curl_init($requestUrl);
             curl_setopt_array($ch2, [
                 CURLOPT_POST => true,
@@ -686,12 +692,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             $body2 = substr((string)$resp2, $headerSize2);
             $curlErr2 = curl_error($ch2);
             curl_close($ch2);
-            if ($status2 === 200) {
-                $body = $body2;
-                $status = 200;
-            } else {
-                app_log('error', 'smart_wizard', 'Retry failed', ['status' => $status2, 'curl_error' => $curlErr2, 'body_preview' => substr($body2,0,300)]);
-            }
+            if ($status2 === 200) { $body = $body2; $status = 200; } else { app_log('error','smart_wizard','Retry failed',['status'=>$status2,'curl_error'=>$curlErr2,'body_preview'=>substr($body2,0,300)]); }
         }
     }
     
@@ -704,7 +705,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 ['role' => 'system', 'content' => $fallbackSystem],
                 ['role' => 'user', 'content' => $userPrompt]
             ],
-            'max_tokens' => 600,
+            $tokenParamName => 500,
             'temperature' => 0.1
         ];
         $ch3 = curl_init($requestUrl);
