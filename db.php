@@ -960,47 +960,120 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         }
     }
     
+    // === Санитизация (clarify): удаляем вопросы про источники/каналы, даже если модель их вернула ===
+    if ($step === 'clarify' && is_array($result)) {
+        $srcPattern = '~(источн|source|форум|forums?|telegram|соц|social|news|review)~iu';
+        if (isset($result['questions']) && is_array($result['questions'])) {
+            $cleanQ = [];
+            foreach ($result['questions'] as $q) {
+                if (!is_array($q) || empty($q['question'])) continue;
+                $questionText = trim((string)$q['question']);
+                if ($questionText === '') continue;
+                if (preg_match($srcPattern, $questionText)) {
+                    continue; // пропускаем вопросы про источники
+                }
+                // Фильтруем options
+                if (isset($q['options']) && is_array($q['options'])) {
+                    $opts = [];
+                    foreach ($q['options'] as $opt) {
+                        if (is_string($opt) && !preg_match($srcPattern, $opt)) {
+                            $opts[] = $opt;
+                        }
+                    }
+                    $q['options'] = $opts;
+                }
+                $cleanQ[] = $q;
+            }
+            $result['questions'] = array_values($cleanQ);
+        }
+        if (isset($result['recommendations']) && is_array($result['recommendations'])) {
+            $result['recommendations'] = array_values(array_filter($result['recommendations'], function($r) use ($srcPattern){
+                return is_string($r) ? !preg_match($srcPattern,$r) : false;
+            }));
+        }
+    }
+    
     if ($step === 'clarify') {
         // Fallback: если модель не задала вопросов, но ввод размытый — генерируем базовый набор
         $questions = $result['questions'] ?? [];
         $auto = $result['auto_detected'] ?? [
-            'languages' => [], 'regions' => [], 'sources' => []
+            'languages' => [], 'regions' => [] // удалили sources из fallback
         ];
-        $needsLang = !preg_match('~\b(ru|en|uk|pl|de|fr|es)\b~i', $userInput);
-        $needsRegion = !preg_match('~\b(UA|RU|PL|DE|US|GB|FR|ES|IT)\b~i', $userInput);
+        // NEW: Расширенное определение языков/регионов по словам (рус/eng названия)
+        $lowerInput = mb_strtolower($userInput);
+        $langNameMap = [
+            'русск' => 'ru', 'российск' => 'ru', 'russian' => 'ru',
+            'англ' => 'en', 'english' => 'en', 'английск' => 'en',
+            'украин' => 'uk', 'ukrain' => 'uk',
+            'польш' => 'pl', 'polish' => 'pl',
+            'немец' => 'de', 'german' => 'de',
+            'франц' => 'fr', 'french' => 'fr',
+            'испан' => 'es', 'spanish' => 'es'
+        ];
+        $regionNameMap = [
+            'росси' => 'RU', 'russia' => 'RU',
+            'украин' => 'UA', 'ukrain' => 'UA',
+            'польш' => 'PL', 'poland' => 'PL',
+            'герман' => 'DE', 'german' => 'DE',
+            'франц' => 'FR', 'france' => 'FR',
+            'испан' => 'ES', 'spain' => 'ES',
+            'итал' => 'IT', 'italy' => 'IT',
+            'сша' => 'US', 'usa' => 'US', 'америк' => 'US', 'united states' => 'US',
+            'великобрит' => 'GB', 'united kingdom' => 'GB', 'uk ' => 'GB', 'англи' => 'GB'
+        ];
+        $detectedByNameLang = [];
+        foreach ($langNameMap as $frag => $code) {
+            if (mb_strpos($lowerInput, $frag) !== false) { $detectedByNameLang[] = $code; }
+        }
+        $detectedByNameRegion = [];
+        foreach ($regionNameMap as $frag => $code) {
+            if (mb_strpos($lowerInput, $frag) !== false) { $detectedByNameRegion[] = $code; }
+        }
+        if ($detectedByNameLang) {
+            $auto['languages'] = array_values(array_unique(array_merge($auto['languages'] ?? [], $detectedByNameLang)));
+        }
+        if ($detectedByNameRegion) {
+            $auto['regions'] = array_values(array_unique(array_merge($auto['regions'] ?? [], $detectedByNameRegion)));
+        }
+        $hasLangCode = preg_match('~\b(ru|en|uk|pl|de|fr|es)\b~i', $userInput);
+        $hasRegionCode = preg_match('~\b(UA|RU|PL|DE|US|GB|FR|ES|IT)\b~i', $userInput);
+        $needsLang = !$hasLangCode && empty($auto['languages']);
+        $needsRegion = !$hasRegionCode && empty($auto['regions']);
         $needsTime = !preg_match('~(последн|дней|недел|месяц|месяцев|год|202[0-9]|20[1-2][0-9])~ui', $userInput);
-        $needsSources = !preg_match('~(форум|forum|telegram|tg|соцсет|social|отзыв|reviews|news|новост)~ui', $userInput);
-        $tooKeywordy = count($questions) === 0; // модель вернула только список ключевых слов
-        if ($tooKeywordy && ($needsLang || $needsRegion || $needsTime || $needsSources)) {
-            $questions = [
-                [
+        $tooKeywordy = count($questions) === 0;
+        // Убираем логику по источникам полностью, не формируем вопрос про источники
+        if ($tooKeywordy && ($needsLang || $needsRegion || $needsTime)) {
+            $questions = [];
+            if ($needsLang) {
+                $questions[] = [
                     'question' => 'Какие языки мониторить? (коды)',
                     'type' => 'multiple',
                     'options' => ['ru','en','uk','pl','de','fr','es']
-                ],
-                [
+                ];
+            }
+            if ($needsRegion) {
+                $questions[] = [
                     'question' => 'Какие регионы / страны важны? (коды)',
                     'type' => 'multiple',
                     'options' => ['RU','UA','PL','DE','US','GB']
-                ],
-                [
-                    'question' => 'Какие типы источников интересуют?',
-                    'type' => 'multiple',
-                    'options' => ['forums','social','reviews','news','telegram']
-                ],
-                [
+                ];
+            }
+            if ($needsTime) {
+                $questions[] = [
                     'question' => 'Какой временной диапазон анализировать?',
                     'type' => 'single',
                     'options' => ['30d','90d','6m','12m']
-                ]
-            ];
-            // если автоопределение пустое — оставляем как есть
-            if (!isset($auto['languages'])) $auto['languages']=[];
-            if (!isset($auto['regions'])) $auto['regions']=[];
-            if (!isset($auto['sources'])) $auto['sources']=[];
+                ];
+            }
             $result['recommendations'] = $result['recommendations'] ?? [];
-            $result['recommendations'][] = 'Уточнены базовые параметры (языки, регионы, источники, период)';
-            app_log('info','smart_wizard','Injected fallback clarify questions',[ 'needsLang'=>$needsLang,'needsRegion'=>$needsRegion,'needsTime'=>$needsTime,'needsSources'=>$needsSources ]);
+            $result['recommendations'][] = 'Уточнены базовые параметры (языки, регионы, период)';
+            app_log('info','smart_wizard','Injected fallback clarify questions (no sources, enhanced detect)',[
+                'needsLang'=>$needsLang,
+                'needsRegion'=>$needsRegion,
+                'needsTime'=>$needsTime,
+                'auto_langs'=>$auto['languages'],
+                'auto_regions'=>$auto['regions']
+            ]);
         }
         return [
             'ok' => true,
