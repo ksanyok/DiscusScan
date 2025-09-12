@@ -538,7 +538,16 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     ];
     
     if ($step === 'clarify') {
-        // Этап 1: Генерация уточняющих вопросов
+        // Этап 1: Генерация уточняющих вопросов (обновлённая логика)
+        // Цели изменений:
+        // 1. Вопросы формируются ТОЛЬКО по недостающей информации (языки, регионы, временной диапазон, цель, объекты мониторинга, негативные исключения, формат/точность).
+        // 2. Не спрашивать то, что пользователь уже явно указал.
+        // 3. НЕ спрашивать про источники: источники выбираются в настройках и НЕ входят в итоговый prompt.
+        // 4. Модель должна извлекать languages (ISO 639-1 lower-case) и regions (ISO 3166-1 alpha-2 upper-case) из пользовательского ввода если они упомянуты (даже в тексте), без дублирования.
+        // 5. recommendations: краткие улучшения (0-3), контекстные.
+        // 6. questions: 2-5, если ВСЁ уже есть (цель, ключевые сущности, языки, регионы, период) — можно 0.
+        // 7. Типы вопросов: single / multiple / text. Не более 6 опций. Формулировки короткие, без вводных.
+        // 8. НЕ включать упоминания источников (forums, telegram, social, news, reviews) в prompt и в вопросы.
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -568,13 +577,9 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                         'regions' => [
                             'type' => 'array',
                             'items' => ['type' => 'string']
-                        ],
-                        'sources' => [
-                            'type' => 'array',
-                            'items' => ['type' => 'string']
                         ]
                     ],
-                    'required' => ['languages', 'regions', 'sources'],
+                    'required' => ['languages', 'regions'],
                     'additionalProperties' => false
                 ],
                 'recommendations' => [
@@ -585,10 +590,11 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'required' => ['questions', 'auto_detected'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Ты помощник по настройке мониторинга. ВСЕГДА генерируй 2-4 уточняющих вопроса (questions) кроме крайне редкого случая, когда: 1) явно указана цель мониторинга, 2) перечислены целевые типы источников, 3) заданы КОДЫ языков (ISO 639-1: ru,en,uk,pl,de,fr,es) и КОДЫ стран (ISO 3166-1 alpha-2: UA,PL,DE,US,FR,RU,GB,ES,IT) и 4) понятны временные рамки и intent. Если хотя бы один из критериев не выполнен — задай вопросы.\nФормат вопросов: короткие, без вводных, без номера. Для выбора нескольких — type=multiple, для одного — single, свободный ввод — text. Не более 6 опций.\nДобавь recommendations (до 3 лаконичных подсказок по улучшению описания или уточнению нишевых тем).\nАвтоопредели languages (только ISO коды в lower-case), regions (только ISO country codes upper-case), sources (forums, telegram, social, news, reviews).\nВерни СТРОГО JSON по схеме без пояснений.";
-        $userPrompt = "Описание пользователя:\n\n" . $userInput . "\n\nОпредели, что не хватает и задай вопросы.";
+        $systemPrompt = "Ты помощник по настройке мониторинга. Анализируй исходный текст пользователя и определи: цель мониторинга, ключевые бренды/продукты/темы, временной горизонт (если указан), языки (ISO 639-1), регионы / страны (ISO 3166-1 alpha-2), дополнительные фильтры (например намерение конкурентов, отзывы, баги).\n\nЗадача: вернуть JSON по схеме.\n\nПравила генерации вопросов: \n- Генерируй вопросы ТОЛЬКО по недостающим аспектам. \n- Если явно присутствуют цель, сущности (бренд/продукт), языки, регионы И временной диапазон / свежесть — не задавай вопросов (questions = []). \n- Если чего-то не хватает — 2-5 вопросов. \n- Не спрашивай про источники (forums, telegram, social, news, reviews) — они задаются отдельно в настройках. \n- Формат короткий, без нумерации, без вводных. \n- Если предлагаешь options, максимум 6. Для свободного ответа используй type=text. \n- Не дублируй вопросы с одинаковым смыслом. \n\nАвтоопределение: \n- languages: только валидные 2-буквенные коды в lower-case. \n- regions: только 2-буквенные коды стран upper-case. \n- Если кодов нет — массивы пустые (НЕ угадывай). \n\nrecommendations (0-3): как улучшить формулировку или что стоит уточнить (если вопросов нет — могут быть пустыми). \n\nСтрого JSON. НИКАКОГО текста вне JSON. НЕ включай источники в вопросы или recommendations.";
+        $userPrompt = "Описание пользователя:\n\n" . $userInput . "\n\nОпредели что отсутствует и подготовь вопросы по правилам.";
     } else {
-        // Этап 2: Генерация финального промпта (упрощили схему, reasoning не обязателен)
+        // Этап 2: Генерация финального промпта
+        // Источники (forums, telegram, social, news, reviews) НЕ должны быть в prompt — они задаются отдельно.
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -601,7 +607,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'required' => ['prompt','languages','regions','sources'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Сформируй финальный JSON. prompt: сжатый, конкретный, содержит ключевые слова/синонимы, контекст цели мониторинга и фильтры (если есть). languages: ISO 639-1 lowercase, regions: ISO 3166-1 alpha-2 uppercase. Только коды, без названий. sources из ограниченного списка [forums,telegram,social,news,reviews]. Никакого текста вне JSON.";
+        $systemPrompt = "Сформируй финальный JSON.\nprompt: сжатый, точный, включает: цель мониторинга, ключевые бренды/термины/синонимы, релевантные аспекты (например: отзывы, баги, сравнения, запросы пользователей), временной фокус (если был), исключения (если были). НЕ добавляй перечисление типов источников (forums, telegram, social, news, reviews) внутрь текста prompt. Не добавляй служебных пояснений.\nlanguages: ISO 639-1 lower-case (только упомянутые или подтверждённые).\nregions: ISO 3166-1 alpha-2 upper-case (только упомянутые или подтверждённые).\nsources: просто массив (если переданы или подразумеваются), НО НЕ включай их в сам prompt. Если нет данных — пустой массив.\nreasoning: кратко почему так структурирован prompt (может быть опущено моделью).\nСтрого JSON без текста вне.";
         $userPrompt = $userInput;
     }
     
@@ -1004,7 +1010,8 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'recommendations' => $result['recommendations'] ?? []
         ];
     } else {
-        // Этап 2: Генерация финального промпта (упрощили схему, reasoning не обязателен)
+        // Этап 2: Генерация финального промпта
+        // Источники (forums, telegram, social, news, reviews) НЕ должны быть в prompt — они задаются отдельно.
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -1017,7 +1024,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'required' => ['prompt','languages','regions','sources'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Сформируй финальный JSON. prompt: сжатый, конкретный, содержит ключевые слова/синонимы, контекст цели мониторинга и фильтры (если есть). languages: ISO 639-1 lowercase, regions: ISO 3166-1 alpha-2 uppercase. Только коды, без названий. sources из ограниченного списка [forums,telegram,social,news,reviews]. Никакого текста вне JSON.";
+        $systemPrompt = "Сформируй финальный JSON.\nprompt: сжатый, точный, включает: цель мониторинга, ключевые бренды/термины/синонимы, релевантные аспекты (например: отзывы, баги, сравнения, запросы пользователей), временной фокус (если был), исключения (если были). НЕ добавляй перечисление типов источников (forums, telegram, social, news, reviews) внутрь текста prompt. Не добавляй служебных пояснений.\nlanguages: ISO 639-1 lower-case (только упомянутые или подтверждённые).\nregions: ISO 3166-1 alpha-2 upper-case (только упомянутые или подтверждённые).\nsources: просто массив (если переданы или подразумеваются), НО НЕ включай их в сам prompt. Если нет данных — пустой массив.\nreasoning: кратко почему так структурирован prompt (может быть опущено моделью).\nСтрого JSON без текста вне.";
         $userPrompt = $userInput;
     }
     
@@ -1043,6 +1050,20 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     if ($promptText === '') {
         app_log('error','smart_wizard','Empty prompt extracted after normalization',[ 'keys'=>array_keys($result)]);
         return ['ok'=>false,'error'=>'ИИ вернул пустой промпт. Повторите еще раз.'];
+    }
+    if ($step === 'generate') {
+        // Дополнительная фильтрация: удаляем из prompt перечисления источников, если модель их всё же вставила
+        $originalPrompt = $promptText;
+        // Удаляем скобочные блоки, содержащие только источники
+        $promptText = preg_replace('~\((?:[^()]*?(?:forums?|telegram|социальн(?:ые|ых)|social|news|reviews?)[^()]*)\)~iu','',$promptText);
+        // Удаляем явные фразы вида "источники: ..."
+        $promptText = preg_replace('~(?:источники|sources)\s*:\s*[^;,.]+~iu','',$promptText);
+        // Удаляем одиночные упоминания источников в конце
+        $promptText = preg_replace('~\b(forums?|telegram|social media|social networks?|news sites?|review sites?|reviews)\b~iu','', $promptText);
+        $promptText = preg_replace('~\s{2,}~u',' ', trim($promptText));
+        if ($originalPrompt !== $promptText) {
+            app_log('info','smart_wizard','Stripped sources from prompt',[ 'before'=>$originalPrompt, 'after'=>$promptText ]);
+        }
     }
     return [
         'ok' => true,
