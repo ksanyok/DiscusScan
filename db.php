@@ -582,7 +582,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'additionalProperties' => false
         ];
         
-        $systemPrompt = "Ты эксперт по настройке мониторинга. Если инфы хватает — questions=[]; иначе 2-4 лаконичных вопроса. Не более 6 опций в вопросе. Автоопредели languages (ru,en,uk,pl,de,fr), regions (UA,PL,DE,US,FR,RU), sources (forums,telegram,social,news). Верни строго JSON по схеме.";
+        $systemPrompt = "Ты эксперт по настройке мониторинга. Если инфы действительно достаточно (есть явное упоминание темы, целей, а также явно указаны или легко выводимы языки и регионы) — questions=[]; ИНАЧЕ задай 2-4 лаконичных вопроса. Обязательно задай хотя бы один вопрос про языки или регионы, если пользователь их не упомянул. Вопросы короткие. Не более 6 опций. Используй тип single/multiple/text. Если не уверен — лучше спроси. Автоопредели languages (ru,en,uk,pl,de,fr), regions (UA,PL,DE,US,FR,RU), sources (forums,telegram,social,news). Верни строго JSON по схеме.";
         $userPrompt = "Проанализируй описание пользователя и определи нужны ли уточняющие вопросы:\n\n" . $userInput;
         
     } else {

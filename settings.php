@@ -8,6 +8,73 @@ $models = [
 
 $ok = '';
 
+// Дополнительные действия (AJAX тест ключа и очистка данных)
+function testOpenAIKey(string $key, string $model): array {
+    if ($key === '') return ['ok'=>false,'error'=>'Ключ пустой'];
+    $t0 = microtime(true);
+    $payload = [
+        'model' => $model,
+        'messages' => [
+            ['role'=>'system','content'=>'ping'],
+            ['role'=>'user','content'=>'ping']
+        ],
+        'max_completion_tokens' => 10
+    ];
+    $ch = curl_init('https://api.openai.com/v1/chat/completions');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $key,
+            'Expect:'
+        ],
+        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 25
+    ]);
+    $resp = curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
+    curl_close($ch);
+    $dt = (int)round((microtime(true)-$t0)*1000);
+    if ($resp === false) return ['ok'=>false,'error'=>'Curl error: '.$err];
+    $data = json_decode($resp,true);
+    if ($status===200 && isset($data['choices'][0]['message'])) {
+        app_log('info','api_key_test','OK',['model'=>$model,'latency_ms'=>$dt]);
+        return ['ok'=>true,'latency_ms'=>$dt,'model'=>$model];
+    }
+    $preview = mb_substr($resp,0,200);
+    app_log('error','api_key_test','Fail',['status'=>$status,'preview'=>$preview]);
+    $msg = $data['error']['message'] ?? ('HTTP '.$status);
+    return ['ok'=>false,'error'=>$msg,'status'=>$status];
+}
+
+// AJAX тест ключа
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='test_api_key') {
+    $testKey = trim($_POST['openai_api_key'] ?? '');
+    $testModel = trim($_POST['openai_model'] ?? 'gpt-5-mini');
+    $res = testOpenAIKey($testKey, $testModel);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($res, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// Очистка данных
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='clear_data') {
+    try {
+        pdo()->exec('TRUNCATE TABLE links');
+        @pdo()->exec('TRUNCATE TABLE topics');
+        @pdo()->exec('TRUNCATE TABLE domains');
+        @pdo()->exec('TRUNCATE TABLE scans');
+        @pdo()->exec('TRUNCATE TABLE runs');
+        $ok = 'Данные (links/topics/domains/scans/runs) очищены';
+        app_log('info','maintenance','Data cleared',[]);
+    } catch (Throwable $e) {
+        $ok = 'Ошибка очистки: '.$e->getMessage();
+        app_log('error','maintenance','Clear failed',['error'=>$e->getMessage()]);
+    }
+}
+
 // Обработка умного мастера
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
     $userInput = trim($_POST['user_description'] ?? '');
@@ -37,9 +104,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
                         set_setting('search_prompt', $finalResult['prompt']);
                         if (!empty($finalResult['languages'])) {
                             set_setting('detected_languages', json_encode($finalResult['languages']));
+                            $existing = get_setting('search_languages', []);
+                            if (empty($existing) || (is_string($existing) && trim($existing)==='')) {
+                                set_setting('search_languages', json_encode($finalResult['languages']));
+                            }
                         }
                         if (!empty($finalResult['regions'])) {
                             set_setting('detected_regions', json_encode($finalResult['regions']));
+                            $existingR = get_setting('search_regions', []);
+                            if (empty($existingR) || (is_string($existingR) && trim($existingR)==='')) {
+                                set_setting('search_regions', json_encode($finalResult['regions']));
+                            }
                         }
                         
                         $ok = 'Промпт сформирован автоматически! Языки и регионы определены.';
@@ -109,9 +184,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
                     set_setting('search_prompt', $finalResult['prompt']);
                     if (!empty($finalResult['languages'])) {
                         set_setting('detected_languages', json_encode($finalResult['languages']));
+                        $existing = get_setting('search_languages', []);
+                        if (empty($existing) || (is_string($existing) && trim($existing)==='')) {
+                            set_setting('search_languages', json_encode($finalResult['languages']));
+                        }
                     }
                     if (!empty($finalResult['regions'])) {
                         set_setting('detected_regions', json_encode($finalResult['regions']));
+                        $existingR = get_setting('search_regions', []);
+                        if (empty($existingR) || (is_string($existingR) && trim($existingR)==='')) {
+                            set_setting('search_regions', json_encode($finalResult['regions']));
+                        }
                     }
                     
                     // Очищаем данные мастера
@@ -150,6 +233,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['smart_wizard'])) {
     set_setting('telegram_mode', $telegram_mode);
     set_setting('scope_forums_enabled', isset($_POST['scope_forums_enabled']));
 
+    // Новые поля: языки и регионы поиска
+    $rawLangs = trim($_POST['search_languages'] ?? '');
+    $langsArr = [];
+    if ($rawLangs !== '') {
+        $parts = preg_split('~[;,\s]+~u', $rawLangs, -1, PREG_SPLIT_NO_EMPTY);
+        foreach ($parts as $p) {
+            $p = strtolower(trim($p));
+            if ($p !== '' && mb_strlen($p) <= 8) $langsArr[] = $p;
+        }
+        $langsArr = array_values(array_unique($langsArr));
+    }
+    set_setting('search_languages', $langsArr);
+
+    $rawRegs = trim($_POST['search_regions'] ?? '');
+    $regsArr = [];
+    if ($rawRegs !== '') {
+        $parts = preg_split('~[;,\s]+~u', strtoupper($rawRegs), -1, PREG_SPLIT_NO_EMPTY);
+        foreach ($parts as $p) {
+            $p = strtoupper(trim($p));
+            if ($p !== '' && mb_strlen($p) <= 8) $regsArr[] = $p;
+        }
+        $regsArr = array_values(array_unique($regsArr));
+    }
+    set_setting('search_regions', $regsArr);
+
     // CRON секрет
     $cron_secret = trim($_POST['cron_secret'] ?? '');
     if ($cron_secret === '') $cron_secret = bin2hex(random_bytes(12));
@@ -172,6 +280,15 @@ $scopeDomains  = (bool)get_setting('scope_domains_enabled', false);
 $scopeTelegram = (bool)get_setting('scope_telegram_enabled', false);
 $telegramMode  = (string)get_setting('telegram_mode', 'any'); // any|discuss
 $scopeForums   = (bool)get_setting('scope_forums_enabled', true);
+
+$searchLangs = get_setting('search_languages', []);
+if (is_string($searchLangs)) { $tmp = json_decode($searchLangs, true); if (is_array($tmp)) $searchLangs = $tmp; }
+if (!is_array($searchLangs)) $searchLangs = [];
+$searchRegions = get_setting('search_regions', []);
+if (is_string($searchRegions)) { $tmp = json_decode($searchRegions, true); if (is_array($tmp)) $searchRegions = $tmp; }
+if (!is_array($searchRegions)) $searchRegions = [];
+$detectedLangs = json_decode((string)get_setting('detected_languages', '[]'), true); if (!is_array($detectedLangs)) $detectedLangs=[];
+$detectedRegs  = json_decode((string)get_setting('detected_regions', '[]'), true); if (!is_array($detectedRegs)) $detectedRegs=[];
 
 // вспомогательное
 $cronSecret = (string)get_setting('cron_secret', '');
@@ -204,7 +321,11 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
     <form method="post" class="stack settings-form">
 
       <label>OpenAI API Key
-        <input type="password" name="openai_api_key" value="<?=e($apiKey)?>" placeholder="sk-...">
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input type="password" name="openai_api_key" value="<?=e($apiKey)?>" placeholder="sk-..." style="flex:1;">
+          <button type="button" class="btn small" id="testApiBtn" style="white-space:nowrap;">Проверить</button>
+        </div>
+        <div id="apiTestStatus" class="hint" style="min-height:16px; margin-top:4px;"></div>
       </label>
 
       <label>Модель агента
@@ -221,6 +342,34 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
           <span class="muted" style="font-size: 12px;">Опишите что хотите отслеживать, ИИ сформирует промпт</span>
         </div>
         <textarea name="search_prompt" rows="5" placeholder="Опиши задачу для агента..."><?=e($prompt)?></textarea>
+      </label>
+
+      <label>Языки и регионы поиска
+        <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:8px;">
+          <div style="flex:1; min-width:220px;">
+            <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Языки</div>
+            <input type="text" name="search_languages" id="search_languages_input" value="<?=e(implode(', ', $searchLangs))?>" placeholder="например: ru, en, uk" />
+            <?php if ($detectedLangs): ?>
+              <div class="hint" style="margin-top:4px;">Рекомендации: 
+                <?php foreach ($detectedLangs as $dl): if (!in_array($dl,$searchLangs,true)): ?>
+                  <button type="button" class="tag-add" data-add-target="search_languages_input" data-value="<?=e($dl)?>"><?=e($dl)?></button>
+                <?php endif; endforeach; ?>
+              </div>
+            <?php endif; ?>
+          </div>
+          <div style="flex:1; min-width:220px;">
+            <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Регионы</div>
+            <input type="text" name="search_regions" id="search_regions_input" value="<?=e(implode(', ', $searchRegions))?>" placeholder="например: UA, PL, DE" />
+            <?php if ($detectedRegs): ?>
+              <div class="hint" style="margin-top:4px;">Рекомендации: 
+                <?php foreach ($detectedRegs as $dr): if (!in_array($dr,$searchRegions,true)): ?>
+                  <button type="button" class="tag-add" data-add-target="search_regions_input" data-value="<?=e($dr)?>"><?=e($dr)?></button>
+                <?php endif; endforeach; ?>
+              </div>
+            <?php endif; ?>
+          </div>
+        </div>
+        <div class="hint">Укажите языки и регионы (через запятую или пробел). Эти списки будут использоваться при поиске. Клик по рекомендации добавит её в поле.</div>
       </label>
 
       <!-- НОВЫЙ блок: области поиска -->
@@ -279,6 +428,14 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
 
       <button class="btn primary">Сохранить</button>
     </form>
+
+    <hr style="margin:28px 0; opacity:0.4;">
+    <div class="card-title">Сервис</div>
+    <form method="post" onsubmit="return confirm('Удалить ВСЕ найденные ссылки, домены, темы и историю сканов? Действие необратимо. Продолжить?');" style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+      <input type="hidden" name="action" value="clear_data">
+      <button type="submit" class="btn danger">🗑 Очистить найденные данные</button>
+      <span class="muted" style="font-size:12px;">Удалит links, topics, domains, scans, runs</span>
+    </form>
   </div>
 </main>
 <?php include 'footer.php'; ?>
@@ -316,6 +473,8 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
   </div>
 </div>
 
+<div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
 <style>
 .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; }
 .modal-backdrop { position: absolute; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); }
@@ -333,6 +492,19 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
 .checkbox input[type=checkbox], .checkbox input[type=radio] { width: 16px; height: 16px; }
 .spinner { width: 40px; height: 40px; border: 4px solid var(--border); border-top: 4px solid var(--pri); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px; }
 @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+.tag-add{ background:rgba(255,255,255,0.05); border:1px solid var(--border); color:var(--text); padding:2px 8px; border-radius:14px; font-size:11px; cursor:pointer; margin:0 4px 4px 0; }
+.tag-add:hover{ background:var(--pri); color:#fff; }
+.btn.danger{background:linear-gradient(135deg,#ff5555,#ff2d2d);color:#fff;}
+.btn.danger:hover{filter:brightness(1.1);} 
+.btn.small{padding:6px 10px; font-size:12px; font-weight:600;}
+.toast-container{ position:fixed; top:12px; right:12px; display:flex; flex-direction:column; gap:10px; z-index:1200; max-width:300px; }
+.toast{ background:var(--card); border:1px solid var(--border); box-shadow:0 4px 18px -4px rgba(0,0,0,0.4); padding:10px 14px; border-radius:12px; font-size:13px; line-height:1.4; display:flex; justify-content:space-between; gap:12px; align-items:flex-start; animation:toastIn .35s ease; }
+.toast-success{ border-color:#2e8b57; }
+.toast-error{ border-color:#ff4d4f; }
+.toast-close{ background:none; border:none; font-size:16px; line-height:1; cursor:pointer; color:var(--muted); padding:0 2px; }
+.toast-close:hover{ color:var(--text); }
+.toast.hide{ opacity:0; transform:translateY(-6px); transition:.3s; }
+@keyframes toastIn{ from{opacity:0; transform:translateY(-6px);} to{opacity:1; transform:translateY(0);} }
 </style>
 
 <script>
@@ -375,9 +547,9 @@ document.getElementById('wizardForm').addEventListener('submit', function(e) {
 
 // Показать сообщение об успехе если пришли после генерации
 <?php if (isset($_GET['wizard_success'])): ?>
-setTimeout(function() {
-  alert('✨ Промпт успешно сгенерирован! Проверьте поле "Промпт" выше.');
-}, 100);
+setTimeout(function(){
+  showToast('✨ Промпт успешно сгенерирован! Проверьте поле ниже.','success');
+}, 150);
 <?php endif; ?>
 
 // Показать вопросы если ИИ их сгенерировал
@@ -479,6 +651,47 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+document.querySelectorAll('.tag-add').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    const targetId = btn.getAttribute('data-add-target');
+    const val = btn.getAttribute('data-value');
+    const inp = document.getElementById(targetId);
+    if (!inp) return;
+    let current = inp.value.split(/[;,\s]+/).filter(x=>x.trim()!=='');
+    if (!current.includes(val)) { current.push(val); }
+    inp.value = current.join(', ');
+  });
+});
+
+const testBtn = document.getElementById('testApiBtn');
+if (testBtn){
+  testBtn.addEventListener('click', ()=>{
+    const statusEl = document.getElementById('apiTestStatus');
+    const key = document.querySelector('input[name=openai_api_key]').value.trim();
+    const model = document.querySelector('select[name=openai_model]').value;
+    if(!key){ statusEl.textContent='Введите ключ'; return; }
+    testBtn.disabled=true; statusEl.textContent='Проверка...';
+    fetch('settings.php', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'}, body:new URLSearchParams({action:'test_api_key', openai_api_key:key, openai_model:model})})
+      .then(r=>r.json()).then(data=>{
+        if(data.ok){ statusEl.textContent='✔ Ключ работает ('+data.latency_ms+' ms)'; statusEl.style.color='#52d273'; }
+        else { statusEl.textContent='✖ '+(data.error||'Ошибка'); statusEl.style.color='#ff6b6b'; }
+      }).catch(e=>{ statusEl.textContent='Сбой: '+e; statusEl.style.color='#ff6b6b'; })
+      .finally(()=>{ testBtn.disabled=false; });
+  });
+}
+
+function showToast(message, type='success', timeout=5000){
+  const cont = document.getElementById('toastContainer');
+  if(!cont) return;
+  const el = document.createElement('div');
+  el.className = 'toast toast-'+type;
+  el.innerHTML = '<span>'+escapeHtml(message)+'</span><button type="button" class="toast-close" aria-label="Закрыть">×</button>';
+  cont.appendChild(el);
+  const remove = ()=>{ el.classList.add('hide'); setTimeout(()=>el.remove(),300); };
+  el.querySelector('.toast-close').addEventListener('click', remove);
+  setTimeout(remove, timeout);
 }
 </script>
 
