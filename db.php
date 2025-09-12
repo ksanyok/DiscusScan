@@ -604,9 +604,9 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     }
     
     // Динамический лимит токенов (уменьшаем для clarify чтобы снизить риск лимита)
-    $outTokens = $step === 'clarify' ? 700 : 1200; // уменьшили лимит generate, чтобы избежать length
-    // Новая универсальная переменная параметра токенов (для текущих моделей нужен max_completion_tokens)
-    $tokenParamName = 'max_completion_tokens';
+    $outTokens = $step === 'clarify' ? 700 : 1200; 
+    // chat/completions ожидает max_tokens, ранее использовался неверный ключ => модель резала ответ
+    $tokenParamName = 'max_tokens';
     
     $payload = [
         'model' => $model,
@@ -623,7 +623,6 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             ]
         ],
         $tokenParamName => $outTokens
-        // temperature убран (модель не поддерживает)
     ];
     
     $timeout = ($step === 'generate') ? 90 : 45;
@@ -835,6 +834,42 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             app_log('info','smart_wizard','Fallback generate retry success',['finish_reason'=>$finishReason,'len'=>strlen($content)]);
         } else {
             app_log('error','smart_wizard','Fallback generate retry failed',['status'=>$statusG,'body_preview'=>substr($bodyG,0,300)]);
+        }
+        // Дополнительный попытка если всё ещё пусто
+        if (trim($content)==='') {
+            $thirdPayload = [
+                'model' => $model,
+                'messages' => [
+                    ['role'=>'system','content'=>'Верни строго JSON с ключами prompt,languages,regions,sources.'],
+                    ['role'=>'user','content'=>$userPrompt]
+                ],
+                $tokenParamName => min($outTokens+400, 2000)
+            ];
+            $chT = curl_init($requestUrl);
+            curl_setopt_array($chT,[
+                CURLOPT_POST=>true,
+                CURLOPT_HTTPHEADER=>$requestHeaders,
+                CURLOPT_POSTFIELDS=>json_encode($thirdPayload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER=>true,
+                CURLOPT_TIMEOUT=>90,
+                CURLOPT_HEADER=>true
+            ]);
+            $respT = curl_exec($chT);
+            $infoT = curl_getinfo($chT);
+            $statusT = (int)($infoT['http_code']??0);
+            $headerSizeT = (int)($infoT['header_size']??0);
+            $bodyT = substr((string)$respT,$headerSizeT);
+            curl_close($chT);
+            if ($statusT===200) {
+                $dataT = json_decode($bodyT,true);
+                $cT = $dataT['choices'][0]['message']['content'] ?? '';
+                if (preg_match('~```(json)?\s*(.+?)```~is', $cT, $mmm)) { $cT = $mmm[2]; }
+                $cT = trim($cT);
+                if ($cT!=='') { $content = $cT; app_log('info','smart_wizard','Third attempt success',['len'=>strlen($cT)]); }
+                else { app_log('warning','smart_wizard','Third attempt still empty',[]); }
+            } else {
+                app_log('error','smart_wizard','Third attempt failed',['status'=>$statusT,'body_preview'=>substr($bodyT,0,200)]);
+            }
         }
     }
     
