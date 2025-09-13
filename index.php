@@ -137,8 +137,6 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .metric-sub{font-size:11px;color:var(--muted);margin-top:2px}
     .spark{position:absolute;bottom:4px;left:4px;right:4px;height:28px;opacity:.55}
     .scan-control{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-bottom:12px}
-    .scan-btn{display:inline-flex;align-items:center;gap:8px;padding:12px 18px;font-weight:700;border-radius:14px;background:var(--grad-primary);color:#031428;border:0;cursor:pointer;box-shadow:0 10px 36px rgba(91,140,255,.25)}
-    .scan-btn[disabled]{opacity:.5;cursor:not-allowed;filter:grayscale(.2)}
     .guard-badge{display:inline-flex;align-items:center;font-size:11px;padding:4px 8px;border-radius:30px;background:#13214a;color:var(--muted);gap:6px}
     .history-table th,.history-table td{padding:4px 6px;font-size:12px}
     .history-new{color:#2ecc71;font-weight:600}
@@ -165,7 +163,6 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .candidate-badge{background:linear-gradient(135deg,#6f42c1,#8e5bd6);color:#fff;padding:2px 6px;border-radius:6px;font-size:11px}
     .candidates-list th,.candidates-list td{padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);white-space:nowrap}
     .quick-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;width:100%}
-    .quick-actions .qa-btn{width:100%;justify-content:center}
     .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:50}
     .modal{background:#10203f;border:1px solid var(--border);border-radius:16px;max-width:480px;width:90%;padding:22px;box-shadow:0 18px 60px rgba(0,0,0,.45)}
     .modal h3{margin:0 0 10px;font-size:18px}
@@ -174,6 +171,9 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .danger-btn{background:var(--grad-coral);color:#2a0e08;font-weight:700}
     .auto-refresh-toggle{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-left:auto}
     #dashboardMain{display:flex;flex-direction:column;gap:18px}
+    .btn.small{ padding:8px 12px; border-radius:10px; font-size:13px; }
+    .btn-ghost.small{ padding:8px 12px; }
+    .quick-actions .btn{ width:100%; justify-content:center; }
   </style>
 </head>
 <body>
@@ -193,7 +193,7 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
   <!-- Scan control + history -->
   <section class="card glass" id="scanControl">
     <div class="scan-control">
-      <button class="scan-btn" id="scanBtn" data-url="scan.php?manual=1" type="button">🚀 Запустить скан</button>
+      <button class="btn primary" id="scanBtn" data-url="scan.php?manual=1" type="button">🚀 Запустить скан</button>
       <div class="guard-badge" id="guardInfo">Guard: —</div>
       <div class="auto-refresh-toggle"><label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="autoRefresh" style="margin:0"> <span>Автообновление</span></label></div>
     </div>
@@ -229,7 +229,7 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
       <input type="search" id="linksSearch" placeholder="Поиск..." aria-label="Поиск ссылок">
       <select id="linksDomain"><option value="">Все домены</option></select>
       <select id="linksRange"><option value="24h">24 часа</option><option value="7d">7 дней</option><option value="all">Все</option></select>
-      <button class="qa-btn" id="linksReload" type="button">Обновить</button>
+      <button class="btn btn-ghost small" id="linksReload" type="button">Обновить</button>
       <div style="margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><span id="linksOffsetInfo"></span></div>
     </div>
     <div class="table-wrap" style="max-height:380px">
@@ -243,14 +243,14 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
       </table>
     </div>
     <div style="display:flex;gap:10px;margin-top:8px;">
-      <button class="qa-btn" id="linksMore" type="button">Показать ещё</button>
+      <button class="btn btn-ghost small" id="linksMore" type="button">Показать ещё</button>
     </div>
   </section>
 
   <!-- Candidates management -->
   <section class="card glass" id="candidatesBlock">
     <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">Кандидаты доменов
-      <button type="button" class="qa-btn" id="activateAllCand">Активировать все</button>
+      <button type="button" class="btn btn-ghost small" id="activateAllCand">Активировать все</button>
     </div>
     <p class="muted-inline" style="margin:6px 0 10px;font-size:12px;">Здесь показываются неактивные домены с пометкой <code>candidate</code>, найденные автоматически. Активируйте их, чтобы добавить в регулярные сканы.</p>
     <div class="table-wrap" style="max-height:280px">
@@ -265,11 +265,11 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
   <section class="card glass" id="quickActions">
     <div class="card-title">Быстрые действия</div>
     <div class="quick-actions">
-      <a class="qa-btn" href="settings.php">⚙️ Настройки</a>
-      <a class="qa-btn" href="sources.php">🌐 Домены</a>
-      <button class="qa-btn" id="openClearModal" type="button">🧹 Очистить данные</button>
-      <a class="qa-btn" href="scan.php?manual=1" target="_blank" rel="noopener">🚀 Форс-проход</a>
-      <button class="qa-btn" id="refreshAll" type="button">🔁 Обновить всё</button>
+      <a class="btn btn-ghost small" href="settings.php">⚙️ Настройки</a>
+      <a class="btn btn-ghost small" href="sources.php">🌐 Домены</a>
+      <button class="btn btn-ghost small" id="openClearModal" type="button">🧹 Очистить данные</button>
+      <a class="btn btn-ghost small" href="scan.php?manual=1" target="_blank" rel="noopener">🚀 Форс-проход</a>
+      <button class="btn btn-ghost small" id="refreshAll" type="button">🔁 Обновить всё</button>
     </div>
   </section>
 
@@ -314,7 +314,7 @@ const linksTable=document.getElementById('linksTable');
 linksTable.addEventListener('click',e=>{ const row=e.target.closest('.link-row'); if(!row) return; const next=row.nextElementSibling; if(next && next.classList.contains('link-detail')){ next.remove(); return; } if(next && next.classList.contains('link-row')){} else if(next){ next.remove(); } const detail=document.createElement('tr'); detail.className='link-detail'; detail.innerHTML=`<td colspan="6" style="font-size:12px;padding:10px 12px;">ID: ${row.dataset.id} • <a href="sources.php" style="text-decoration:none">Домены</a> • <span class="muted-inline">Подробнее функционал позже</span></td>`; row.parentNode.insertBefore(detail,row.nextSibling); });
 
 // CANDIDATES
-async function loadCandidates(){ const r=await fetch('index.php?ajax=candidates'); const j=await r.json(); if(!j.ok)return; const tb=document.querySelector('#candTable tbody'); tb.innerHTML=''; if(!j.candidates.length){ tb.innerHTML='<tr><td colspan="5" style="font-size:12px;color:var(--muted)">Нет кандидатов</td></tr>'; return; } j.candidates.forEach(c=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${escapeHtml(c.host)}</td><td>${c.link_count}</td><td>${c.first_found? c.first_found.slice(5,16):'—'}</td><td class="ellipsis" style="max-width:200px;">${escapeHtml(c.note||'candidate')}</td><td><button class="toggle-btn small" data-act-cand="${c.id}">Активировать</button></td>`; tb.appendChild(tr); }); }
+async function loadCandidates(){ const r=await fetch('index.php?ajax=candidates'); const j=await r.json(); if(!j.ok)return; const tb=document.querySelector('#candTable tbody'); tb.innerHTML=''; if(!j.candidates.length){ tb.innerHTML='<tr><td colspan="5" style="font-size:12px;color:var(--muted)">Нет кандидатов</td></tr>'; return; } j.candidates.forEach(c=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${escapeHtml(c.host)}</td><td>${c.link_count}</td><td>${c.first_found? c.first_found.slice(5,16):'—'}</td><td class="ellipsis" style="max-width:200px;">${escapeHtml(c.note||'candidate')}</td><td><button class="btn small" data-act-cand="${c.id}">Активировать</button></td>`; tb.appendChild(tr); }); }
 
 // Quick actions: candidates activation
  document.getElementById('activateAllCand').addEventListener('click', async()=>{ if(!confirm('Активировать все кандидаты?')) return; const r=await fetch('index.php',{method:'POST',body:new URLSearchParams({action:'activate_candidates'})}); const j=await r.json(); if(j.ok){ loadCandidates(); loadMetrics(); loadTopDomains(); }});
