@@ -106,8 +106,13 @@ if (isset($_GET['ajax'])) {
         $sql2 = "SELECT COUNT(*) FROM links l JOIN sources s ON s.id=l.source_id $where"; $stmt2=pdo()->prepare($sql2); $stmt2->execute($params); $total=(int)$stmt2->fetchColumn();
         json_out(['ok'=>true,'links'=>$rows,'offset'=>$offset,'limit'=>$limit,'total'=>$total]);
     } elseif ($ajax==='candidates') {
-        // FIX: MySQL не поддерживает "NULLS LAST" — используем выражение (first_found IS NULL) для сортировки
-        $rows = pdo()->query("SELECT s.id,s.host,s.note,s.is_active, MIN(l.first_found) first_found, COUNT(l.id) link_count FROM sources s LEFT JOIN links l ON l.source_id=s.id WHERE s.is_active=0 AND (s.note LIKE '%candidate%' OR s.note LIKE '%cand%') GROUP BY s.id ORDER BY (first_found IS NULL), first_found DESC, s.id DESC LIMIT 100")->fetchAll();
+        // FIX: MySQL не поддерживает "NULLS LAST" — используем (first_found IS NULL) сортировку.
+        // Добавлен try/catch чтобы при ошибке SQL не падал весь дашборд.
+        try {
+            $rows = pdo()->query("SELECT s.id,s.host,s.note,s.is_active, MIN(l.first_found) first_found, COUNT(l.id) link_count FROM sources s LEFT JOIN links l ON l.source_id=s.id WHERE s.is_active=0 AND (s.note LIKE '%candidate%' OR s.note LIKE '%cand%') GROUP BY s.id ORDER BY (first_found IS NULL), first_found DESC, s.id DESC LIMIT 100")->fetchAll();
+        } catch (Throwable $e) {
+            $rows = [];
+        }
         json_out(['ok'=>true,'candidates'=>$rows]);
     } else {
         json_out(['ok'=>false,'error'=>'unknown_ajax']);
