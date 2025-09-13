@@ -155,7 +155,7 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .dom-bar{height:6px;border-radius:4px;background:linear-gradient(90deg,var(--pri),var(--pri-2));box-shadow:0 1px 3px rgba(0,0,0,.3);min-width:4px}
     .links-filters{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px}
     .links-filters input, .links-filters select{padding:8px 10px;font-size:13px;border-radius:10px;border:1px solid var(--border);background:#0f1733;color:#fff;width:auto}
-    .links-list table{width:100%;border-collapse:collapse}
+    .links-list{width:100%;border-collapse:collapse}
     .links-list th,.links-list td{padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);white-space:nowrap;vertical-align:top}
     .link-row{cursor:pointer}
     .link-row:hover{background:rgba(255,255,255,.05)}
@@ -164,9 +164,8 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .status-new{background:#13214a;padding:2px 6px;border-radius:6px;font-size:11px}
     .candidate-badge{background:linear-gradient(135deg,#6f42c1,#8e5bd6);color:#fff;padding:2px 6px;border-radius:6px;font-size:11px}
     .candidates-list th,.candidates-list td{padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);white-space:nowrap}
-    .quick-actions{display:flex;flex-wrap:wrap;gap:10px}
-    .qa-btn{padding:10px 14px;border-radius:10px;background:#0f1733;border:1px solid var(--border);cursor:pointer;font-size:13px;color:#fff;display:inline-flex;align-items:center;gap:6px}
-    .qa-btn:hover{background:#16233f}
+    .quick-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;width:100%}
+    .quick-actions .qa-btn{width:100%;justify-content:center}
     .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:50}
     .modal{background:#10203f;border:1px solid var(--border);border-radius:16px;max-width:480px;width:90%;padding:22px;box-shadow:0 18px 60px rgba(0,0,0,.45)}
     .modal h3{margin:0 0 10px;font-size:18px}
@@ -174,11 +173,12 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .modal .actions{display:flex;justify-content:flex-end;gap:10px;margin-top:4px}
     .danger-btn{background:var(--grad-coral);color:#2a0e08;font-weight:700}
     .auto-refresh-toggle{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-left:auto}
+    #dashboardMain{display:flex;flex-direction:column;gap:18px}
   </style>
 </head>
 <body>
 <?php include 'header.php'; ?>
-<main class="container">
+<main class="container" id="dashboardMain">
 
   <!-- Metrics (initial fallback static) -->
   <section class="metrics-grid" id="metricsGrid" aria-live="polite">
@@ -252,6 +252,7 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">Кандидаты доменов
       <button type="button" class="qa-btn" id="activateAllCand">Активировать все</button>
     </div>
+    <p class="muted-inline" style="margin:6px 0 10px;font-size:12px;">Здесь показываются неактивные домены с пометкой <code>candidate</code>, найденные автоматически. Активируйте их, чтобы добавить в регулярные сканы.</p>
     <div class="table-wrap" style="max-height:280px">
       <table class="candidates-list" id="candTable">
         <thead><tr><th>Домен</th><th>Ссылок</th><th>Первая ссылка</th><th>Note</th><th></th></tr></thead>
