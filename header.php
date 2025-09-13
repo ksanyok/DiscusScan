@@ -16,6 +16,7 @@ function nav_active($file){ return basename($_SERVER['PHP_SELF']) === $file ? 'a
       <a href="index.php" class="<?=nav_active('index.php')?>">Дашборд</a>
       <a href="sources.php" class="<?=nav_active('sources.php')?>">Домены</a>
       <a href="settings.php" class="<?=nav_active('settings.php')?>">Настройки</a>
+      <a href="publications.php" class="<?=nav_active('publications.php')?>">Публикации</a>
       <a href="auth.php?logout=1">Выход</a>
     </nav>
   </div>

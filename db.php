@@ -197,6 +197,78 @@ function install_schema(PDO $pdo): void {
             status VARCHAR(30) DEFAULT 'started'
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     ");
+
+    // --- PUBLICATIONS LAYER TABLES (forums/accounts/threads/posts/jobs/actions_log) ---
+    $pdo->exec("CREATE TABLE IF NOT EXISTS forums (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      host VARCHAR(255) UNIQUE NOT NULL,
+      title VARCHAR(255) NULL,
+      rules JSON NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS accounts (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      forum_id INT NOT NULL,
+      login VARCHAR(255) NOT NULL,
+      pass_enc TEXT NOT NULL,
+      cookies_path VARCHAR(512) NULL,
+      last_login_at DATETIME NULL,
+      is_active TINYINT(1) DEFAULT 1,
+      UNIQUE KEY uniq_forum_login (forum_id, login),
+      FOREIGN KEY (forum_id) REFERENCES forums(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS threads (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      forum_id INT NOT NULL,
+      url TEXT NOT NULL,
+      title VARCHAR(512) NULL,
+      status ENUM('new','queued','needs_manual','posting','posted','failed','cooldown') DEFAULT 'new',
+      last_attempt_at DATETIME NULL,
+      last_result JSON NULL,
+      FOREIGN KEY (forum_id) REFERENCES forums(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS posts (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      thread_id INT NOT NULL,
+      account_id INT NULL,
+      content MEDIUMTEXT NOT NULL,
+      permalink TEXT NULL,
+      status ENUM('draft','sent','verified','failed') DEFAULT 'draft',
+      meta JSON NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS jobs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      type ENUM('scan','login','register','post','verify') NOT NULL,
+      payload JSON NOT NULL,
+      status ENUM('queued','running','done','failed') DEFAULT 'queued',
+      attempts INT DEFAULT 0,
+      last_error TEXT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS actions_log (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      forum_id INT NULL,
+      thread_id INT NULL,
+      account_id INT NULL,
+      action VARCHAR(64) NOT NULL,
+      request JSON NULL,
+      response JSON NULL,
+      screenshot_path VARCHAR(512) NULL,
+      status ENUM('ok','warn','error') DEFAULT 'ok',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_actions_forum (forum_id),
+      INDEX idx_actions_thread (thread_id),
+      INDEX idx_actions_account (account_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
 }
 
 // --- НАСТРОЙКИ ---
@@ -248,7 +320,21 @@ function ensure_defaults(PDO $pdo): void {
         'orchestration_include_domains' => json_encode([]),
         'orchestration_exclude_domains' => json_encode([]),
         'orchestration_enabled' => false,
-        'orchestration_last_run' => null
+        'orchestration_last_run' => null,
+        
+        // Publications defaults
+        'pub_daily_limit_domain' => 20,
+        'pub_daily_limit_account' => 30,
+        'pub_time_windows' => json_encode([["from"=>"08:00","to"=>"23:00"]], JSON_UNESCAPED_UNICODE),
+        'pub_random_delay_sec' => json_encode([15,120]),
+        'pub_warm_mode' => true,
+        'pub_link_strategy' => 'soft_cta',
+        'pub_max_reply_len' => 800,
+        'pub_style' => 'expert',
+        'pub_logs_retention_days' => 14,
+        'pub_make_screenshots' => true,
+        'pub_flags' => json_encode(['manual_only_domains'=>[], 'allow_manual_fallback'=>true, 'use_saved_cookies'=>true, 'refresh_cookies_after_manual'=>true], JSON_UNESCAPED_UNICODE),
+        'pub_agent_provider' => 'null'
     ];
     foreach ($defaults as $k => $v) {
         if (get_setting($k, '__missing__') === '__missing__') {
@@ -734,7 +820,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             $info2 = curl_getinfo($ch2);
             $status2 = (int)($info2['http_code'] ?? 0);
             $headerSize2 = (int)($info2['header_size'] ?? 0);
-            $body2 = substr((string)$resp2, $headerSize2);
+            $body2 = substr((string)$resp2, $headerSize);
             $curlErr2 = curl_error($ch2);
             curl_close($ch2);
             if ($status2 === 200) { $body = $body2; $status = 200; } else { app_log('error','smart_wizard','Retry failed',['status'=>$status2,'curl_error'=>$curlErr2,'body_preview'=>substr($body2,0,300)]); }
@@ -763,7 +849,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             $info2 = curl_getinfo($ch2);
             $status2 = (int)($info2['http_code'] ?? 0);
             $headerSize2 = (int)($info2['header_size'] ?? 0);
-            $body2 = substr((string)$resp2, $headerSize2);
+            $body2 = substr((string)$resp2, $headerSize);
             $curlErr2 = curl_error($ch2);
             curl_close($ch2);
             if ($status2 === 200) { $body = $body2; $status = 200; } else { app_log('error','smart_wizard','Retry failed',['status'=>$status2,'curl_error'=>$curlErr2,'body_preview'=>substr($body2,0,300)]); }
@@ -974,7 +1060,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     
     if (!$result) {
         $extracted = null;
-        if (preg_match('{\{(?:[^{}]|(?R))*\}}u', $body, $mm)) {
+        if (preg_match('{\{(?:[^{}]*?(?:forums?|telegram|социальн(?:ые|ых)|social|news|reviews?)[^{}]*)\}}u', $body, $mm)) {
             $candidate = $mm[0];
             $decoded = json_decode($candidate, true);
             if (is_array($decoded)) { $extracted = $decoded; $result = $decoded; $content = $candidate; }
