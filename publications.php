@@ -3,6 +3,7 @@ declare(strict_types=1);
 require_once __DIR__.'/db.php';
 require_once __DIR__.'/app/Agent/AgentProvider.php';
 require_once __DIR__.'/app/Agent/NullAgent.php';
+require_once __DIR__.'/app/Poster/PosterService.php';
 require_login();
 
 // Basic router via ?page=...
@@ -41,13 +42,45 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         pdo()->prepare('UPDATE accounts SET cookies_path=? , last_login_at=NOW() WHERE id=?')->execute([$path,$accountId]);
         pdo()->prepare('UPDATE threads SET status="queued" WHERE id=?')->execute([$threadId]);
         json_pub(['ok'=>true,'saved'=>basename($path)]);
+    } elseif($action==='publish_now') {
+        $threadId = (int)($_POST['thread_id'] ?? 0);
+        if(!$threadId) json_pub(['ok'=>false,'error'=>'missing_thread']);
+        // thread + forum host
+        $stmt = pdo()->prepare('SELECT t.*, f.host FROM threads t JOIN forums f ON f.id=t.forum_id WHERE t.id=? LIMIT 1');
+        $stmt->execute([$threadId]);
+        $thread = $stmt->fetch();
+        if(!$thread) json_pub(['ok'=>false,'error'=>'not_found']);
+        if(in_array($thread['status'], ['posted','posting','verified'])) {
+            json_pub(['ok'=>false,'error'=>'already_posted']);
+        }
+        // pick account
+        $accStmt = pdo()->prepare('SELECT * FROM accounts WHERE forum_id=? AND is_active=1 ORDER BY (last_login_at IS NULL) DESC, last_login_at ASC LIMIT 1');
+        $accStmt->execute([$thread['forum_id']]);
+        $account = $accStmt->fetch();
+        if(!$account) json_pub(['ok'=>false,'error'=>'no_account']);
+        $poster = new PosterService();
+        $loginRes = $poster->loginOrRegister(['host'=>$thread['host']], $account);
+        if(!$loginRes['ok']) {
+            $poster->fallbackToManual($thread);
+            json_pub(['ok'=>false,'error'=>'login_failed','manual'=>true]);
+        }
+        $content = $poster->compose($thread, $account);
+        $postRes = $poster->post($thread, $account, $content);
+        json_pub(['ok'=>true,'thread_id'=>$threadId,'content_preview'=>mb_substr($content,0,140),'result'=>$postRes]);
     }
     json_pub(['ok'=>false,'error'=>'unknown_action']);
 }
 
 // Data providers
 function load_forums_summary(): array {
-    $sql = 'SELECT f.id,f.host,f.title,\n        (SELECT COUNT(*) FROM threads t WHERE t.forum_id=f.id) thread_cnt,\n        (SELECT COUNT(*) FROM threads t WHERE t.forum_id=f.id AND t.status="needs_manual") needs_manual_cnt,\n        (SELECT COUNT(*) FROM threads t WHERE t.forum_id=f.id AND t.status="failed") failed_cnt,\n        (SELECT COUNT(*) FROM threads t WHERE t.forum_id=f.id AND t.status="queued") queued_cnt\n        FROM forums f ORDER BY f.id DESC LIMIT 200';
+    $sql = "SELECT f.id,f.host,f.title,
+        (SELECT COUNT(*) FROM threads t WHERE t.forum_id=f.id) AS thread_cnt,
+        (SELECT COUNT(*) FROM threads t WHERE t.forum_id=f.id AND t.status='needs_manual') AS needs_manual_cnt,
+        (SELECT COUNT(*) FROM threads t WHERE t.forum_id=f.id AND t.status='failed') AS failed_cnt,
+        (SELECT COUNT(*) FROM threads t WHERE t.forum_id=f.id AND t.status='queued') AS queued_cnt
+        FROM forums f
+        ORDER BY f.id DESC
+        LIMIT 200";
     return pdo()->query($sql)->fetchAll() ?: [];
 }
 
@@ -126,7 +159,7 @@ if($page==='settings'){ $keys=['pub_daily_limit_domain','pub_daily_limit_account
         <td><?=$t['status']?></td>
         <td><?=$t['last_attempt_at']? date('d.m H:i', strtotime($t['last_attempt_at'])):'—'?></td>
         <td style="display:flex;gap:4px;flex-wrap:wrap;">
-          <button class="btn tiny" data-enqueue-post="<?=$t['id']?>">Постить</button>
+          <button class="btn tiny" data-publish-now="<?=$t['id']?>">Постить</button>
           <button class="btn tiny" data-open-browser="<?=$t['id']?>" data-thread="<?=$t['id']?>">Браузер</button>
           <a class="btn tiny" href="publications.php?page=logs&thread_id=<?=$t['id']?>">Логи</a>
         </td>
