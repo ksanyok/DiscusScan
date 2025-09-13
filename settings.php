@@ -73,8 +73,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (($_POST['action'] ?? '') === 'clea
         @pdo()->exec('TRUNCATE TABLE domains');
         @pdo()->exec('TRUNCATE TABLE sources');
         pdo()->exec('SET FOREIGN_KEY_CHECKS=1');
-        $ok = 'Данные очищены (links/topics/scans/runs/domains/sources). Настройки и ключи сохранены.';
-        app_log('info','maintenance','Data cleared (incl sources)',[]);
+        // Сброс инкрементального маркера, чтобы следующий скан не пытался искать только "после прошлого"
+        set_setting('last_scan_at', '');
+        $ok = 'Данные очищены (links/topics/scans/runs/domains/sources). Маркер last_scan_at сброшен.';
+        app_log('info','maintenance','Data cleared + last_scan_at reset',[]);
     } catch (Throwable $e) {
         try { pdo()->exec('SET FOREIGN_KEY_CHECKS=1'); } catch (Throwable $e2) {}
         $ok = 'Ошибка очистки: '.$e->getMessage();
