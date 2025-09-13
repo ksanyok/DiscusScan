@@ -226,6 +226,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
     }
 }
 
+// API: публикационные логи (JSON)
+if(isset($_GET['pub_logs_api'])){
+    require_login();
+    $day = preg_replace('~[^0-9\-]~','', $_GET['day'] ?? date('Y-m-d'));
+    $limit = max(10, min(2000, (int)($_GET['limit'] ?? 400)));
+    $file = __DIR__.'/storage/logs/publish-'.$day.'.jsonl';
+    $out = [];
+    if(is_file($file)){
+        $fh = fopen($file,'r');
+        while(!feof($fh) && count($out)<$limit){
+            $line = trim((string)fgets($fh)); if($line==='') continue;
+            $row = json_decode($line,true); if(!$row) continue;
+            $out[] = $row;
+        }
+        fclose($fh);
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok'=>true,'day'=>$day,'items'=>$out], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 // Обработка обычных настроек (исключаем очистку данных, чтобы не затирать ключи пустыми значениями)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['smart_wizard']) && (($_POST['action'] ?? '') !== 'clear_data')) {
     // базовые настройки
@@ -276,6 +297,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['smart_wizard']) && (
     if ($cron_secret === '') $cron_secret = bin2hex(random_bytes(12));
     set_setting('cron_secret', $cron_secret);
 
+    // ПУБЛИКАЦИИ (если присланы поля)
+    $pubFields = [
+        'pub_daily_limit_domain' => 'int',
+        'pub_daily_limit_account' => 'int',
+        'pub_warm_mode' => 'bool',
+        'pub_link_strategy' => 'str',
+        'pub_max_reply_len' => 'int',
+        'pub_style' => 'str',
+        'pub_logs_retention_days' => 'int',
+        'pub_make_screenshots' => 'bool'
+    ];
+    $pubTouched = false;
+    foreach($pubFields as $k=>$t){
+        if(array_key_exists($k, $_POST)){
+            $pubTouched = true;
+            $v = $_POST[$k];
+            switch($t){
+                case 'int': $v = (int)$v; break;
+                case 'bool': $v = (isset($_POST[$k]) ? 1 : 0); break;
+                case 'str': $v = trim((string)$v); break;
+            }
+            set_setting($k, $v);
+        }
+    }
+    if($pubTouched){ app_log('info','pub_settings','Updated publication settings',[]); }
+
     $ok = 'Сохранено';
     app_log('info', 'settings', 'Settings updated', []);
 }
@@ -315,6 +362,11 @@ try {
     $activeDomainsCount = (int)get_setting('active_sources_count', 0); // fallback, если нет таблицы
 }
 $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
+
+// Получение текущих значений pub_* (для блока #pub)
+$pubSettingsKeys = ['pub_daily_limit_domain','pub_daily_limit_account','pub_warm_mode','pub_link_strategy','pub_max_reply_len','pub_style','pub_logs_retention_days','pub_make_screenshots'];
+$pub = [];
+foreach($pubSettingsKeys as $pk){ $pub[$pk] = get_setting($pk, ''); }
 ?>
 <!doctype html>
 <html lang="ru">
@@ -458,7 +510,54 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
       <button class="btn primary">Сохранить</button>
     </form>
 
-    <hr style="margin:28px 0; opacity:0.4;">
+    <hr style="margin:48px 0 32px; opacity:.5;">
+    <h2 id="pub" style="margin-top:0;">Настройки публикаций</h2>
+    <p class="muted" style="font-size:12px;">Параметры ручной/авто публикации ответов на форумы. Перенесено из отдельного раздела.</p>
+    <form method="post" class="stack" id="pubSettingsForm">
+      <div class="grid-3" style="gap:18px;">
+        <label>Дневной лимит / домен
+          <input type="number" name="pub_daily_limit_domain" value="<?=e((string)$pub['pub_daily_limit_domain'])?>" min="0">
+        </label>
+        <label>Дневной лимит / аккаунт
+          <input type="number" name="pub_daily_limit_account" value="<?=e((string)$pub['pub_daily_limit_account'])?>" min="0">
+        </label>
+        <label>Макс длина ответа
+          <input type="number" name="pub_max_reply_len" value="<?=e((string)$pub['pub_max_reply_len'])?>" min="50">
+        </label>
+      </div>
+      <div class="grid-3" style="gap:18px;">
+        <label>Стратегия ссылок
+          <select name="pub_link_strategy">
+            <option value="soft_cta" <?=$pub['pub_link_strategy']==='soft_cta'?'selected':''?>>soft_cta</option>
+            <option value="strict" <?=$pub['pub_link_strategy']==='strict'?'selected':''?>>strict</option>
+          </select>
+        </label>
+        <label>Стиль
+          <select name="pub_style">
+            <option value="expert" <?=$pub['pub_style']==='expert'?'selected':''?>>expert</option>
+            <option value="neutral" <?=$pub['pub_style']==='neutral'?'selected':''?>>neutral</option>
+            <option value="friendly" <?=$pub['pub_style']==='friendly'?'selected':''?>>friendly</option>
+          </select>
+        </label>
+        <label>Ротация логов (дней)
+          <input type="number" name="pub_logs_retention_days" value="<?=e((string)$pub['pub_logs_retention_days'])?>" min="1">
+        </label>
+      </div>
+      <div style="display:flex; gap:28px; flex-wrap:wrap;">
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="pub_make_screenshots" value="1" <?=$pub['pub_make_screenshots']?'checked':''?>> Скриншоты шагов
+        </label>
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="pub_warm_mode" value="1" <?=$pub['pub_warm_mode']?'checked':''?>> Тёплый режим
+        </label>
+        <button type="button" class="btn small" id="openPubLogsBtn">Логи публикаций</button>
+      </div>
+      <div>
+        <button class="btn primary">Сохранить настройки публикаций</button>
+      </div>
+    </form>
+
+    <hr style="margin:48px 0 28px; opacity:0.4;">
     <div class="card-title">Сервис</div>
     <form method="post" onsubmit="return confirm('Удалить ВСЕ найденные ссылки, домены, темы и историю сканов? Действие необратимо. Продолжить?');" style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
       <input type="hidden" name="action" value="clear_data">
@@ -503,6 +602,25 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
 </div>
 
 <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+<!-- Модалка логов публикаций -->
+<div id="pubLogsModal" class="modal" style="display:none;">
+  <div class="modal-backdrop" data-close-publogs></div>
+  <div class="modal-content" style="max-width:920px;">
+    <div class="modal-header">
+      <h3 style="margin:0;">Логи публикаций</h3>
+      <button type="button" class="modal-close" data-close-publogs>&times;</button>
+    </div>
+    <div class="modal-body" style="padding:14px 20px;">
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px;">
+        <input type="date" id="pubLogsDay" value="<?=date('Y-m-d')?>" style="padding:6px 10px;">
+        <button class="btn small" id="reloadPubLogs">Обновить</button>
+        <span class="muted" style="font-size:12px;">Авто показана первая часть файла (до 400 строк)</span>
+      </div>
+      <div id="pubLogsContainer" style="max-height:480px; overflow:auto; font-size:12px; background:#0f1733; padding:10px 14px; border:1px solid var(--border); border-radius:10px; line-height:1.45;"></div>
+    </div>
+  </div>
+</div>
 
 <style>
 .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; }
@@ -719,6 +837,28 @@ function showToast(message, type='success', timeout=5000){
 
 // Закрыть подсказку по ESC если фокус внутри
 addEventListener('keydown', e=>{ if(e.key==='Escape'){ const a=document.activeElement; if(a && a.classList.contains('prompt-help')) a.blur(); }});
+
+const pubLogsModal = document.getElementById('pubLogsModal');
+const openPubLogsBtn = document.getElementById('openPubLogsBtn');
+function openPubLogs(){ pubLogsModal.style.display='block'; document.body.style.overflow='hidden'; loadPubLogs(); }
+function closePubLogs(){ pubLogsModal.style.display='none'; document.body.style.overflow=''; }
+openPubLogsBtn?.addEventListener('click', openPubLogs);
+pubLogsModal?.querySelectorAll('[data-close-publogs]').forEach(el=>el.addEventListener('click', closePubLogs));
+function loadPubLogs(){
+  const day = document.getElementById('pubLogsDay').value;
+  const box = document.getElementById('pubLogsContainer');
+  box.innerHTML = '<div class="muted-inline">Загрузка...</div>';
+  fetch('settings.php?pub_logs_api=1&day='+encodeURIComponent(day))
+    .then(r=>r.json()).then(data=>{
+      if(!data.ok){ box.innerHTML='<div class="alert error">Ошибка загрузки</div>'; return; }
+      if(!data.items.length){ box.innerHTML='<div class="muted-inline">Пусто</div>'; return; }
+      let html='';
+      data.items.forEach(it=>{ html += '<div style="padding:2px 4px; border-bottom:1px solid rgba(255,255,255,0.05);"><code>'+escapeHtml(JSON.stringify(it))+'</code></div>'; });
+      box.innerHTML = html;
+    }).catch(()=>{ box.innerHTML='<div class="alert error">Ошибка сети</div>'; });
+}
+
+document.getElementById('reloadPubLogs')?.addEventListener('click', loadPubLogs);
 </script>
 
 </body>

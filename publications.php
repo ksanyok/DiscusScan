@@ -71,6 +71,23 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
     json_pub(['ok'=>false,'error'=>'unknown_action']);
 }
 
+// Импорт форумов из sources/domains
+if(isset($_GET['import_forums'])) {
+    try {
+        $added = 0;
+        // Берём host из sources (активные)
+        $hosts = pdo()->query("SELECT host FROM sources WHERE is_active=1 LIMIT 1000")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        // Также из domains (если таблица не пустая)
+        try { $dHosts = pdo()->query("SELECT domain FROM domains LIMIT 500")->fetchAll(PDO::FETCH_COLUMN) ?: []; } catch(Throwable $e) { $dHosts = []; }
+        $all = array_unique(array_filter(array_map('strtolower', array_merge($hosts, $dHosts))));
+        $ins = pdo()->prepare("INSERT IGNORE INTO forums(host,title) VALUES(?, NULL)");
+        foreach($all as $h){ if($h==='') continue; $ins->execute([$h]); $added += (int)$ins->rowCount(); }
+        header('Location: publications.php?import_done='.$added); exit;
+    } catch(Throwable $e) {
+        header('Location: publications.php?import_err=1'); exit;
+    }
+}
+
 // Data providers
 function load_forums_summary(): array {
     $sql = "SELECT f.id,f.host,f.title,
@@ -128,12 +145,21 @@ if($page==='settings'){ $keys=['pub_daily_limit_domain','pub_daily_limit_account
   <h1 style="margin-top:10px;">Публикации</h1>
   <nav style="margin:12px 0; display:flex; gap:12px;">
     <a class="btn btn-ghost small" href="publications.php">Домены</a>
-    <a class="btn btn-ghost small" href="publications.php?page=settings">Настройки</a>
-    <a class="btn btn-ghost small" href="publications.php?page=logs">Логи</a>
+    <a class="btn btn-ghost small" href="settings.php#pub">Настройки публикаций</a>
   </nav>
+  <?php if(isset($_GET['import_done'])): ?><div class="alert success">Импортировано: <?= (int)$_GET['import_done']?> доменов</div><?php endif; ?>
+  <?php if(isset($_GET['import_err'])): ?><div class="alert error">Ошибка импорта</div><?php endif; ?>
 <?php if($page==='index'): ?>
   <section class="pub-grid">
-    <?php if(!$forumsSummary): ?><div class="muted-inline" style="font-size:12px;">Нет доменов (forums). Добавьте записи в таблицу forums.</div><?php endif; ?>
+    <?php if(!$forumsSummary): ?>
+      <div class="muted-inline" style="font-size:12px; line-height:1.5;">
+        Нет доменов в таблице forums.<br>
+        <form method="get" style="margin-top:8px; display:inline-block;">
+          <input type="hidden" name="import_forums" value="1">
+          <button class="btn small" type="submit">Импортировать активные домены</button>
+        </form>
+      </div>
+    <?php endif; ?>
     <?php foreach($forumsSummary as $f): $st='ok'; if($f['needs_manual_cnt']>0) $st='needs_manual'; elseif($f['failed_cnt']>0) $st='failed'; elseif($f['queued_cnt']>5) $st='cooldown'; ?>
       <div class="pub-card status-<?=$st?>">
         <div class="pc-host"><?=e($f['host'])?></div>
