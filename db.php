@@ -62,9 +62,10 @@ function app_log(string $level, string $component, string $msg, array $ctx = [])
 function pdo(): PDO {
     static $pdo = null;
     if ($pdo) return $pdo;
-    // Support optional port
-    $portPart = defined('DB_PORT') ? ';port=' . DB_PORT : '';
-    $dsn = 'mysql:host=' . DB_HOST . $portPart . ';dbname=' . DB_NAME . ';charset=' . DB_CHARSET;
+    // Support optional port (избегаем предупреждений Intelephense)
+    $port = null;
+    if (defined('DB_PORT')) { $port = constant('DB_PORT'); }
+    $dsn = 'mysql:host=' . DB_HOST . ($port ? ';port=' . $port : '') . ';dbname=' . DB_NAME . ';charset=' . DB_CHARSET;
     $opt = [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -77,7 +78,7 @@ function pdo(): PDO {
             'error' => $e->getMessage(),
             'dsn_host' => DB_HOST,
             'dsn_db' => DB_NAME,
-            'port' => defined('DB_PORT') ? DB_PORT : null
+            'port' => $port
         ]);
         if (defined('INSTALLER_MODE')) {
             // Let installer catch and show the real message
