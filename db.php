@@ -62,7 +62,9 @@ function app_log(string $level, string $component, string $msg, array $ctx = [])
 function pdo(): PDO {
     static $pdo = null;
     if ($pdo) return $pdo;
-    $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=' . DB_CHARSET;
+    // Support optional port
+    $portPart = defined('DB_PORT') ? ';port=' . DB_PORT : '';
+    $dsn = 'mysql:host=' . DB_HOST . $portPart . ';dbname=' . DB_NAME . ';charset=' . DB_CHARSET;
     $opt = [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -71,7 +73,16 @@ function pdo(): PDO {
     try {
         $pdo = new PDO($dsn, DB_USER, DB_PASS, $opt);
     } catch (Throwable $e) {
-        app_log('error', 'db', 'DB connection failed', ['error' => $e->getMessage()]);
+        app_log('error', 'db', 'DB connection failed', [
+            'error' => $e->getMessage(),
+            'dsn_host' => DB_HOST,
+            'dsn_db' => DB_NAME,
+            'port' => defined('DB_PORT') ? DB_PORT : null
+        ]);
+        if (defined('INSTALLER_MODE')) {
+            // Let installer catch and show the real message
+            throw $e;
+        }
         http_response_code(500);
         die('DB connection failed. Check db.php/settings or .env.');
     }
@@ -775,7 +786,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $infoR = curl_getinfo($chR);
         $statusR = (int)($infoR['http_code'] ?? 0);
         $headerSizeR = (int)($infoR['header_size'] ?? 0);
-        $bodyR = substr((string)$respR, $headerSizeR);
+        $bodyR = substr((string)$respR, $headerSize);
         $curlErrR = curl_error($chR);
         curl_close($chR);
         if ($statusR === 200) { $status = 200; $body = $bodyR; $curlErr = $curlErrR; }

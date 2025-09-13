@@ -123,6 +123,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
                 if (!file_exists(__DIR__ . '/db.php')) {
                     $errors[] = 'Файл db.php не найден в директории приложения: ' . __DIR__;
                 } else {
+                    // Включаем режим инсталлятора, чтобы при ошибке подключения к БД db.php бросал исключение, а не делал die()
+                    if (!defined('INSTALLER_MODE')) define('INSTALLER_MODE', true);
                     // record existing user functions to detect changes after include
                     $beforeFuncs = get_defined_functions()['user'] ?? [];
                     $incOk = @include_once __DIR__ . '/db.php';
@@ -160,6 +162,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
 
                         } catch (Throwable $e) {
                             $errors[] = 'Ошибка при применении схемы: ' . $e->getMessage();
+                            $errors[] = 'DSN host: ' . ($db_host ?: 'n/a') . ', DB: ' . ($db_name ?: 'n/a') . '. Проверьте хост/порт, пользователя, пароль и наличие расширения PDO MySQL.';
                         }
                     }
                 }
