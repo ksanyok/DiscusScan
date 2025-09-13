@@ -482,25 +482,44 @@ function notify_new(array $findings): void {
     
     $totalNew = count($findings);
     $domainsCount = count(array_unique(array_column($findings, 'domain')));
-    
-    $message = "🎯 Новые результаты мониторинга\n\n";
-    $message .= "📊 Найдено тем: $totalNew\n";
-    $message .= "🌐 Доменов затронуто: $domainsCount\n\n";
-    
-    // Показываем топ-5 результатов
-    $topFindings = array_slice($findings, 0, 5);
-    foreach ($topFindings as $finding) {
-        $title = mb_substr($finding['title'] ?? '', 0, 60);
-        $domain = $finding['domain'] ?? '';
-        $message .= "• $title\n  $domain\n\n";
+
+    // Новое форматирование Telegram уведомления (HTML + inline кнопки)
+    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://')
+             . ($_SERVER['HTTP_HOST'] ?? 'localhost')
+             . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
+    $panelUrl = $baseUrl . '/index.php';
+
+    $escape = function(string $s): string { return htmlspecialchars(mb_substr($s,0,160), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
+
+    $message  = "🚀 <b>Мониторинг: найдено {$totalNew} новых упоминаний</b>\n";
+    $message .= "🌐 Домены: <b>{$domainsCount}</b>\n";
+
+    if ($totalNew) {
+        $sample = array_slice($findings, 0, 3);
+        $message .= "\n🔥 <b>Примеры:</b>\n";
+        foreach ($sample as $f) {
+            $u = $f['url'] ?? ''; $t = $f['title'] ?? ($f['domain'] ?? $u); $d = $f['domain'] ?? '';
+            $shortT = $escape($t);
+            $shortD = $escape($d);
+            // Обрезаем слишком длинные URL (для отображения домена достаточно)
+            $message .= "• <a href=\"" . htmlspecialchars($u, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "\">{$shortT}</a> <code>{$shortD}</code>\n";
+        }
+        if ($totalNew > 3) {
+            $rest = $totalNew - 3;
+            $message .= "… и ещё {$rest} на панели\n";
+        }
+    } else {
+        $message .= "\nНовых ссылок нет.\n";
     }
-    
-    if ($totalNew > 5) {
-        $message .= "... и ещё " . ($totalNew - 5) . " результатов\n\n";
-    }
-    
-    $message .= "⏰ " . date('Y-m-d H:i');
-    
+
+    $message .= "\n⏰ " . date('Y-m-d H:i');
+
+    $replyMarkup = json_encode([
+        'inline_keyboard' => [
+            [ ['text' => '📊 Открыть панель', 'url' => $panelUrl] ],
+        ]
+    ], JSON_UNESCAPED_UNICODE);
+
     $tgUrl = "https://api.telegram.org/bot{$tgToken}/sendMessage";
     $ch = curl_init($tgUrl);
     curl_setopt_array($ch, [
@@ -509,7 +528,9 @@ function notify_new(array $findings): void {
         CURLOPT_POSTFIELDS => [
             'chat_id' => $tgChat,
             'text' => $message,
-            'disable_web_page_preview' => 1
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => 1,
+            'reply_markup' => $replyMarkup
         ],
         CURLOPT_TIMEOUT => 15
     ]);

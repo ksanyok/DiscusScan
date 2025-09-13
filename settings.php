@@ -60,16 +60,22 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='test_api_
 }
 
 // Очистка данных
-if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='clear_data') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (($_POST['action'] ?? '') === 'clear_data')) {
     try {
-        pdo()->exec('TRUNCATE TABLE links');
+        // Улучшено: корректная очистка таблиц без удаления настроек.
+        // Проблема: TRUNCATE ссылочных таблиц приводила к ошибке FK (topics->links) и частичной очистке.
+        // Решение: отключаем FK, очищаем в правильном порядке, возвращаем FK.
+        pdo()->exec('SET FOREIGN_KEY_CHECKS=0');
         @pdo()->exec('TRUNCATE TABLE topics');
+        @pdo()->exec('TRUNCATE TABLE links');
         @pdo()->exec('TRUNCATE TABLE domains');
         @pdo()->exec('TRUNCATE TABLE scans');
         @pdo()->exec('TRUNCATE TABLE runs');
-        $ok = 'Данные (links/topics/domains/scans/runs) очищены';
+        pdo()->exec('SET FOREIGN_KEY_CHECKS=1');
+        $ok = 'Данные очищены (links/topics/domains/scans/runs). Настройки сохранены.';
         app_log('info','maintenance','Data cleared',[]);
     } catch (Throwable $e) {
+        try { pdo()->exec('SET FOREIGN_KEY_CHECKS=1'); } catch (Throwable $e2) {}
         $ok = 'Ошибка очистки: '.$e->getMessage();
         app_log('error','maintenance','Clear failed',['error'=>$e->getMessage()]);
     }
@@ -343,9 +349,25 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
       <label>Промпт (что и где искать)
         <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
           <button type="button" id="smartWizardBtn" class="btn small btn-ghost">🤖 Умный мастер</button>
-          <span class="muted" style="font-size: 12px;">Опишите что хотите отслеживать, ИИ сформирует промпт</span>
+          <span class="muted" style="font-size: 12px;">Опишите что хотите отслеживать (обычный текст). ИИ сам уточнит детали.</span>
         </div>
-        <textarea name="search_prompt" rows="5" placeholder="Опиши задачу для агента..."><?=e($prompt)?></textarea>
+        <div class="prompt-wrapper">
+          <textarea name="search_prompt" rows="5" placeholder="Опиши задачу для агента..."><?=e($prompt)?></textarea>
+          <div class="prompt-help" tabindex="0" aria-label="Подсказка по формату промпта">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+            <div class="prompt-help-bubble">
+              <div class="phb-title">Как писать промпт</div>
+              <ul>
+                <li>Пишите обычным языком — НЕ нужно JSON / код.</li>
+                <li>Опишите: что мониторим, цели (цены, отзывы, жалобы и т.п.), важные ключевые фразы, что исключить.</li>
+                <li>Можете перечислить города / бренды / конкурентов.</li>
+                <li>Языки и регионы можно задать отдельно ниже или доверить мастеру.</li>
+                <li>Если сложно — нажмите «Умный мастер».</li>
+              </ul>
+              <div class="phb-foot">Пример: Отслеживать русскоязычные обсуждения сервисов экспресс‑доставки в Польше и Германии: сравнения цен, жалобы на задержки, отзывы о поддержке, промокоды конкурентов.</div>
+            </div>
+          </div>
+        </div>
       </label>
 
       <label>Языки и регионы поиска
@@ -453,7 +475,7 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
       <button type="button" class="modal-close">&times;</button>
     </div>
     <div class="modal-body">
-      <p class="muted">Опишите в произвольной форме что вы хотите отслеживать. ИИ автоматически сформирует промпт и определит языки/регионы для поиска.</p>
+      <p class="muted">Опишите в произвольной форме что вы хотите отслеживать. Не нужно писать код или JSON — просто текст. ИИ сформирует промпт и подскажет языки/регионы.</p>
       
       <form id="wizardForm" method="post">
         <input type="hidden" name="smart_wizard" value="1">
@@ -509,8 +531,17 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
 .toast-close:hover{ color:var(--text); }
 .toast.hide{ opacity:0; transform:translateY(-6px); transition:.3s; }
 @keyframes toastIn{ from{opacity:0; transform:translateY(-6px);} to{opacity:1; transform:translateY(0);} }
+.prompt-wrapper{position:relative;}
+.prompt-wrapper textarea{padding-right:42px;}
+.prompt-help{position:absolute; top:8px; right:8px; width:22px; height:22px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.06); border:1px solid var(--border); border-radius:6px; cursor:pointer; color:var(--muted); transition:.2s;}
+.prompt-help:hover,.prompt-help:focus{color:var(--text); background:rgba(255,255,255,0.1);} 
+.prompt-help-bubble{position:absolute; top:28px; right:0; width:340px; background:var(--card); border:1px solid var(--border); padding:14px 16px; border-radius:12px; box-shadow:0 10px 40px -10px rgba(0,0,0,.6); font-size:12.5px; line-height:1.45; display:none; z-index:30;}
+.prompt-help:focus .prompt-help-bubble, .prompt-help:hover .prompt-help-bubble{display:block;}
+.prompt-help-bubble ul{margin:0 0 8px 18px; padding:0;}
+.prompt-help-bubble li{margin:0 0 4px;}
+.phb-title{font-weight:600; margin-bottom:6px; font-size:13px;}
+.phb-foot{margin-top:6px; font-size:11px; opacity:.8;}
 </style>
-
 <script>
 function openWizardModal() {
   document.getElementById('smartWizardModal').style.display = 'block';
@@ -675,6 +706,9 @@ function showToast(message, type='success', timeout=5000){
   el.querySelector('.toast-close').addEventListener('click', remove);
   setTimeout(remove, timeout);
 }
+
+// Закрыть подсказку по ESC если фокус внутри
+addEventListener('keydown', e=>{ if(e.key==='Escape'){ const a=document.activeElement; if(a && a.classList.contains('prompt-help')) a.blur(); }});
 </script>
 
 </body>
