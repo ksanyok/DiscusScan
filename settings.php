@@ -62,18 +62,19 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='test_api_
 // Очистка данных
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (($_POST['action'] ?? '') === 'clear_data')) {
     try {
-        // Улучшено: корректная очистка таблиц без удаления настроек.
-        // Проблема: TRUNCATE ссылочных таблиц приводила к ошибке FK (topics->links) и частичной очистке.
-        // Решение: отключаем FK, очищаем в правильном порядке, возвращаем FK.
         pdo()->exec('SET FOREIGN_KEY_CHECKS=0');
-        @pdo()->exec('TRUNCATE TABLE topics');
+        // Сначала дочерние таблицы
         @pdo()->exec('TRUNCATE TABLE links');
-        @pdo()->exec('TRUNCATE TABLE domains');
+        @pdo()->exec('TRUNCATE TABLE topics');
+        // Затем связанные результаты
         @pdo()->exec('TRUNCATE TABLE scans');
         @pdo()->exec('TRUNCATE TABLE runs');
+        // Таблицы доменов и источников (источники теперь тоже очищаем)
+        @pdo()->exec('TRUNCATE TABLE domains');
+        @pdo()->exec('TRUNCATE TABLE sources');
         pdo()->exec('SET FOREIGN_KEY_CHECKS=1');
-        $ok = 'Данные очищены (links/topics/domains/scans/runs). Настройки сохранены.';
-        app_log('info','maintenance','Data cleared',[]);
+        $ok = 'Данные очищены (links/topics/scans/runs/domains/sources). Настройки и ключи сохранены.';
+        app_log('info','maintenance','Data cleared (incl sources)',[]);
     } catch (Throwable $e) {
         try { pdo()->exec('SET FOREIGN_KEY_CHECKS=1'); } catch (Throwable $e2) {}
         $ok = 'Ошибка очистки: '.$e->getMessage();
@@ -223,8 +224,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
     }
 }
 
-// Обработка обычных настроек
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['smart_wizard'])) {
+// Обработка обычных настроек (исключаем очистку данных, чтобы не затирать ключи пустыми значениями)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['smart_wizard']) && (($_POST['action'] ?? '') !== 'clear_data')) {
     // базовые настройки
     set_setting('openai_api_key', trim($_POST['openai_api_key'] ?? ''));
     set_setting('openai_model', in_array($_POST['openai_model'] ?? '', $models, true) ? $_POST['openai_model'] : 'gpt-5-mini');
@@ -347,24 +348,24 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
       </label>
 
       <label>Промпт (что и где искать)
-        <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-          <button type="button" id="smartWizardBtn" class="btn small btn-ghost">🤖 Умный мастер</button>
-          <span class="muted" style="font-size: 12px;">Опишите что хотите отслеживать (обычный текст). ИИ сам уточнит детали.</span>
+        <div style="margin-bottom:8px;">
+          <span class="muted" style="font-size:12px;">Опишите что хотите отслеживать (обычный текст). ИИ сам уточнит детали.</span>
         </div>
-        <div class="prompt-wrapper">
+        <div class="prompt-wrapper with-wizard">
           <textarea name="search_prompt" rows="5" placeholder="Опиши задачу для агента..."><?=e($prompt)?></textarea>
+          <button type="button" id="smartWizardBtn" class="wizard-fab" title="Умный мастер" aria-label="Умный мастер генерации промпта">🤖<span class="wf-label">Мастер</span></button>
           <div class="prompt-help" tabindex="0" aria-label="Подсказка по формату промпта">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
             <div class="prompt-help-bubble">
               <div class="phb-title">Как писать промпт</div>
               <ul>
                 <li>Пишите обычным языком — НЕ нужно JSON / код.</li>
-                <li>Опишите: что мониторим, цели (цены, отзывы, жалобы и т.п.), важные ключевые фразы, что исключить.</li>
-                <li>Можете перечислить города / бренды / конкурентов.</li>
-                <li>Языки и регионы можно задать отдельно ниже или доверить мастеру.</li>
-                <li>Если сложно — нажмите «Умный мастер».</li>
+                <li>Опишите: что мониторим, цели, ключевые сущности, что исключить.</li>
+                <li>Можно перечислить конкурентов / бренды / географию.</li>
+                <li>Языки и регионы задайте тут или доверьте мастеру.</li>
+                <li>Если сложно — нажмите «Мастер» справа.</li>
               </ul>
-              <div class="phb-foot">Пример: Отслеживать русскоязычные обсуждения сервисов экспресс‑доставки в Польше и Германии: сравнения цен, жалобы на задержки, отзывы о поддержке, промокоды конкурентов.</div>
+              <div class="phb-foot">Пример: Отслеживать упоминания моего SaaS сервиса в RU и PL: отзывы, сравнения с конкурентами, жалобы на скорость, запросы на новые функции.</div>
             </div>
           </div>
         </div>
@@ -541,6 +542,13 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
 .prompt-help-bubble li{margin:0 0 4px;}
 .phb-title{font-weight:600; margin-bottom:6px; font-size:13px;}
 .phb-foot{margin-top:6px; font-size:11px; opacity:.8;}
+.prompt-wrapper.with-wizard textarea{padding-right:46px; padding-bottom:70px;}
+.wizard-fab{position:absolute; bottom:8px; right:8px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; width:64px; height:64px; border:none; cursor:pointer; border-radius:18px; font-size:22px; line-height:1; font-weight:600; background:linear-gradient(135deg,#5b8cff,#8f5bff); color:#fff; box-shadow:0 10px 28px -8px rgba(0,0,0,.55),0 4px 14px -4px rgba(91,140,255,.5); transition:.25s; position:absolute;}
+.wizard-fab:hover{transform:translateY(-3px) rotate(-2deg); box-shadow:0 16px 36px -10px rgba(0,0,0,.65),0 6px 18px -6px rgba(91,140,255,.6);}
+.wizard-fab:active{transform:translateY(-1px) scale(.97);}
+.wizard-fab:before{content:''; position:absolute; inset:0; border-radius:inherit; background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.35),transparent 60%); mix-blend-mode:overlay; pointer-events:none;}
+.wizard-fab .wf-label{font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; line-height:1; margin-top:-2px;}
+@media (max-width:700px){ .wizard-fab{width:54px; height:54px; font-size:18px;} .wizard-fab .wf-label{font-size:9px;} .prompt-wrapper.with-wizard textarea{padding-bottom:62px;} }
 </style>
 <script>
 function openWizardModal() {

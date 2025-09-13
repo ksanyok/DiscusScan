@@ -536,7 +536,7 @@ foreach ($allLinks as $it) {
 }
 
 // ----------------------- Save results -----------------------
-$found = 0; $new = 0;
+$found = 0; $new = 0; $newLinks = [];
 foreach ($links as $it) {
     $url = $it['url'];
     $title = $it['title'];
@@ -565,6 +565,7 @@ foreach ($links as $it) {
         $ins = pdo()->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status) VALUES (?,?,?,NOW(),NOW(),1,'new')");
         $ins->execute([$srcId, $url, $title]);
         $new++;
+        $newLinks[] = ['url'=>$url,'title'=>$title,'domain'=>$domain];
     }
 }
 
@@ -579,23 +580,62 @@ set_setting('last_scan_at', date('Y-m-d H:i:s'));
 $tgToken = (string)get_setting('telegram_token', '');
 $tgChat  = (string)get_setting('telegram_chat_id', '');
 if ($tgToken !== '' && $tgChat !== '') {
-    $lines = [];
-    $lines[] = "🔎 Сканирование завершено";
-    $lines[] = "Модель: {$model}";
-    foreach ($jobStats as $name => $st) {
-        $lines[] = "— {$name}: статус {$st['status']}, найдено примерно {$st['count']}";
-    }
-    $lines[] = "Итого ссылок: {$found}";
-    $lines[] = "Новых: {$new}";
-    $lines[] = "Время: " . date('Y-m-d H:i');
+    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://')
+             . ($_SERVER['HTTP_HOST'] ?? 'localhost')
+             . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
+    $panelUrl = $baseUrl . '/index.php';
+    $esc = function(string $s): string { return htmlspecialchars(mb_substr($s,0,160), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
 
-    $txt = implode("\n", $lines);
+    $domainsTotal = count(array_unique(array_map(fn($l)=>$l['domain'],$links)));
+    $domainsNew   = count(array_unique(array_map(fn($l)=>$l['domain'],$newLinks)));
+
+    $message  = $new > 0
+        ? "🚀 <b>Мониторинг: найдено {$new} новых ссылок</b>\n"
+        : "📡 <b>Мониторинг завершён</b>\n";
+    $message .= "🗂 Всего найдено за проход: <b>{$found}</b>\n";
+    $message .= "🌐 Домены (все/новые): <b>{$domainsTotal}</b> / <b>{$domainsNew}</b>\n";
+
+    if ($new > 0) {
+        $sample = array_slice($newLinks, 0, 3);
+        $message .= "\n🔥 <b>Новые примеры:</b>\n";
+        foreach ($sample as $s) {
+            $u = $s['url']; $t = $s['title'] ?: $s['domain']; $d = $s['domain'];
+            $message .= "• <a href=\"".$esc($u)."\">".$esc($t)."</a> <code>".$esc($d)."</code>\n";
+        }
+        if ($new > 3) {
+            $rest = $new - 3;
+            $message .= "… и ещё {$rest} на панели\n";
+        }
+    } else {
+        $message .= "\nНовых ссылок нет за этот проход.\n";
+    }
+
+    // Краткая статистика по джобам
+    if (!empty($jobStats)) {
+        $message .= "\n📊 <b>Скоупы:</b>\n";
+        foreach ($jobStats as $jn=>$st) {
+            $message .= "· " . $esc($jn) . ": " . ($st['count'] ?? 0) . " (HTTP " . ($st['status'] ?? 0) . ")\n";
+        }
+    }
+
+    $message .= "\n🕒 " . date('Y-m-d H:i');
+
+    $replyMarkup = json_encode([
+        'inline_keyboard' => [ [ ['text' => '📊 Открыть панель', 'url' => $panelUrl] ] ]
+    ], JSON_UNESCAPED_UNICODE);
+
     $tgUrl = "https://api.telegram.org/bot{$tgToken}/sendMessage";
     $chT = curl_init($tgUrl);
     curl_setopt_array($chT, [
         CURLOPT_POST => true,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POSTFIELDS => [ 'chat_id' => $tgChat, 'text' => $txt, 'disable_web_page_preview' => 1 ],
+        CURLOPT_POSTFIELDS => [
+            'chat_id' => $tgChat,
+            'text' => $message,
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => 1,
+            'reply_markup' => $replyMarkup
+        ],
         CURLOPT_TIMEOUT => 15
     ]);
     curl_exec($chT);
