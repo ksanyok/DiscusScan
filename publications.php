@@ -99,7 +99,18 @@ try {
 <meta charset="utf-8">
 <title>Публикации</title>
 <link rel="stylesheet" href="styles.css">
-<link rel="stylesheet" href="public/css/publish.css">
+<!-- Убрано: отдельные publish.css (404) -->
+<style>
+/* Минимальные стили таблицы публикаций (ранее предполагались в publish.css) */
+.pub-table{width:100%;border-collapse:collapse;margin-bottom:28px}
+.pub-table th,.pub-table td{padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;text-align:left;vertical-align:top}
+.pub-table th{background:rgba(255,255,255,.04);font-weight:600;letter-spacing:.5px;font-size:11px;text-transform:uppercase}
+.pub-table tr:hover{background:rgba(255,255,255,.03)}
+.pub-table .ellipsis{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.status-posted{color:#40d37b;font-weight:600}
+.status-failed{color:#ff7b6b;font-weight:600}
+.inline-badge{display:inline-block;padding:2px 6px;font-size:10px;border-radius:6px;background:#13214a;color:#8ea6d8;margin-left:6px}
+</style>
 </head>
 <body>
 <?php include 'header.php'; ?>
@@ -137,6 +148,37 @@ try {
     </tbody>
   </table>
 </main>
-<script src="public/js/publish.js"></script>
+<!-- Убрано: <script src="public/js/publish.js"></script> (файл отсутствует) -->
+<script>
+function qs(sel,par=document){return par.querySelector(sel);} function qsa(sel,par=document){return Array.from(par.querySelectorAll(sel));}
+function showMsg(msg,type='info'){console.log(msg); let box=qs('#pubFlash'); if(!box){ box=document.createElement('div'); box.id='pubFlash'; box.style.position='fixed'; box.style.bottom='14px'; box.style.right='14px'; box.style.zIndex='200'; box.style.maxWidth='320px'; document.body.appendChild(box);} const el=document.createElement('div'); el.textContent=msg; el.style.background= type==='err'? '#ff5544':'#1d355e'; el.style.color='#fff'; el.style.padding='10px 14px'; el.style.marginTop='8px'; el.style.borderRadius='10px'; el.style.fontSize='12px'; el.style.boxShadow='0 4px 18px rgba(0,0,0,.35)'; box.appendChild(el); setTimeout(()=>{el.style.opacity='0'; el.style.transition='opacity .4s'; setTimeout(()=>el.remove(),450);}, 4200);} 
+
+async function publishNow(threadId, btn){
+  btn.disabled=true; const orig=btn.textContent; btn.textContent='...';
+  try {
+    const fd=new URLSearchParams({action:'publish_now', thread_id:String(threadId)});
+    const r=await fetch('publications.php',{method:'POST',body:fd});
+    const j=await r.json();
+    if(!j.ok){
+      if(j.manual){ showMsg('Нужен ручной вход (manual)', 'err'); btn.textContent='Manual'; btn.classList.add('warn'); }
+      else { showMsg('Ошибка публикации: '+(j.error||'?'),'err'); btn.textContent='Ошибка'; }
+      btn.disabled=false; return;
+    }
+    showMsg('Опубликовано thread '+threadId);
+    btn.textContent='OK';
+    const row=btn.closest('tr'); if(row){ row.cells[4].innerHTML='<span class="status-posted">posted</span>'; }
+  } catch(e){ console.error(e); showMsg('Сбой сети','err'); btn.textContent='Err'; btn.disabled=false; }
+}
+
+function openBrowser(threadId, btn){
+  // Пока нет отдельного браузера — открыть исходный URL
+  const row=btn.closest('tr'); if(!row) return; const a=row.querySelector('a[href]'); if(a){ window.open(a.href,'_blank','noopener'); }
+}
+
+document.addEventListener('click',e=>{
+  const pubBtn=e.target.closest('[data-publish-now]'); if(pubBtn){ publishNow(pubBtn.getAttribute('data-publish-now'), pubBtn); }
+  const brBtn=e.target.closest('[data-open-browser]'); if(brBtn){ openBrowser(brBtn.getAttribute('data-open-browser'), brBtn); }
+});
+</script>
 </body>
 </html>
