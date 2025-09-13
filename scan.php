@@ -249,10 +249,12 @@ function extract_links_from_plain_list(string $body): array {
  * Call OpenAI Responses once with provided sys/user texts.
  * Returns [status,int_links,array links,bool bumped]
  */
-function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log): array {
+function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log, ?string $country = null): array {
     $model = (string)get_setting('openai_model', 'gpt-5-mini');
-
-    // Base payload: no explicit "reasoning" to avoid burning reasoning tokens.
+    $toolObj = ['type' => 'web_search'];
+    if ($country) {
+        $toolObj['user_location'] = [ 'type' => 'approximate', 'country' => strtoupper(substr($country,0,8)) ];
+    }
     $payload = [
         'model' => $model,
         'max_output_tokens' => $maxTokens,
@@ -269,7 +271,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             ],
             'verbosity' => 'low'
         ],
-        'tools' => [ ['type' => 'web_search'] ],
+        'tools' => [ $toolObj ],
         'tool_choice' => 'auto'
     ];
 
@@ -366,10 +368,10 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             'input' => [
                 ['role' => 'system', 'content' =>
                     $sys
-                    . "\n\nFALLBACK MODE:\nReturn ONLY newline-separated lines in the format: <url>\\t<title>.\nNo prose, no JSON, no bullets. If nothing found, return an empty output."],
+                    . "\n\nFALLBACK MODE:\nReturn ONLY newline-separated lines in the format: <url>\t<title>.\nNo prose, no JSON, no bullets. If nothing found, return an empty output."],
                 ['role' => 'user', 'content' => $user . "\nReturn ONLY the list as specified."]
             ],
-            'tools' => [ ['type' => 'web_search'] ],
+            'tools' => [ $toolObj ],
             'tool_choice' => 'auto'
         ];
 
@@ -403,82 +405,97 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     return [$status, count($links), $links, $bumped];
 }
 
-// ----------------------- Build jobs per scope -----------------------
+// --- NEW: fetch languages & regions settings ---
+$searchLangs = get_setting('search_languages', []);
+if (is_string($searchLangs)) { $tmp = json_decode($searchLangs, true); if (is_array($tmp)) $searchLangs = $tmp; }
+if (!is_array($searchLangs)) $searchLangs = [];
+$searchLangs = array_values(array_unique(array_filter(array_map(fn($x)=> strtolower(preg_replace('~[^a-zA-Z0-9_-]~','', trim($x))), $searchLangs))));
+
+$searchRegions = get_setting('search_regions', []);
+if (is_string($searchRegions)) { $tmp = json_decode($searchRegions, true); if (is_array($tmp)) $searchRegions = $tmp; }
+if (!is_array($searchRegions)) $searchRegions = [];
+$searchRegions = array_values(array_unique(array_filter(array_map(fn($x)=> strtoupper(preg_replace('~[^A-Z0-9]~','', trim($x))), $searchRegions))));
+
+$MAX_REGION_JOBS = 5; // safeguard
+if (count($searchRegions) > $MAX_REGION_JOBS) {
+    app_log('info','scan','Region list truncated',[ 'total' => count($searchRegions), 'used' => $MAX_REGION_JOBS ]);
+    $searchRegions = array_slice($searchRegions,0,$MAX_REGION_JOBS);
+}
+if (empty($searchRegions)) { $searchRegions = [null]; } // single pass without explicit location
+
+$langLine = '';
+if ($searchLangs) { $langLine = "Target languages (prioritize when forming queries): " . implode(', ', $searchLangs) . ".\n"; }
+
+$regionLineTpl = function($code){ return $code ? ("Focus on content relevant to country code " . $code . ".\n") : ''; };
+
+// ----------------------- Build jobs per scope (region-aware) -----------------------
 $jobs = [];
 $nowPref = ($lastScanAt !== '')
     ? "Prefer pages created or updated AFTER {$lastScanAt} UTC; otherwise last 12 months."
     : "Prefer results from the last 30 days; if none, include older (up to 12 months).";
 
-// DOMAINS SCOPE
-if ($scopeDomains && !empty($activeHosts)) {
-    $hostList = implode(', ', array_slice($activeHosts, 0, 300));
+foreach ($searchRegions as $regCode) {
+    $regionLine = $regionLineTpl($regCode);
 
-    $sys = "You are a web monitoring agent focused on a FIXED set of domains.\n"
-         . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
-         . $nowPref . "\n"
-         . "Only include results whose host is in this allowlist: " . $hostList . ".\n"
-         . "EXCLUDE Telegram and social networks entirely (do not include t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com). Do not query them.\n"
-         . "Use the web_search tool with diverse queries in Russian and English; aggressively use site:&lt;host&gt; operators.\n"
-         . "Return canonical content URLs (not homepages). Return 10–100 unique URLs.\n"
-         . "At the end, output ONLY the JSON per schema.";
+    // DOMAINS SCOPE
+    if ($scopeDomains && !empty($activeHosts)) {
+        $hostList = implode(', ', array_slice($activeHosts, 0, 300));
+        $sys = "You are a web monitoring agent focused on a FIXED set of domains.\n"
+             . $langLine . $regionLine
+             . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
+             . $nowPref . "\n"
+             . "Only include results whose host is in this allowlist: " . $hostList . ".\n"
+             . "EXCLUDE Telegram and social networks entirely (do not include t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com). Do not query them.\n"
+             . "Use the web_search tool with diverse queries in these languages (if provided) and include geo-specific terms when useful. Aggressively use site:&lt;host&gt; operators.\n"
+             . "Return canonical content URLs (not homepages). Return 10–100 unique URLs.\n"
+             . "At the end, output ONLY the JSON per schema.";
+        $user = "Targets:\n{$prompt}\nConstraints:\n- Allowed hosts only (active sources).\n- Exclude any social/Telegram domains.\n- Unique URLs.\n- Prefer threads/discussions/comments/support pages if available; otherwise any page that genuinely mentions the targets.\nOutput fields: url, title, domain.";
+        $jobs[] = ['name' => 'domains' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode];
+    }
 
-    $user = "Targets:\n{$prompt}\n"
-          . "Constraints:\n"
-          . "- Allowed hosts only (active sources).\n"
-          . "- Exclude any social/Telegram domains.\n"
-          . "- Unique URLs.\n"
-          . "- Prefer threads/discussions/comments/support pages if available; otherwise any page that genuinely mentions the targets.\n"
-          . "Output fields: url, title, domain.";
+    // TELEGRAM SCOPE
+    if ($scopeTelegram) {
+        $modeLine = ($telegramMode === 'discuss')
+            ? "Include only Telegram groups/channels that allow replies or comments; prefer URLs like t.me/c/&lt;id&gt;/&lt;msg&gt; or t.me/&lt;name&gt;/&lt;post&gt;. Avoid bare channel homepages without a post id."
+            : "Include Telegram post URLs on t.me (with message ids). Avoid bare channel homepages without a post id.";
+        $sys = "You are a web monitoring agent focused ONLY on Telegram posts on t.me.\n"
+             . $langLine . $regionLine
+             . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
+             . $nowPref . "\n"
+             . "Search via site:t.me queries (channels and groups). Do NOT include or query any other domains.\n"
+             . $modeLine . "\n"
+             . "Return 10–100 unique post URLs.\n"
+             . "At the end, output ONLY the JSON per schema.";
+        $user = "Targets:\n{$prompt}\nConstraints:\n- Domain MUST be t.me\n- Unique canonical post URLs only\n- Output fields: url, title, domain.";
+        $jobs[] = ['name' => 'telegram' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode];
+    }
 
-    $jobs[] = ['name' => 'domains', 'sys' => $sys, 'user' => $user];
+    // FORUMS SCOPE
+    if ($scopeForums) {
+        $sys = "You are a web monitoring agent focused ONLY on forums and discussion platforms (not social networks).\n"
+             . $langLine . $regionLine
+             . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
+             . $nowPref . "\n"
+             . "Include only real discussions: URL patterns like /forum, /forums, /topic, /thread, /discussion, /comments, /support, /r/, question pages on Stack Overflow/StackExchange, GitHub Issues/Discussions, and product community portals.\n"
+             . "EXCLUDE Telegram and social networks entirely (do not include or query t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com). Never use site:t.me in this scope.\n"
+             . "Avoid homepages, marketing/landing pages, pricing, docs, blogs.\n"
+             . "Use at least 12–16 diverse queries mixing target keywords with operators (forum, topic, thread, discussion, support, comments, reddit, stackoverflow, review) and language/geo variants if provided.\n"
+             . "Return 10–100 unique discussion URLs.\n"
+             . "At the end, output ONLY the JSON per schema.";
+        $user = "Targets:\n{$prompt}\nOutput fields: url, title, domain. Unique URLs only.";
+        $jobs[] = ['name' => 'forums' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode];
+    }
 }
 
-// TELEGRAM SCOPE
-if ($scopeTelegram) {
-    $modeLine = ($telegramMode === 'discuss')
-        ? "Include only Telegram groups/channels that allow replies or comments; prefer URLs like t.me/c/&lt;id&gt;/&lt;msg&gt; or t.me/&lt;name&gt;/&lt;post&gt;. Avoid bare channel homepages without a post id."
-        : "Include Telegram post URLs on t.me (with message ids). Avoid bare channel homepages without a post id.";
-
-    $sys = "You are a web monitoring agent focused ONLY on Telegram posts on t.me.\n"
-         . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
-         . $nowPref . "\n"
-         . "Search via site:t.me queries (channels and groups). Do NOT include or query any other domains.\n"
-         . $modeLine . "\n"
-         . "Return 10–100 unique post URLs.\n"
-         . "At the end, output ONLY the JSON per schema.";
-
-    $user = "Targets:\n{$prompt}\n"
-          . "Constraints:\n- Domain MUST be t.me\n- Unique canonical post URLs only\n- Output fields: url, title, domain.";
-
-    $jobs[] = ['name' => 'telegram', 'sys' => $sys, 'user' => $user];
-}
-
-// FORUMS SCOPE
-if ($scopeForums) {
-    $sys = "You are a web monitoring agent focused ONLY on forums and discussion platforms (not social networks).\n"
-         . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
-         . $nowPref . "\n"
-         . "Include only real discussions: URL patterns like /forum, /forums, /topic, /thread, /discussion, /comments, /support, /r/, question pages on Stack Overflow/StackExchange, GitHub Issues/Discussions, and product community portals.\n"
-         . "EXCLUDE Telegram and social networks entirely (do not include or query t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com). Never use site:t.me in this scope.\n"
-         . "Avoid homepages, marketing/landing pages, pricing, docs, blogs.\n"
-         . "Use at least 12–16 diverse queries in RU and EN, combining target keywords with operators (forum, topic, thread, discussion, support, comments, reddit, stackoverflow, review).\n"
-         . "Return 10–100 unique discussion URLs.\n"
-         . "At the end, output ONLY the JSON per schema.";
-
-    $user = "Targets:\n{$prompt}\nOutput fields: url, title, domain. Unique URLs only.";
-
-    $jobs[] = ['name' => 'forums', 'sys' => $sys, 'user' => $user];
-}
-
-// FALLBACK generic job if user disabled everything accidentally
 if (empty($jobs)) {
     $sys = "You are a web monitoring agent. Use the web_search tool to find RECENT web pages that mention the targets described by the user.\n"
+         . $langLine . $regionLineTpl(null)
          . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
          . $nowPref . "\n"
          . "Search broadly across the web (forums, social, blogs, news, Q&A, Telegram, Reddit, support portals).\n"
          . "Return 10–100 unique URLs.";
     $user = "Task:\n{$prompt}\nOutput format:\n- JSON with fields: url, title, domain for each mention.\n- Only unique URLs (no duplicates).";
-    $jobs[] = ['name' => 'generic', 'sys' => $sys, 'user' => $user];
+    $jobs[] = ['name' => 'generic', 'sys' => $sys, 'user' => $user, 'country'=>null];
 }
 
 // ----------------------- Execute jobs & aggregate -----------------------
@@ -490,7 +507,7 @@ foreach ($jobs as $job) {
     [$status, $cnt, $links, $bumped] = run_openai_job(
         $job['name'], $job['sys'], $job['user'],
         $requestUrl, $requestHeaders, $schema,
-        $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog
+        $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog, $job['country'] ?? null
     );
     $bumpedAny = $bumpedAny || $bumped;
     $jobStats[$job['name']] = ['status' => $status, 'count' => $cnt];
