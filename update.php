@@ -31,19 +31,29 @@ $tagsApiUrl = "https://api.github.com/repos/$repoOwner/$repoName/tags?per_page=4
 $tagsCacheFile = $dataDir.'/tags_cache.json';
 $tags = [];$stableTags=[];$latestStable=null;
 
+if(!function_exists('e')){ function e($v){ return htmlspecialchars((string)$v,ENT_QUOTES,'UTF-8'); } }
+// Reliable HTTP fetch with headers
+function http_get_ds($url,$timeout=12){
+    $ua='DiscusScan-Updater/1.0 (+https://github.com/ksanyok/DiscusScan)';
+    $opts=['http'=>['method'=>'GET','timeout'=>$timeout,'ignore_errors'=>true,'header'=>"User-Agent: $ua\r\nAccept: */*\r\n"]];
+    $ctx=stream_context_create($opts); $data=@file_get_contents($url,false,$ctx); if($data!==false) return $data; if(function_exists('curl_init')){ $ch=curl_init($url); curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>true,CURLOPT_TIMEOUT=>$timeout,CURLOPT_HTTPHEADER=>['User-Agent: '.$ua,'Accept: */*']]); $d=curl_exec($ch); $code=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch); if($d!==false && $code>=200 && $code<400) return $d; }
+    return false;
+}
+// Override fetch_tags to force headers even in fallback
 function fetch_tags($apiUrl, $cacheFile){
-    $useCache=false; if(is_file($cacheFile)){ if(time()-filemtime($cacheFile) < 600) $useCache=true; }
-    if($useCache){ $raw=@file_get_contents($cacheFile); if($raw){ $d=json_decode($raw,true); if(is_array($d)) return $d; } }
-    $res=null; $headers=["User-Agent: DiscusScan-Updater","Accept: application/vnd.github+json"];
-    if(function_exists('curl_init')){
-        $ch=curl_init($apiUrl); curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>true,CURLOPT_TIMEOUT=>10,CURLOPT_HTTPHEADER=>$headers]);
-        $d=curl_exec($ch); $c=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch);
-        if($d!==false && $c>=200 && $c<400){ $res=json_decode($d,true); }
-    }
-    if(!$res){ $d=@file_get_contents($apiUrl); if($d) $res=json_decode($d,true); }
-    if(is_array($res)) @file_put_contents($cacheFile, json_encode($res));
+    $useCache=false; if(is_file($cacheFile) && time()-filemtime($cacheFile)<300) $useCache=true; // 5m cache
+    if($useCache){ $raw=@file_get_contents($cacheFile); if($raw){ $d=json_decode($raw,true); if(is_array($d)) return $d; }}
+    $data=http_get_ds($apiUrl); $res=is_array($data)?$data:json_decode($data,true);
+    if(is_array($res)) @file_put_contents($cacheFile,json_encode($res));
     return is_array($res)?$res:[];
 }
+// Fetch releases meta (optional, no fatal on failure)
+$releasesCache=$dataDir.'/releases_cache.json';
+$releases=[]; $releasesApi="https://api.github.com/repos/$repoOwner/$repoName/releases?per_page=30";
+try{ $releases=json_decode(http_get_ds($releasesApi)?:'[]',true)?:[]; if($releases) @file_put_contents($releasesCache,json_encode($releases)); }
+catch(Throwable $e){ if(is_file($releasesCache)) $releases=json_decode(@file_get_contents($releasesCache),true)?:[]; }
+// Map tag => body (release notes)
+$releaseNotes=[]; foreach($releases as $r){ if(!empty($r['tag_name'])) $releaseNotes[$r['tag_name']] = trim($r['body'] ?? ''); }
 
 try { $tagsRaw = fetch_tags($tagsApiUrl,$tagsCacheFile); } catch(Throwable $e){ $tagsRaw=[]; }
 foreach($tagsRaw as $tRow){ if(!isset($tRow['name'])) continue; $n=$tRow['name']; $tags[]=$n; }
@@ -214,60 +224,108 @@ if (is_file($versionFile)) {
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
   <style>
-    .update-box{border:1px solid var(--border); padding:16px 18px; border-radius:12px; background:rgba(255,255,255,0.04); margin:18px 0;}
-    .tags-select{max-width:260px;}
-    .badge{display:inline-block; background:#394b89; color:#fff; padding:2px 8px; font-size:11px; border-radius:20px; margin-left:6px;}
-    .muted-small{font-size:11px; opacity:.75;}
+    /* Enhanced updater UI */
+    body{background: radial-gradient(circle at 30% 18%,#142542,#0a1326);}
+    .update-layout{display:grid;gap:22px;grid-template-columns:1fr 320px;align-items:start;}
+    @media (max-width:980px){ .update-layout{grid-template-columns:1fr;} }
+    .panel{border:1px solid var(--border);border-radius:18px;padding:20px 22px;background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02));backdrop-filter:blur(10px);}
+    .panel h2{margin:0 0 14px;font-size:18px;font-weight:600;}
+    .tags-list{max-height:380px;overflow:auto;margin:0;padding:0;list-style:none;}
+    .tags-list li{padding:8px 10px 10px;border:1px solid rgba(255,255,255,.07);border-radius:12px;margin-bottom:8px;display:flex;flex-direction:column;gap:6px;background:#111d36;}
+    .tags-list li.active{border-color:#4b72ff;box-shadow:0 0 0 1px #4b72ff66;}
+    .tag-head{display:flex;align-items:center;gap:10px;font-size:13px;}
+    .tag-name{font-weight:600;}
+    .tag-meta{font-size:11px;color:var(--muted);margin-left:auto;}
+    .rel-notes{white-space:pre-wrap;font-size:11px;line-height:1.4;background:#0d192f;padding:10px 12px;border-radius:10px;max-height:150px;overflow:auto;margin:4px 0 0;}
+    .empty-box{padding:18px 16px;font-size:13px;border:1px dashed var(--border);border-radius:16px;text-align:center;color:var(--muted);}
+    .version-badge{display:inline-flex;align-items:center;gap:6px;background:#1d315d;color:#fff;padding:6px 10px;border-radius:30px;font-size:12px;font-weight:600;}
+    .ver-local{background:#233a6b;}
+    .ver-remote{background:#314b82;}
+    .changelog-hint{font-size:11px;color:var(--muted);margin-top:6px;}
+    .radio-row{display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:13px;}
+    .submit-row{display:flex;gap:16px;align-items:center;margin-top:18px;}
+    .diff-info{font-size:11px;color:var(--muted);}
   </style>
 </head>
 <body>
 <?php include 'header.php'; ?>
 <main class="container">
-  <h1>Обновление приложения</h1>
-  <p>Текущая версия: v<?= htmlspecialchars($localVersion) ?> <?php if($latestStable): ?><span class="badge">Последняя стабильная: v<?=e($latestStable)?></span><?php endif; ?></p>
+  <h1 style="margin-top:4px;margin-bottom:14px;">Обновление DiscusScan</h1>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+    <span class="version-badge ver-local">Текущая: v<?=e($localVersion)?></span>
+    <?php if($latestStable): ?><span class="version-badge ver-remote">Последняя стабильная: v<?=e($latestStable)?></span><?php endif; ?>
+    <?php if(isset($remoteVersionFound) && $remoteVersionFound): ?><span class="version-badge">Удалённая выбрана: v<?=e($remoteVersionFound)?></span><?php endif; ?>
+  </div>
   <?php if ($message): ?>
-    <div class="alert <?= $success ? 'success' : 'danger' ?>"><?= nl2br(htmlspecialchars($message)) ?></div>
+    <div class="alert <?= $success ? 'success' : 'danger' ?>" style="margin-bottom:18px;"><?= nl2br(htmlspecialchars($message)) ?></div>
   <?php endif; ?>
-  <div class="update-box">
-    <form method="post">
-      <input type="hidden" name="update" value="1">
-      <fieldset style="border:none; padding:0; margin:0 0 14px;">
-        <legend style="font-weight:600; margin-bottom:6px;">Выбор источника обновления</legend>
-        <label style="display:flex; gap:6px; margin-bottom:6px; align-items:center;">
-          <input type="radio" name="update_type" value="branch" <?= $updateType!=='tag'?'checked':''?>> Beta (ветка <?=e($branch)?>)
-        </label>
-        <label style="display:flex; gap:6px; align-items:center;">
-          <input type="radio" name="update_type" value="tag" <?= $updateType==='tag'?'checked':''?>> Стабильный релиз (тег)
-          <?php if(!$stableTags): ?><span class="muted-small">Теги не получены</span><?php endif; ?>
-        </label>
-        <div style="margin:6px 0 0 26px;">
-          <select name="tag_name" class="tags-select" <?= $updateType==='tag'?'':'disabled'?>>
+  <div class="update-layout">
+    <div class="panel">
+      <h2>Режим</h2>
+      <form method="post" id="updateForm">
+        <input type="hidden" name="update" value="1">
+        <div class="radio-row"><label><input type="radio" name="update_type" value="branch" <?= $updateType!=='tag'?'checked':''?>> Beta (ветка <?=e($branch)?>, самая свежая, может быть нестабильной)</label></div>
+        <div class="radio-row"><label><input type="radio" name="update_type" value="tag" <?= $updateType==='tag'?'checked':''?>> Стабильный релиз (тег)</label></div>
+        <div style="margin:10px 0 14px 4px;">
+          <select name="tag_name" id="tagSelect" style="max-width:300px;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:#0f1733;color:#fff;" <?= $updateType==='tag'?'':'disabled'?>>
             <option value="">— выбрать тег —</option>
             <?php foreach($stableTags as $t): ?>
-              <option value="<?=e($t)?>" <?= ($t===$selectedTag)?'selected':''?>><?=e($t)?><?=$t===$latestStable?' (latest)':''?></option>
+              <option value="<?=e($t)?>" data-notes="<?= e(substr($releaseNotes[$t] ?? '',0,800)) ?>" <?= $t===$selectedTag?'selected':''?>><?=e($t)?><?=$t===$latestStable?'  • latest':''?></option>
             <?php endforeach; ?>
           </select>
-          <div class="muted-small">Показываются только стабильные теги (X.Y.Z). Beta — всегда последняя кодовая база, может быть нестабильной.</div>
+          <?php if(!$stableTags): ?><div class="changelog-hint">Не удалось получить список тегов (возможно, ограничение GitHub API). Попробуйте позже.</div><?php endif; ?>
         </div>
-      </fieldset>
-      <label style="display:flex; gap:6px; align-items:center; margin-bottom:12px;">
-        <input type="checkbox" name="force" value="1"> Принудительно (перезаписать даже если версия не новее)
-      </label>
-      <button type="submit" class="btn primary">Обновить → <span style="font-weight:400;"><?=$downloadModeLabel?></span></button>
-    </form>
-    <div class="muted" style="font-size:12px; margin-top:10px; line-height:1.5;">
-      <b>Примечание.</b> При выборе тега выполняется checkout этого тега (если есть git) или скачивание ZIP.
-      Ветка <?=e($branch)?> = поток beta. Стабильные релизы помечены тегами. Если после перехода на тег хотите вернуться на beta — выберите снова режим Beta и обновите.
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:4px;">
+          <input type="checkbox" name="force" value="1" <?= !empty($_POST['force'])?'checked':''?>> Принудительно (перезаписать даже если версия не новее)
+        </label>
+        <div class="submit-row">
+          <button type="submit" class="btn primary" style="min-width:180px;">Обновить → <?=e($updateType==='tag' && $selectedTag? ('v'.$selectedTag): 'Beta')?></button>
+          <div class="diff-info" id="diffInfo">&nbsp;</div>
+        </div>
+      </form>
+      <div class="changelog-hint">После обновления на тег для возврата к beta выберите режим Beta и снова выполните обновление (git checkout ветки).</div>
+      <div class="muted" style="font-size:11px;margin-top:14px;">.git: <?= is_dir(__DIR__.'/.git') ? 'обнаружен — используется git операции' : 'нет — используется загрузка ZIP' ?>.</div>
     </div>
-    <div class="muted-small" style="margin-top:8px;">Папка .git <?= is_dir(__DIR__.'/.git') ? 'найдена — используется git.' : 'не найдена — используется ZIP.' ?></div>
+    <div class="panel" style="min-height:300px;">
+      <h2 style="margin-bottom:10px;">Release notes</h2>
+      <div id="relNotesBox">
+        <?php if($updateType==='tag' && $selectedTag && isset($releaseNotes[$selectedTag]) && $releaseNotes[$selectedTag] !== ''): ?>
+          <div class="rel-notes" id="relNotesContent"><?= nl2br(e(mb_substr($releaseNotes[$selectedTag],0,4000))) ?></div>
+        <?php else: ?>
+          <div class="empty-box" id="relNotesEmpty">Выберите стабильный тег чтобы увидеть заметки релиза.</div>
+        <?php endif; ?>
+      </div>
+      <?php if($stableTags): ?>
+      <hr style="margin:18px 0;border:none;border-top:1px solid var(--border);opacity:.4;">
+      <h2 style="margin:0 0 12px;font-size:16px;">Последние стабильные</h2>
+      <ul class="tags-list" id="tagsList">
+        <?php foreach(array_slice($stableTags,0,10) as $t): ?>
+          <li class="<?= $t===$selectedTag? 'active':''?>" data-tag="<?=e($t)?>" data-notes="<?= e(substr($releaseNotes[$t] ?? '',0,1200)) ?>">
+            <div class="tag-head"><span class="tag-name">v<?=e($t)?></span><span class="tag-meta"><?= $t===$latestStable?'latest':''?></span></div>
+            <?php if(!empty($releaseNotes[$t])): ?><div class="rel-notes" style="max-height:90px;"><?= nl2br(e(mb_substr($releaseNotes[$t],0,500))) ?></div><?php else: ?><div class="rel-notes" style="background:transparent;padding:0;color:var(--muted);">(нет заметок)</div><?php endif; ?>
+            <div><button type="button" class="btn tiny" data-choose-tag="<?=e($t)?>">Выбрать</button></div>
+          </li>
+        <?php endforeach; ?>
+      </ul>
+      <?php endif; ?>
+    </div>
   </div>
 </main>
 <?php include 'footer.php'; ?>
 <script>
-// JS для включения/отключения select тега
-const radios = document.querySelectorAll('input[name=update_type]');
-const tagSelect = document.querySelector('select[name=tag_name]');
-radios.forEach(r=>r.addEventListener('change', ()=>{ if(r.value==='tag' && r.checked){ tagSelect.disabled=false; } else if(r.value==='branch' && r.checked){ tagSelect.disabled=true; tagSelect.selectedIndex=0; } }));
+const tagRadios=document.querySelectorAll('input[name=update_type]');
+const tagSelect=document.getElementById('tagSelect');
+const relNotesBox=document.getElementById('relNotesBox');
+const form=document.getElementById('updateForm');
+function setMode(){ const isTag=document.querySelector('input[name=update_type][value=tag]').checked; tagSelect.disabled=!isTag; if(!isTag){ relNotesBox.innerHTML='<div class="empty-box">Режим Beta: заметки не отображаются.</div>'; } else { if(tagSelect.value===''){ relNotesBox.innerHTML='<div class="empty-box">Выберите стабильный тег чтобы увидеть заметки релиза.</div>'; } else updateNotes(); } }
+function updateNotes(){ const opt=tagSelect.options[tagSelect.selectedIndex]; if(!opt){ return; } const notes=opt.dataset.notes||''; if(notes){ relNotesBox.innerHTML='<div class="rel-notes" id="relNotesContent">'+notes.replace(/\n/g,'<br>')+'</div>'; } else { relNotesBox.innerHTML='<div class="empty-box">Нет заметок для этого тега.</div>'; } }
+
+tagRadios.forEach(r=>r.addEventListener('change', setMode));
+tagSelect && tagSelect.addEventListener('change', updateNotes);
+setMode();
+// Quick choose buttons
+const list=document.getElementById('tagsList');
+if(list){ list.addEventListener('click',e=>{ const btn=e.target.closest('[data-choose-tag]'); if(!btn) return; const tag=btn.getAttribute('data-choose-tag'); document.querySelector('input[name=update_type][value=tag]').checked=true; setMode(); for(const o of tagSelect.options){ if(o.value===tag){ tagSelect.value=tag; updateNotes(); break; } } list.querySelectorAll('li').forEach(li=>li.classList.toggle('active', li.dataset.tag===tag)); }); }
 </script>
 </body>
 </html>
