@@ -95,11 +95,19 @@ $telegramMode  = (string)get_setting('telegram_mode', 'any'); // any|discuss
 
 // Active domains list (for domain scope)
 $activeHosts = [];
+$allKnownHosts = [];
+$pausedHosts = [];
 try {
-    $q = pdo()->query("SELECT host FROM sources WHERE is_active=1 ORDER BY host");
+    $q = pdo()->query("SELECT host,is_active FROM sources ORDER BY host");
     while ($row = $q->fetch(PDO::FETCH_ASSOC)) {
         $h = normalize_host((string)$row['host']);
-        if ($h !== '') $activeHosts[] = $h;
+        if ($h === '') continue;
+        $allKnownHosts[] = $h;
+        if ((int)$row['is_active'] === 1) {
+            $activeHosts[] = $h;
+        } else {
+            $pausedHosts[] = $h;
+        }
     }
 } catch (Throwable $e) {}
 
@@ -434,29 +442,46 @@ $nowPref = ($lastScanAt !== '')
     ? "Prefer pages created or updated AFTER {$lastScanAt} UTC; otherwise last 12 months."
     : "Prefer results from the last 30 days; if none, include older (up to 12 months).";
 
+// NEW: Discovery job (find new discussion/forum domains) — runs once (region-independent)
+if ($scopeForums) {
+    $excludeList = $allKnownHosts ? implode(', ', array_slice($allKnownHosts,0,400)) : '';
+    $sys = "You are a discovery agent. Find NEW relevant forums / discussion / community / Q&A / review sites where the target topic is discussed.\n"
+         . $langLine
+         . "Output STRICT JSON only: {\n  \"links\": [ { \"url\": \"...\", \"title\": \"...\", \"domain\": \"...\" } ]\n}. No prose.\n"
+         . "Return 5–30 unique discussion URLs EACH from a DISTINCT domain NOT in this exclusion list: " . $excludeList . " .\n"
+         . "Each URL must clearly be a thread / topic / discussion (contains forum/thread/topic/discussion/comments/support or is a Q&A/issue page).\n"
+         . "If you find multiple good domains, include 1 representative URL per domain (not the homepage).\n"
+         . "Do NOT invent domains. Skip social networks (t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com).\n"
+         . "At the end output ONLY the JSON.";
+    $user = "Targets / theme:\n{$prompt}\nGoal: discover new domains hosting relevant discussions. Exclude already known domains. Output representative discussion URLs (one per domain). Fields: url,title,domain.";
+    $jobs[] = ['name'=>'discover_forums','sys'=>$sys,'user'=>$user,'country'=>null,'purpose'=>'discovery'];
+}
+
+$MAX_DOMAIN_JOBS = 25; // limit per scan for cost control
+$domainJobHosts = array_slice($activeHosts,0,$MAX_DOMAIN_JOBS);
+
 foreach ($searchRegions as $regCode) {
     $regionLine = $regionLineTpl($regCode);
 
-    // DOMAINS SCOPE
-    if ($scopeDomains && !empty($activeHosts)) {
-        $hostList = implode(', ', array_slice($activeHosts, 0, 300));
-        $sys = "You are a web monitoring agent focused on a FIXED set of domains.\n"
-             . $langLine . $regionLine
-             . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
-             . $nowPref . "\n"
-             . "Only include results whose host is in this allowlist: " . $hostList . ".\n"
-             . "EXCLUDE Telegram and social networks entirely (do not include t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com). Do not query them.\n"
-             . "Use the web_search tool with diverse queries in these languages (if provided) and include geo-specific terms when useful. Aggressively use site:&lt;host&gt; operators.\n"
-             . "Return canonical content URLs (not homepages). Return 10–100 unique URLs.\n"
-             . "At the end, output ONLY the JSON per schema.";
-        $user = "Targets:\n{$prompt}\nConstraints:\n- Allowed hosts only (active sources).\n- Exclude any social/Telegram domains.\n- Unique URLs.\n- Prefer threads/discussions/comments/support pages if available; otherwise any page that genuinely mentions the targets.\nOutput fields: url, title, domain.";
-        $jobs[] = ['name' => 'domains' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode];
+    // LEGACY multi-domain scope disabled (replaced by per-domain jobs)
+    // Per-domain targeted jobs (only active, skip paused)
+    if ($scopeDomains && !empty($domainJobHosts)) {
+        foreach ($domainJobHosts as $h) {
+            $sys = "You are a site-focused monitoring agent. Extract recent discussion/forum/Q&A/support THREAD URLs from this SINGLE domain: {$h}.\n"
+                 . $langLine . $regionLine
+                 . $nowPref . "\n"
+                 . "Domain: {$h}. Use web_search with diverse queries (site:{$h} plus topical keywords, forum/thread/topic/discussion/support/comments/review/issue).\n"
+                 . "Return ONLY unique canonical URLs from {$h}. 5–40 URLs if available. Exclude homepages, tag indexes, pure landing/marketing pages.\n"
+                 . "STRICT JSON only at end.";
+            $user = "Targets / theme:\n{$prompt}\nConstraints:\n- Only domain {$h}\n- Real threads (discussion / topic / question / issue / review)\n- Output fields: url,title,domain";
+            $jobs[] = ['name'=>'domain:'.$h.($regCode?":$regCode":''),'sys'=>$sys,'user'=>$user,'country'=>$regCode,'purpose'=>'per_domain'];
+        }
     }
 
-    // TELEGRAM SCOPE
+    // TELEGRAM SCOPE (unchanged)
     if ($scopeTelegram) {
         $modeLine = ($telegramMode === 'discuss')
-            ? "Include only Telegram groups/channels that allow replies or comments; prefer URLs like t.me/c/&lt;id&gt;/&lt;msg&gt; or t.me/&lt;name&gt;/&lt;post&gt;. Avoid bare channel homepages without a post id."
+            ? "Include only Telegram groups/channels that allow replies or comments; prefer URLs like t.me/c/<id>/<msg> or t.me/<name>/<post>. Avoid bare channel homepages without a post id."
             : "Include Telegram post URLs on t.me (with message ids). Avoid bare channel homepages without a post id.";
         $sys = "You are a web monitoring agent focused ONLY on Telegram posts on t.me.\n"
              . $langLine . $regionLine
@@ -467,10 +492,10 @@ foreach ($searchRegions as $regCode) {
              . "Return 10–100 unique post URLs.\n"
              . "At the end, output ONLY the JSON per schema.";
         $user = "Targets:\n{$prompt}\nConstraints:\n- Domain MUST be t.me\n- Unique canonical post URLs only\n- Output fields: url, title, domain.";
-        $jobs[] = ['name' => 'telegram' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode];
+        $jobs[] = ['name' => 'telegram' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode,'purpose'=>'telegram'];
     }
 
-    // FORUMS SCOPE
+    // FORUMS SCOPE (keep as broad multi-forum aggregator) — only if we still want a broad sweep
     if ($scopeForums) {
         $sys = "You are a web monitoring agent focused ONLY on forums and discussion platforms (not social networks).\n"
              . $langLine . $regionLine
@@ -483,19 +508,8 @@ foreach ($searchRegions as $regCode) {
              . "Return 10–100 unique discussion URLs.\n"
              . "At the end, output ONLY the JSON per schema.";
         $user = "Targets:\n{$prompt}\nOutput fields: url, title, domain. Unique URLs only.";
-        $jobs[] = ['name' => 'forums' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode];
+        $jobs[] = ['name' => 'forums' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode,'purpose'=>'forums'];
     }
-}
-
-if (empty($jobs)) {
-    $sys = "You are a web monitoring agent. Use the web_search tool to find RECENT web pages that mention the targets described by the user.\n"
-         . $langLine . $regionLineTpl(null)
-         . "Return STRICT JSON only: {\"links\":[{\"url\":\"...\",\"title\":\"...\",\"domain\":\"...\"}]}. No prose.\n"
-         . $nowPref . "\n"
-         . "Search broadly across the web (forums, social, blogs, news, Q&A, Telegram, Reddit, support portals).\n"
-         . "Return 10–100 unique URLs.";
-    $user = "Task:\n{$prompt}\nOutput format:\n- JSON with fields: url, title, domain for each mention.\n- Only unique URLs (no duplicates).";
-    $jobs[] = ['name' => 'generic', 'sys' => $sys, 'user' => $user, 'country'=>null];
 }
 
 // ----------------------- Execute jobs & aggregate -----------------------
@@ -512,7 +526,7 @@ foreach ($jobs as $job) {
     $bumpedAny = $bumpedAny || $bumped;
     $jobStats[$job['name']] = ['status' => $status, 'count' => $cnt];
 
-    foreach ($links as $it) { $allLinks[] = $it; }
+    foreach ($links as $it) { $it['__job'] = $job['name']; $it['__purpose'] = $job['purpose'] ?? null; $allLinks[] = $it; }
 }
 
 // ----------------------- Local post-processing -----------------------
@@ -532,7 +546,7 @@ foreach ($allLinks as $it) {
     $seen[$url] = 1;
 
     $title = trim((string)arr_get($it, 'title', ''));
-    $links[] = ['url' => $url, 'title' => $title, 'domain' => $domain];
+    $links[] = ['url' => $url, 'title' => $title, 'domain' => $domain, '__job' => $it['__job'] ?? null, '__purpose'=>$it['__purpose'] ?? null];
 }
 
 // ----------------------- Save results -----------------------
@@ -547,8 +561,10 @@ foreach ($links as $it) {
     $stmt->execute([$domain]);
     $srcId = $stmt->fetchColumn();
     if (!$srcId) {
-        $ins = pdo()->prepare("INSERT INTO sources (host, url, is_active, note) VALUES (?,?,1,'discovered')");
-        $ins->execute([$domain, 'https://' . $domain]);
+        $purpose = $it['__purpose'] ?? '';
+        $isDiscovery = ($purpose === 'discovery');
+        $ins = pdo()->prepare("INSERT INTO sources (host, url, is_active, note) VALUES (?,?,?,?)");
+        $ins->execute([$domain, 'https://' . $domain, $isDiscovery ? 0 : 1, $isDiscovery ? 'candidate' : 'discovered']);
         $srcId = (int)pdo()->lastInsertId();
     }
 
