@@ -148,7 +148,7 @@ try {
     </tbody>
   </table>
 </main>
-<!-- Убрано: <script src="public/js/publish.js"></script> (файл отсутствует) -->
+<?php include 'footer.php'; ?>
 <script>
 function qs(sel,par=document){return par.querySelector(sel);} function qsa(sel,par=document){return Array.from(par.querySelectorAll(sel));}
 function showMsg(msg,type='info'){console.log(msg); let box=qs('#pubFlash'); if(!box){ box=document.createElement('div'); box.id='pubFlash'; box.style.position='fixed'; box.style.bottom='14px'; box.style.right='14px'; box.style.zIndex='200'; box.style.maxWidth='320px'; document.body.appendChild(box);} const el=document.createElement('div'); el.textContent=msg; el.style.background= type==='err'? '#ff5544':'#1d355e'; el.style.color='#fff'; el.style.padding='10px 14px'; el.style.marginTop='8px'; el.style.borderRadius='10px'; el.style.fontSize='12px'; el.style.boxShadow='0 4px 18px rgba(0,0,0,.35)'; box.appendChild(el); setTimeout(()=>{el.style.opacity='0'; el.style.transition='opacity .4s'; setTimeout(()=>el.remove(),450);}, 4200);} 
