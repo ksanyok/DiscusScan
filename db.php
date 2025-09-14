@@ -562,25 +562,16 @@ function notify_new(array $findings): void {
  * Умный мастер - анализ пользовательского ввода и генерация промпта
  */
 function processSmartWizard(string $userInput, string $apiKey, string $model, string $step = 'clarify'): array {
-    $userInput = mb_substr($userInput, 0, 4000); // защита от слишком длинного ввода
-    $requestUrl = 'https://api.openai.com/v1/chat/completions';
+    $userInput = mb_substr($userInput, 0, 4000);
+    $requestUrl = 'https://api.openai.com/v1/responses'; // Переход на responses API
     $requestHeaders = [
         'Content-Type: application/json',
         'Authorization: Bearer ' . $apiKey,
         'Expect:'
     ];
-    
+
+    // --- Определяем схему и подсказки ---
     if ($step === 'clarify') {
-        // Этап 1: Генерация уточняющих вопросов (обновлённая логика)
-        // Цели изменений:
-        // 1. Вопросы формируются ТОЛЬКО по недостающей информации (языки, регионы, временной диапазон, цель, объекты мониторинга, негативные исключения, формат/точность).
-        // 2. Не спрашивать то, что пользователь уже явно указал.
-        // 3. НЕ спрашивать про источники: источники выбираются в настройках и НЕ входят в итоговый prompt.
-        // 4. Модель должна извлекать languages (ISO 639-1 lower-case) и regions (ISO 3166-1 alpha-2 upper-case) из пользовательского ввода если они упомянуты (даже в тексте), без дублирования.
-        // 5. recommendations: краткие улучшения (0-3), контекстные.
-        // 6. questions: 2-5, если ВСЁ уже есть (цель, ключевые сущности, языки, регионы, период) — можно 0.
-        // 7. Типы вопросов: single / multiple / text. Не более 6 опций. Формулировки короткие, без вводных.
-        // 8. НЕ включать упоминания источников (forums, telegram, social, news, reviews) в prompt и в вопросы.
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -590,44 +581,30 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                         'type' => 'object',
                         'properties' => [
                             'question' => ['type' => 'string'],
-                            'options' => [
-                                'type' => 'array',
-                                'items' => ['type' => 'string']
-                            ],
-                            'type' => ['type' => 'string', 'enum' => ['single', 'multiple', 'text']]
+                            'options' => ['type' => 'array','items' => ['type' => 'string']],
+                            'type' => ['type' => 'string','enum' => ['single','multiple','text']]
                         ],
-                        'required' => ['question', 'type'],
+                        'required' => ['question','type'],
                         'additionalProperties' => false
                     ]
                 ],
                 'auto_detected' => [
                     'type' => 'object',
                     'properties' => [
-                        'languages' => [
-                            'type' => 'array',
-                            'items' => ['type' => 'string']
-                        ],
-                        'regions' => [
-                            'type' => 'array',
-                            'items' => ['type' => 'string']
-                        ]
+                        'languages' => ['type' => 'array','items' => ['type' => 'string']],
+                        'regions' => ['type' => 'array','items' => ['type' => 'string']]
                     ],
-                    'required' => ['languages', 'regions'],
+                    'required' => ['languages','regions'],
                     'additionalProperties' => false
                 ],
-                'recommendations' => [
-                    'type' => 'array',
-                    'items' => ['type' => 'string']
-                ]
+                'recommendations' => ['type' => 'array','items' => ['type' => 'string']]
             ],
-            'required' => ['questions', 'auto_detected'],
+            'required' => ['questions','auto_detected'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Ты помощник по настройке мониторинга. Анализируй исходный текст пользователя и определи: цель мониторинга, ключевые бренды/продукты/темы, временной горизонт (если указан), языки (ISO 639-1), регионы / страны (ISO 3166-1 alpha-2), дополнительные фильтры (например намерение конкурентов, отзывы, баги).\n\nЗадача: вернуть JSON по схеме.\n\nПравила генерации вопросов: \n- Генерируй вопросы ТОЛЬКО по недостающим аспектам. \n- Если явно присутствуют цель, сущности (бренд/продукт), языки, регионы И временной диапазон / свежесть — не задавай вопросов (questions = []). \n- Если чего-то не хватает — 2-5 вопросов. \n- Не спрашивай про источники (forums, telegram, social, news, reviews) — они задаются отдельно в настройках. \n- Формат короткий, без нумерации, без вводных. \n- Если предлагаешь options, максимум 6. Для свободного ответа используй type=text. \n- Не дублируй вопросы с одинаковым смыслом. \n\nАвтоопределение: \n- languages: только валидные 2-буквенные коды в lower-case. \n- regions: только 2-буквенные коды стран upper-case. \n- Если кодов нет — массивы пустые (НЕ угадывай). \n\nrecommendations (0-3): как улучшить формулировку или что стоит уточнить (если вопросов нет — могут быть пустыми). \n\nСтрого JSON. НИКАКОГО текста вне JSON. НЕ включай источники в вопросы или recommendations.";
-        $userPrompt = "Описание пользователя:\n\n" . $userInput . "\n\nОпредели что отсутствует и подготовь вопросы по правилам.";
+        $systemPrompt = "Ты помощник по настройке мониторинга. Верни СТРОГО JSON по схеме. Не добавляй текст вне JSON. НЕ спрашивай про источники (forums, telegram, social, news, reviews). Вопросы только по отсутствующим аспектам (языки, регионы, период, цель, сущности, исключения, аспекты анализа). Если всё есть — questions=[]";
+        $userPrompt = "Описание пользователя:\n\n" . $userInput . "\n\nПодготовь структуру clarifying вопросов и автоопределение языков/регионов.";
     } else {
-        // Этап 2: Генерация финального промпта
-        // Источники (forums, telegram, social, news, reviews) НЕ должны быть в prompt — они задаются отдельно.
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -640,561 +617,227 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'required' => ['prompt','languages','regions','sources'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Сформируй финальный JSON.\nprompt: сжатый, точный, включает: цель мониторинга, ключевые бренды/термины/синонимы, релевантные аспекты (например: отзывы, баги, сравнения, запросы пользователей), временной фокус (если был), исключения (если были). НЕ добавляй перечисление типов источников (forums, telegram, social, news, reviews) внутрь текста prompt. Не добавляй служебных пояснений.\nlanguages: ISO 639-1 lower-case (только упомянутые или подтверждённые).\nregions: ISO 3166-1 alpha-2 upper-case (только упомянутые или подтверждённые).\nsources: просто массив (если переданы или подразумеваются), НО НЕ включай их в сам prompt. Если нет данных — пустой массив.\nreasoning: кратко почему так структурирован prompt (может быть опущено моделью).\nСтрого JSON без текста вне.";
+        $systemPrompt = "Сформируй финальный JSON. prompt: цель мониторинга, ключевые термины/синонимы, аспекты (отзывы, баги, сравнения и т.п.), временной фокус (если был), исключения. НЕ перечисляй источники внутри текста prompt. languages: ISO 639-1. regions: ISO 3166-1 alpha-2. sources: массив (если извлечены). Без текста вне JSON.";
         $userPrompt = $userInput;
     }
-    
-    // Динамический лимит токенов (уменьшаем для clarify чтобы снизить риск лимита)
-    $outTokens = $step === 'clarify' ? 700 : 1200; 
-    // Автоопределение поддерживаемого параметра — пробуем сначала max_tokens, при 400 с Unsupported переключаемся
-    $tokenParamName = 'max_tokens';
-    $altTokenParamName = 'max_completion_tokens';
-    
-    $buildPayload = function($paramName,$limit) use ($model,$systemPrompt,$userPrompt,$schema){
+
+    $initialTokens = $step === 'clarify' ? 300 : 800;
+    $timeout = $step === 'generate' ? 90 : 45;
+
+    // strict=false на первом проходе clarify снижает шанс обрезки
+    $initialStrict = $step === 'clarify' ? false : true;
+
+    $buildPayload = function(int $maxTokens, bool $strict, string $sys, string $usr, array $schema) use ($model) {
         return [
             'model' => $model,
-            'messages' => [
-                ['role' => 'system', 'content' => $systemPrompt],
-                ['role' => 'user', 'content' => $userPrompt]
+            'max_output_tokens' => $maxTokens,
+            'input' => [
+                ['role' => 'system', 'content' => $sys],
+                ['role' => 'user',   'content' => $usr]
             ],
-            'response_format' => [
-                'type' => 'json_schema',
-                'json_schema' => [
+            'text' => [
+                'format' => [
+                    'type' => 'json_schema',
                     'name' => 'wizard_response',
                     'schema' => $schema,
-                    'strict' => true
-                ]
+                    'strict' => $strict
+                ],
+                'verbosity' => 'low'
             ],
-            $paramName => $limit
+            'temperature' => 0
         ];
     };
-    $payload = $buildPayload($tokenParamName,$outTokens);
-    
-    $timeout = ($step === 'generate') ? 90 : 45;
-    $ch = curl_init($requestUrl);
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => $requestHeaders,
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => $timeout,
-        CURLOPT_HEADER => true
-    ]);
-    
-    $resp = curl_exec($ch);
-    $info = curl_getinfo($ch);
-    $status = (int)($info['http_code'] ?? 0);
-    $headerSize = (int)($info['header_size'] ?? 0);
-    $body = substr((string)$resp, $headerSize);
-    $curlErr = curl_error($ch);
-    curl_close($ch);
-    
-    // Переключение параметра ограничения токенов при ошибке
-    if ($status === 400 && strpos($body,'Unsupported parameter') !== false) {
-        if (strpos($body, $tokenParamName) !== false) {
-            $prev = $tokenParamName;
-            $tokenParamName = ($tokenParamName === 'max_tokens') ? $altTokenParamName : 'max_tokens';
-            app_log('info','smart_wizard','Retry with alternate token param', ['from'=>$prev,'to'=>$tokenParamName]);
-            $payload = $buildPayload($tokenParamName,$outTokens);
-            $chA = curl_init($requestUrl);
-            curl_setopt_array($chA,[
-                CURLOPT_POST=>true,
-                CURLOPT_HTTPHEADER=>$requestHeaders,
-                CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
-                CURLOPT_RETURNTRANSFER=>true,
-                CURLOPT_TIMEOUT=>$timeout,
-                CURLOPT_HEADER=>true
-            ]);
-            $respA = curl_exec($chA);
-            $infoA = curl_getinfo($chA);
-            $status = (int)($infoA['http_code'] ?? 0);
-            $headerSize = (int)($infoA['header_size'] ?? 0);
-            $body = substr((string)$respA, $headerSize);
-            $curlErr = curl_error($chA);
-            curl_close($chA);
-        }
-    }
-    
-    // Адаптация под сообщение о необходимости увеличить лимит для второго варианта параметра
-    if ($status === 400 && strpos($body, $tokenParamName) !== false && strpos($body,'higher') !== false) {
-        if ($outTokens < 3500) {
-            $outTokens += 800;
-            $payload = $buildPayload($tokenParamName,$outTokens);
-            app_log('info','smart_wizard','Retry with higher token limit', ['step'=>$step,'param'=>$tokenParamName,'new_limit'=>$outTokens]);
-            $ch2 = curl_init($requestUrl);
-            curl_setopt_array($ch2,[
-                CURLOPT_POST=>true,
-                CURLOPT_HTTPHEADER=>$requestHeaders,
-                CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
-                CURLOPT_RETURNTRANSFER=>true,
-                CURLOPT_TIMEOUT=>$timeout,
-                CURLOPT_HEADER=>true
-            ]);
-            $resp2 = curl_exec($ch2);
-            $info2 = curl_getinfo($ch2);
-            $status2 = (int)($info2['http_code'] ?? 0);
-            $headerSize2 = (int)($info2['header_size'] ?? 0);
-            $body2 = substr((string)$resp2, $headerSize2);
-            $curlErr2 = curl_error($ch2);
-            curl_close($ch2);
-            if ($status2 === 200) { $body = $body2; $status = 200; } else { app_log('error','smart_wizard','Retry failed',['status'=>$status2,'curl_error'=>$curlErr2,'body_preview'=>substr($body2,0,300)]); }
-        }
-    }
-    
-    if ($status === 400 && strpos($body, 'max_tokens') !== false && strpos($body, 'not supported') !== false) {
-        // Модель не поддерживает старый параметр; уже используем новый — просто лог
-        app_log('error', 'smart_wizard', 'Model rejected token param', ['used_param' => $tokenParamName, 'body_preview' => substr($body,0,200)]);
-        return ['ok'=>false,'error'=>'Модель не принимает параметр ограничения токенов. Попробуйте другую модель.'];
-    }
-    if ($status === 400 && strpos($body, 'max_completion_tokens') !== false && strpos($body, 'higher') !== false) {
-        if ($outTokens < 3500) {
-            $payload[$tokenParamName] = $outTokens + 800;
-            app_log('info', 'smart_wizard', 'Retry with higher token limit', ['step'=>$step,'new_limit'=>$payload[$tokenParamName]]);
-            $ch2 = curl_init($requestUrl);
-            curl_setopt_array($ch2, [
-                CURLOPT_POST => true,
-                CURLOPT_HTTPHEADER => $requestHeaders,
-                CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => $timeout,
-                CURLOPT_HEADER => true
-            ]);
-            $resp2 = curl_exec($ch2);
-            $info2 = curl_getinfo($ch2);
-            $status2 = (int)($info2['http_code'] ?? 0);
-            $headerSize2 = (int)($info2['header_size'] ?? 0);
-            $body2 = substr((string)$resp2, $headerSize2);
-            $curlErr2 = curl_error($ch2);
-            curl_close($ch2);
-            if ($status2 === 200) { $body = $body2; $status = 200; } else { app_log('error','smart_wizard','Retry failed',['status'=>$status2,'curl_error'=>$curlErr2,'body_preview'=>substr($body2,0,300)]); }
-        }
-    }
-    
-    if ($status === 400 && (strpos($body, 'Invalid schema for response_format') !== false || strpos($body,'response_format') !== false)) {
-        // Повторяем без response_format
-        unset($payload['response_format']);
-        app_log('info','smart_wizard','Retry without response_format', ['step'=>$step]);
-        $chR = curl_init($requestUrl);
-        curl_setopt_array($chR,[
-            CURLOPT_POST=>true,
-            CURLOPT_HTTPHEADER=>$requestHeaders,
-            CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
-            CURLOPT_RETURNTRANSFER=>true,
-            CURLOPT_TIMEOUT=>$timeout,
-            CURLOPT_HEADER=>true
-        ]);
-        $respR = curl_exec($chR);
-        $infoR = curl_getinfo($chR);
-        $statusR = (int)($infoR['http_code'] ?? 0);
-        $headerSizeR = (int)($infoR['header_size'] ?? 0);
-        $bodyR = substr((string)$respR, $headerSizeR); // FIX: ранее использовался $headerSize
-        $curlErrR = curl_error($chR);
-        curl_close($chR);
-        if ($statusR === 200) { $status = 200; $body = $bodyR; $curlErr = $curlErrR; }
-        else { app_log('error','smart_wizard','Retry without response_format failed',['status'=>$statusR,'body_preview'=>substr($bodyR,0,300)]); }
-    }
-    
-    // Второй fallback: если всё ещё не 200 и step=clarify — пробуем без json_schema
-    if ($status !== 200 && $step === 'clarify') {
-        $fallbackSystem = "Верни кратчайший возможный валидный JSON вида {\"questions\":[],\"auto_detected\":{\"languages\":[],\"regions\":[],\"sources\":[]}}. Не добавляй текст вне JSON. Нужно 0 вопросов если достаточно данных или 2-4 вопроса (single/multiple/text). Опций максимум 6.";
-        $fallbackPayload = [
-            'model' => $model,
-            'messages' => [
-                ['role' => 'system', 'content' => $fallbackSystem],
-                ['role' => 'user', 'content' => $userPrompt]
-            ],
-            $tokenParamName => 500,
-            'temperature' => 0.1
-        ];
-        $ch3 = curl_init($requestUrl);
-        curl_setopt_array($ch3, [
+
+    $payload = $buildPayload($initialTokens, $initialStrict, $systemPrompt, $userPrompt, $schema);
+
+    $doRequest = function(array $payload) use ($requestUrl,$requestHeaders,$timeout) {
+        $ch = curl_init($requestUrl);
+        curl_setopt_array($ch,[
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => $requestHeaders,
-            CURLOPT_POSTFIELDS => json_encode($fallbackPayload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_HEADER => true
         ]);
-        $resp3 = curl_exec($ch3);
-        $info3 = curl_getinfo($ch3);
-        $status3 = (int)($info3['http_code'] ?? 0);
-        $headerSize3 = (int)($info3['header_size'] ?? 0);
-        $body3 = substr((string)$resp3, $headerSize3);
-        $curlErr3 = curl_error($ch3);
-        curl_close($ch3);
-        app_log('info', 'smart_wizard', 'Fallback clarify no-schema request', ['status' => $status3, 'len' => strlen($body3)]);
-        if ($status3 === 200) {
-            $status = 200; $body = $body3; $curlErr = $curlErr3; // перезаписываем для дальнейшего парсинга (ниже общий парсер)
-            // Парсер ниже не ожидает schema, просто найдём JSON
-        } else {
-            app_log('error', 'smart_wizard', 'Fallback clarify failed', ['status' => $status3, 'curl_error' => $curlErr3, 'body_preview' => substr($body3,0,300)]);
-        }
+        $resp = curl_exec($ch);
+        $info = curl_getinfo($ch);
+        $status = (int)($info['http_code'] ?? 0);
+        $headerSize = (int)($info['header_size'] ?? 0);
+        $body = substr((string)$resp, $headerSize);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+        return [$status,$body,$curlErr];
+    };
+
+    [$status,$body,$curlErr] = $doRequest($payload);
+    app_log('info','smart_wizard','Primary wizard request',[ 'step'=>$step,'status'=>$status,'len'=>strlen($body),'strict'=>$initialStrict,'tokens'=>$initialTokens ]);
+
+    if ($status !== 200) {
+        app_log('error','smart_wizard','Wizard request failed',[ 'status'=>$status, 'body_preview'=>mb_substr($body,0,400), 'curl_error'=>$curlErr ]);
+        return ['ok'=>false,'error'=>'Ошибка запроса к OpenAI ('.$status.').'];
     }
-    
-    $responseData = json_decode($body, true);
-    if (!$responseData || !isset($responseData['choices'][0]['message'])) { // ослабляем проверку: достаточно наличия message
-        app_log('error', 'smart_wizard', 'Invalid OpenAI response format', ['body' => $body]);
-        return ['ok' => false, 'error' => 'Некорректный формат ответа от OpenAI'];
-    }
-    $finishReason = $responseData['choices'][0]['finish_reason'] ?? '';
-    $msgNode = $responseData['choices'][0]['message'] ?? null;
-    $content = '';
-    if (is_array($msgNode)) {
-        if (isset($msgNode['content']) && is_string($msgNode['content'])) {
-            $content = $msgNode['content'];
-        } elseif (isset($msgNode['content']) && is_array($msgNode['content'])) {
-            $parts = [];
-            foreach ($msgNode['content'] as $part) {
-                if (is_array($part) && isset($part['text'])) { $parts[] = $part['text']; }
-                elseif (is_string($part)) { $parts[] = $part; }
+
+    // --- Парсер ответа (универсальный для responses/chat стиля) ---
+    $extractContent = function(array $data, string $rawBody) {
+        $content = '';
+        $finishReason = '';
+        if (isset($data['choices'][0])) { // chat-like
+            $finishReason = $data['choices'][0]['finish_reason'] ?? '';
+            $msg = $data['choices'][0]['message'] ?? [];
+            if (is_array($msg)) {
+                if (isset($msg['content']) && is_string($msg['content'])) $content = $msg['content'];
+                elseif (isset($msg['content']) && is_array($msg['content'])) {
+                    foreach ($msg['content'] as $part) {
+                        if (is_array($part) && isset($part['text'])) $content .= $part['text'];
+                        elseif (is_string($part)) $content .= $part; }
+                }
+                if ($content === '' && isset($msg['parsed'])) {
+                    $p = $msg['parsed']; if (is_array($p) || is_object($p)) $content = json_encode($p, JSON_UNESCAPED_UNICODE);
+                }
             }
-            $content = implode("\n", $parts);
-        }
-        if ($content === '' && isset($msgNode['parsed']) && is_array($msgNode['parsed'])) {
-            $content = json_encode($msgNode['parsed'], JSON_UNESCAPED_UNICODE);
-        }
-    }
-    
-    $rawContentForLog = $content;
-    if (preg_match('~```(json)?\s*(.+?)```~is', $content, $m)) {
-        $content = $m[2];
-    }
-    $content = trim($content);
-    
-    if ($step === 'clarify' && ($finishReason === 'length' || trim($content) === '')) {
-        app_log('warning','smart_wizard','Truncated clarify content, retrying with higher token limit',[ 'finish_reason'=>$finishReason, 'old_limit'=>$outTokens ]);
-        $retryLimit = min($outTokens * 2, 1600);
-        $payloadRetry = $buildPayload($tokenParamName, $retryLimit);
-        // Убираем strict чтобы снизить риск повторного обрезания
-        if (isset($payloadRetry['response_format']['json_schema']['strict'])) {
-            $payloadRetry['response_format']['json_schema']['strict'] = false;
-        }
-        $chC = curl_init($requestUrl);
-        curl_setopt_array($chC,[
-            CURLOPT_POST=>true,
-            CURLOPT_HTTPHEADER=>$requestHeaders,
-            CURLOPT_POSTFIELDS=>json_encode($payloadRetry, JSON_UNESCAPED_UNICODE),
-            CURLOPT_RETURNTRANSFER=>true,
-            CURLOPT_TIMEOUT=>$timeout,
-            CURLOPT_HEADER=>true
-        ]);
-        $respC = curl_exec($chC);
-        $infoC = curl_getinfo($chC);
-        $statusC = (int)($infoC['http_code'] ?? 0);
-        $headerSizeC = (int)($infoC['header_size'] ?? 0);
-        $bodyC = substr((string)$respC, $headerSizeC);
-        curl_close($chC);
-        if ($statusC === 200) {
-            $dataC = json_decode($bodyC, true);
-            $msgNodeC = $dataC['choices'][0]['message'] ?? [];
-            $contentC = '';
-            if (isset($msgNodeC['content']) && is_string($msgNodeC['content'])) {
-                $contentC = $msgNodeC['content'];
-            } elseif (isset($msgNodeC['content']) && is_array($msgNodeC['content'])) {
-                foreach ($msgNodeC['content'] as $part) { if (is_array($part) && isset($part['text'])) $contentC .= $part['text']; }
+        } elseif (isset($data['output']) && is_array($data['output'])) { // responses style
+            foreach ($data['output'] as $segment) {
+                if (!is_array($segment)) continue;
+                if (($segment['type'] ?? '') === 'message' && isset($segment['content']) && is_array($segment['content'])) {
+                    foreach ($segment['content'] as $p) { if (isset($p['text'])) $content .= $p['text']; }
+                } elseif (($segment['type'] ?? '') === 'output_text' && isset($segment['content'][0]['text'])) {
+                    $content .= $segment['content'][0]['text'];
+                }
             }
-            if ($contentC !== '') {
-                if (preg_match('~```(json)?\s*(.+?)```~is', $contentC, $mmC)) { $contentC = $mmC[2]; }
-                $content = trim($contentC);
-                app_log('info','smart_wizard','Clarify retry success',['new_limit'=>$retryLimit,'len'=>strlen($content)]);
-                $responseData = $dataC; // обновляем для последующих шагов
-            } else {
-                app_log('error','smart_wizard','Clarify retry still empty',['status'=>$statusC,'body_preview'=>substr($bodyC,0,300)]);
-            }
-        } else {
-            app_log('error','smart_wizard','Clarify retry failed',['status'=>$statusC,'body_preview'=>substr($bodyC,0,300)]);
+            $finishReason = $data['finish_reason'] ?? ($data['status'] ?? '');
         }
-    }
-    
-    // Fallback: для generate если контент пустой или finish_reason=length
-    if ($step === 'generate' && (trim($content)==='' || $finishReason==='length')) {
-        app_log('warning','smart_wizard','Empty or truncated content on generate, fallback retry',[
-            'finish_reason'=>$finishReason,
-            'resp_len'=>strlen($body)
-        ]);
-        // Повторяем без response_format и без reasoning поля в подсказке
-        $fallbackSystem = "Верни строго JSON: {\"prompt\":string,\"languages\":[...],\"regions\":[...],\"sources\":[...]}. Никакого текста вне JSON.";
-        $fallbackPayload = [
-            'model' => $model,
-            'messages' => [
-                ['role' => 'system', 'content' => $fallbackSystem],
-                ['role' => 'user', 'content' => $userPrompt]
-            ],
-            $tokenParamName => 1600
-        ];
-        $chG = curl_init($requestUrl);
-        curl_setopt_array($chG, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => $requestHeaders,
-            CURLOPT_POSTFIELDS => json_encode($fallbackPayload, JSON_UNESCAPED_UNICODE),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 90,
-            CURLOPT_HEADER => true
-        ]);
-        $respG = curl_exec($chG);
-        $infoG = curl_getinfo($chG);
-        $statusG = (int)($infoG['http_code'] ?? 0);
-        $headerSizeG = (int)($infoG['header_size'] ?? 0);
-        $bodyG = substr((string)$respG, $headerSizeG);
-        curl_close($chG);
-        if ($statusG === 200) {
-            $responseData = json_decode($bodyG, true) ?: $responseData; // перезапись
-            if (isset($responseData['choices'][0]['message']['content'])) {
-                $content = $responseData['choices'][0]['message']['content'];
-                if (preg_match('~```(json)?\s*(.+?)```~is', $content, $mm)) { $content = $mm[2]; }
-                $content = trim($content);
-            }
-            $finishReason = $responseData['choices'][0]['finish_reason'] ?? $finishReason;
-            app_log('info','smart_wizard','Fallback generate retry success',['finish_reason'=>$finishReason,'len'=>strlen($content)]);
-        } else {
-            app_log('error','smart_wizard','Fallback generate retry failed',['status'=>$statusG,'body_preview'=>substr($bodyG,0,300)]);
-        }
-        // Дополнительный попытка если всё ещё пусто
-        if (trim($content)==='') {
-            $thirdPayload = [
-                'model' => $model,
-                'messages' => [
-                    ['role'=>'system','content'=>'Верни строго JSON с ключами prompt,languages,regions,sources.'],
-                    ['role'=>'user','content'=>$userPrompt]
-                ],
-                $tokenParamName => min($outTokens+400, 2000)
-            ];
-            $chT = curl_init($requestUrl);
-            curl_setopt_array($chT,[
-                CURLOPT_POST=>true,
-                CURLOPT_HTTPHEADER=>$requestHeaders,
-                CURLOPT_POSTFIELDS=>json_encode($thirdPayload, JSON_UNESCAPED_UNICODE),
-                CURLOPT_RETURNTRANSFER=>true,
-                CURLOPT_TIMEOUT=>90,
-                CURLOPT_HEADER=>true
-            ]);
-            $respT = curl_exec($chT);
-            $infoT = curl_getinfo($chT);
-            $statusT = (int)($infoT['http_code']??0);
-            $headerSizeT = (int)($infoT['header_size']??0);
-            $bodyT = substr((string)$respT,$headerSizeT);
-            curl_close($chT);
-            if ($statusT===200) {
-                $dataT = json_decode($bodyT,true);
-                $cT = $dataT['choices'][0]['message']['content'] ?? '';
-                if (preg_match('~```(json)?\s*(.+?)```~is', $cT, $mmm)) { $cT = $mmm[2]; }
-                $cT = trim($cT);
-                if ($cT!=='') { $content = $cT; app_log('info','smart_wizard','Third attempt success',['len'=>strlen($cT)]); }
-                else { app_log('warning','smart_wizard','Third attempt still empty',[]); }
-            } else {
-                app_log('error','smart_wizard','Third attempt failed',['status'=>$statusT,'body_preview'=>substr($bodyT,0,200)]);
+        if ($content === '' && preg_match('~\{[^\n]*?"~u', $rawBody)) {
+            // Пытаемся вытащить первый JSON-объект
+            if (preg_match('{\{(?:[^{}]|(?R))*\}}u', $rawBody, $m)) {
+                $test = $m[0];
+                if (json_decode($test,true)) $content = $test;
             }
         }
+        if ($content !== '' && preg_match('~```(json)?\s*(.+?)```~is',$content,$mm)) {
+            $content = trim($mm[2]);
+        }
+        return [$content,$finishReason];
+    };
+
+    $responseData = json_decode($body, true) ?: [];
+    [$content,$finishReason] = $extractContent($responseData, $body);
+
+    $needsCompactRetry = ($content === '' || $finishReason === 'length' || stripos($finishReason,'incomplete')!==false);
+
+    if ($needsCompactRetry) {
+        $compactSystem = $step==='clarify'
+            ? 'Верни СРАЗУ КОРОТКИЙ JSON {"questions":[],"auto_detected":{"languages":[],"regions":[]},"recommendations":[]} без рассуждений. НИКАКОГО текста вне JSON.'
+            : 'Выведи СРАЗУ только JSON {"prompt":...,"languages":[],"regions":[],"sources":[]} без пояснений.';
+        $compactPayload = $buildPayload(min($initialTokens*2, $step==='clarify'?600:1200), false, $compactSystem, $userPrompt, $schema);
+        $compactPayload['temperature'] = 0;
+        [$status2,$body2,$err2] = $doRequest($compactPayload);
+        app_log('warning','smart_wizard','Compact retry',[ 'step'=>$step,'status'=>$status2,'len'=>strlen($body2) ]);
+        if ($status2===200) {
+            $responseData2 = json_decode($body2,true) ?: [];
+            [$content2,$finishReason2] = $extractContent($responseData2,$body2);
+            if ($content2 !== '') { $content = $content2; $finishReason = $finishReason2; $responseData = $responseData2; }
+        }
     }
-    
-    $result = $content !== '' ? json_decode($content, true) : null;
-    
+
+    // Третий (финальный) сверх-минимальный fallback при пустоте
+    if ($content === '') {
+        $miniSystem = $step==='clarify'
+            ? 'Только JSON {"questions":[],"auto_detected":{"languages":[],"regions":[]},"recommendations":[]}.'
+            : 'Только JSON {"prompt":...,"languages":[],"regions":[],"sources":[]}.';
+        $miniPayload = $buildPayload(200,false,$miniSystem,$userPrompt,$schema);
+        [$st3,$b3,$e3] = $doRequest($miniPayload);
+        if ($st3===200) {
+            $rd3 = json_decode($b3,true) ?: [];
+            [$c3,$fr3] = $extractContent($rd3,$b3);
+            if ($c3!=='') { $content = $c3; $finishReason = $fr3; $responseData = $rd3; app_log('info','smart_wizard','Mini fallback success',[ 'step'=>$step,'len'=>strlen($c3) ]); }
+        }
+    }
+
+    // === Разбор JSON ===
+    $result = null;
+    if ($content !== '') { $result = json_decode(trim($content), true); }
+
     if (!$result) {
-        $extracted = null;
-        if (preg_match('{\{(?:[^{}]|(?R))*\}}u', $body, $mm)) {
-            $candidate = $mm[0];
-            $decoded = json_decode($candidate, true);
-            if (is_array($decoded)) { $extracted = $decoded; $result = $decoded; $content = $candidate; }
-        }
-        if (!$result && $rawContentForLog !== '' && $rawContentForLog !== $content) {
-            $decoded = json_decode($rawContentForLog, true);
-            if (is_array($decoded)) { $result = $decoded; }
-        }
-        if (!$result) {
-            app_log('error', 'smart_wizard', 'Failed to parse JSON content', [
-                'content_preview' => mb_substr($content,0,400),
-                'raw_message_node' => $msgNode,
-                'body_preview' => mb_substr($body,0,800)
-            ]);
-            return ['ok' => false, 'error' => 'Не удалось разобрать ответ ИИ (пустой или не-JSON). Повторите еще раз.'];
+        if ($step === 'clarify') {
+            app_log('error','smart_wizard','Clarify model empty, using heuristic fallback',[]);
+            // Пойдём в эвристический fallback ниже (как будто пустой результат)
+        } else {
+            app_log('error','smart_wizard','Generate failed empty content',[ 'finish_reason'=>$finishReason ]);
+            return ['ok'=>false,'error'=>'Модель вернула пустой ответ. Повторите попытку.'];
         }
     }
-    
-    // === Санитизация (clarify): удаляем вопросы про источники/каналы, даже если модель их вернула ===
-    if ($step === 'clarify' && is_array($result)) {
-        $srcPattern = '~(источн|source|форум|forums?|telegram|соц|social|news|review)~iu';
-        if (isset($result['questions']) && is_array($result['questions'])) {
-            $cleanQ = [];
-            foreach ($result['questions'] as $q) {
-                if (!is_array($q) || empty($q['question'])) continue;
-                $questionText = trim((string)$q['question']);
-                if ($questionText === '') continue;
-                if (preg_match($srcPattern, $questionText)) {
-                    continue; // пропускаем вопросы про источники
-                }
-                // Фильтруем options
-                if (isset($q['options']) && is_array($q['options'])) {
-                    $opts = [];
-                    foreach ($q['options'] as $opt) {
-                        if (is_string($opt) && !preg_match($srcPattern, $opt)) {
-                            $opts[] = $opt;
-                        }
-                    }
-                    $q['options'] = $opts;
-                }
-                $cleanQ[] = $q;
-            }
-            $result['questions'] = array_values($cleanQ);
-        }
-        if (isset($result['recommendations']) && is_array($result['recommendations'])) {
-            $result['recommendations'] = array_values(array_filter($result['recommendations'], function($r) use ($srcPattern){
-                return is_string($r) ? !preg_match($srcPattern,$r) : false;
-            }));
-        }
-    }
-    
-    if ($step === 'clarify') {
-        // Fallback: если модель не задала вопросов, но ввод размытый — генерируем базовый набор
+
+    // === Clarify: эвристический fallback, если нет/пусто ===
+    if ($step==='clarify') {
+        if (!is_array($result)) { $result = []; }
         $questions = $result['questions'] ?? [];
-        $auto = $result['auto_detected'] ?? [
-            'languages' => [], 'regions' => [] // удалили sources из fallback
-        ];
-        // NEW: Расширенное определение языков/регионов по словам (рус/eng названия)
+        $auto = $result['auto_detected'] ?? ['languages'=>[], 'regions'=>[]];
+
+        // Языки / регионы auto-detect эвристикой
         $lowerInput = mb_strtolower($userInput);
-        $langNameMap = [
-            'русск' => 'ru', 'российск' => 'ru', 'russian' => 'ru',
-            'англ' => 'en', 'english' => 'en', 'английск' => 'en',
-            'украин' => 'uk', 'ukrain' => 'uk',
-            'польш' => 'pl', 'polish' => 'pl',
-            'немец' => 'de', 'german' => 'de',
-            'франц' => 'fr', 'french' => 'fr',
-            'испан' => 'es', 'spanish' => 'es'
-        ];
-        $regionNameMap = [
-            'росси' => 'RU', 'russia' => 'RU',
-            'украин' => 'UA', 'ukrain' => 'UA',
-            'польш' => 'PL', 'poland' => 'PL',
-            'герман' => 'DE', 'german' => 'DE',
-            'франц' => 'FR', 'france' => 'FR',
-            'испан' => 'ES', 'spain' => 'ES',
-            'итал' => 'IT', 'italy' => 'IT',
-            'сша' => 'US', 'usa' => 'US', 'америк' => 'US', 'united states' => 'US',
-            'великобрит' => 'GB', 'united kingdom' => 'GB', 'uk ' => 'GB', 'англи' => 'GB'
-        ];
-        $detectedByNameLang = [];
-        foreach ($langNameMap as $frag => $code) {
-            if (mb_strpos($lowerInput, $frag) !== false) { $detectedByNameLang[] = $code; }
-        }
-        $detectedByNameRegion = [];
-        foreach ($regionNameMap as $frag => $code) {
-            if (mb_strpos($lowerInput, $frag) !== false) { $detectedByNameRegion[] = $code; }
-        }
-        if ($detectedByNameLang) {
-            $auto['languages'] = array_values(array_unique(array_merge($auto['languages'] ?? [], $detectedByNameLang)));
-        }
-        if ($detectedByNameRegion) {
-            $auto['regions'] = array_values(array_unique(array_merge($auto['regions'] ?? [], $detectedByNameRegion)));
-        }
-        $hasLangCode = preg_match('~\b(ru|en|uk|pl|de|fr|es)\b~i', $userInput);
-        $hasRegionCode = preg_match('~\b(UA|RU|PL|DE|US|GB|FR|ES|IT)\b~i', $userInput);
+        $langNameMap = [ 'русск'=>'ru','российск'=>'ru','russian'=>'ru','англ'=>'en','english'=>'en','английск'=>'en','украин'=>'uk','ukrain'=>'uk','польш'=>'pl','polish'=>'pl','немец'=>'de','german'=>'de','франц'=>'fr','french'=>'fr','испан'=>'es','spanish'=>'es' ];
+        $regionNameMap = [ 'росси'=>'RU','russia'=>'RU','украин'=>'UA','ukrain'=>'UA','польш'=>'PL','poland'=>'PL','герман'=>'DE','german'=>'DE','франц'=>'FR','france'=>'FR','испан'=>'ES','spain'=>'ES','итал'=>'IT','italy'=>'IT','сша'=>'US','usa'=>'US','америк'=>'US','united states'=>'US','великобрит'=>'GB','united kingdom'=>'GB','uk '=>'GB','англи'=>'GB' ];
+        foreach ($langNameMap as $frag=>$code) if (mb_strpos($lowerInput,$frag)!==false) $auto['languages'][]=$code;
+        foreach ($regionNameMap as $frag=>$code) if (mb_strpos($lowerInput,$frag)!==false) $auto['regions'][]=$code;
+        $auto['languages'] = array_values(array_unique(array_filter($auto['languages'],fn($l)=>preg_match('~^[a-z]{2}$~',$l))));
+        $auto['regions'] = array_values(array_unique(array_filter($auto['regions'],fn($r)=>preg_match('~^[A-Z]{2}$~',$r))));
+
+        $hasLangCode = preg_match('~\b(ru|en|uk|pl|de|fr|es)\b~i',$userInput);
+        $hasRegionCode = preg_match('~\b(UA|RU|PL|DE|US|GB|FR|ES|IT)\b~i',$userInput);
         $needsLang = !$hasLangCode && empty($auto['languages']);
         $needsRegion = !$hasRegionCode && empty($auto['regions']);
-        $needsTime = !preg_match('~(последн|дней|недел|месяц|месяцев|год|202[0-9]|20[1-2][0-9])~ui', $userInput);
-        $tooKeywordy = count($questions) === 0;
-        // Убираем логику по источникам полностью, не формируем вопрос про источники
-        if ($tooKeywordy && ($needsLang || $needsRegion || $needsTime)) {
+        $needsTime = !preg_match('~(последн|дней|недел|месяц|месяцев|год|202[0-9]|20[1-2][0-9])~ui',$userInput);
+
+        if (empty($questions) && ($needsLang || $needsRegion || $needsTime)) {
             $questions = [];
-            if ($needsLang) {
-                $questions[] = [
-                    'question' => 'Какие языки мониторить? (коды)',
-                    'type' => 'multiple',
-                    'options' => ['ru','en','uk','pl','de','fr','es']
-                ];
-            }
-            if ($needsRegion) {
-                $questions[] = [
-                    'question' => 'Какие регионы / страны важны? (коды)',
-                    'type' => 'multiple',
-                    'options' => ['RU','UA','PL','DE','US','GB']
-                ];
-            }
-            if ($needsTime) {
-                $questions[] = [
-                    'question' => 'Какой временной диапазон анализировать?',
-                    'type' => 'single',
-                    'options' => ['30d','90d','6m','12m']
-                ];
-            }
-            $result['recommendations'] = $result['recommendations'] ?? [];
-            $result['recommendations'][] = 'Уточнены базовые параметры (языки, регионы, период)';
-            app_log('info','smart_wizard','Injected fallback clarify questions (no sources, enhanced detect)',[
-                'needsLang'=>$needsLang,
-                'needsRegion'=>$needsRegion,
-                'needsTime'=>$needsTime,
-                'auto_langs'=>$auto['languages'],
-                'auto_regions'=>$auto['regions']
-            ]);
+            if ($needsLang) $questions[] = ['question'=>'Какие языки мониторить? (коды)','type'=>'multiple','options'=>['ru','en','uk','pl','de','fr','es']];
+            if ($needsRegion) $questions[] = ['question'=>'Какие регионы / страны важны? (коды)','type'=>'multiple','options'=>['RU','UA','PL','DE','US','GB']];
+            if ($needsTime) $questions[] = ['question'=>'Какой временной диапазон анализировать?','type'=>'single','options'=>['30d','90d','6m','12m']];
+            $recs = $result['recommendations'] ?? [];
+            $recs[] = 'Добавлены базовые вопросы (языки, регионы, период)';
+            app_log('info','smart_wizard','Injected heuristic questions',[ 'needsLang'=>$needsLang,'needsRegion'=>$needsRegion,'needsTime'=>$needsTime ]);
+            return [ 'ok'=>true, 'step'=>'clarify', 'questions'=>$questions, 'auto_detected'=>$auto, 'recommendations'=>$recs ];
         }
-        return [
-            'ok' => true,
-            'step' => 'clarify',
-            'questions' => $questions,
-            'auto_detected' => $auto,
-            'recommendations' => $result['recommendations'] ?? []
-        ];
-    } else {
-        // Этап 2: Генерация финального промпта
-        // Источники (forums, telegram, social, news, reviews) НЕ должны быть в prompt — они задаются отдельно.
-        $schema = [
-            'type' => 'object',
-            'properties' => [
-                'prompt' => ['type' => 'string'],
-                'languages' => ['type' => 'array','items' => ['type' => 'string']],
-                'regions' => ['type' => 'array','items' => ['type' => 'string']],
-                'sources' => ['type' => 'array','items' => ['type' => 'string']],
-                'reasoning' => ['type' => 'string']
-            ],
-            'required' => ['prompt','languages','regions','sources'],
-            'additionalProperties' => false
-        ];
-        $systemPrompt = "Сформируй финальный JSON.\nprompt: сжатый, точный, включает: цель мониторинга, ключевые бренды/термины/синонимы, релевантные аспекты (например: отзывы, баги, сравнения, запросы пользователей), временной фокус (если был), исключения (если были). НЕ добавляй перечисление типов источников (forums, telegram, social, news, reviews) внутрь текста prompt. Не добавляй служебных пояснений.\nlanguages: ISO 639-1 lower-case (только упомянутые или подтверждённые).\nregions: ISO 3166-1 alpha-2 upper-case (только упомянутые или подтверждённые).\nsources: просто массив (если переданы или подразумеваются), НО НЕ включай их в сам prompt. Если нет данных — пустой массив.\nreasoning: кратко почему так структурирован prompt (может быть опущено моделью).\nСтрого JSON без текста вне.";
-        $userPrompt = $userInput;
+        // Санитизация вопросов (убрать источники)
+        $srcPattern = '~(источн|source|форум|forums?|telegram|соц|social|news|review)~iu';
+        $cleanQ=[]; foreach ($questions as $q){ if(!is_array($q)||empty($q['question'])) continue; if (preg_match($srcPattern,$q['question'])) continue; if(isset($q['options'])&&is_array($q['options'])) $q['options']=array_values(array_filter($q['options'],fn($o)=>!preg_match($srcPattern,$o))); $cleanQ[]=$q; }
+        $recs = array_values(array_filter(($result['recommendations'] ?? []),fn($r)=>is_string($r)&&!preg_match($srcPattern,$r)));
+        return [ 'ok'=>true,'step'=>'clarify','questions'=>$cleanQ,'auto_detected'=>$auto,'recommendations'=>$recs ];
     }
-    
-    // Нормализация кодов
-    $normLangs = [];
-    foreach (($result['languages'] ?? []) as $l) {
-        $l = strtolower(trim($l));
-        if (preg_match('~^[a-z]{2}$~', $l)) $normLangs[] = $l;
+
+    // === Generate ===
+    if (!is_array($result)) {
+        return ['ok'=>false,'error'=>'Не удалось разобрать JSON финального шага'];
     }
-    $normLangs = array_values(array_unique($normLangs));
-    $normRegs = [];
-    foreach (($result['regions'] ?? []) as $r) {
-        $r = strtoupper(trim($r));
-        if (preg_match('~^[A-Z]{2}$~', $r)) $normRegs[] = $r;
-    }
-    $normRegs = array_values(array_unique($normRegs));
+    $normLangs=[]; foreach (($result['languages']??[]) as $l){ $l=strtolower(trim($l)); if(preg_match('~^[a-z]{2}$~',$l)) $normLangs[]=$l; } $normLangs=array_values(array_unique($normLangs));
+    $normRegs=[]; foreach (($result['regions']??[]) as $r){ $r=strtoupper(trim($r)); if(preg_match('~^[A-Z]{2}$~',$r)) $normRegs[]=$r; } $normRegs=array_values(array_unique($normRegs));
     $promptText = trim($result['prompt'] ?? '');
-    if ($promptText === '') {
-        // Поиск prompt рекурсивно
-        $stack = [$result];
-        while ($stack) { $node = array_pop($stack); if (is_array($node)) { foreach ($node as $k=>$v){ if (is_string($k)&&strtolower($k)==='prompt'&&is_string($v)&&trim($v)!==''){ $promptText = trim($v); break 2;} if (is_array($v)) $stack[]=$v; } } }
+    if ($promptText==='') {
+        // попытка найти глубже
+        $stack=[$result];
+        while($stack && $promptText===''){ $node=array_pop($stack); if(is_array($node)) foreach($node as $k=>$v){ if(is_string($k)&&strtolower($k)==='prompt'&&is_string($v)&&trim($v)!==''){ $promptText=trim($v); break; } if(is_array($v)) $stack[]=$v; }}
     }
-    if ($promptText === '') {
-        app_log('error','smart_wizard','Empty prompt extracted after normalization',[ 'keys'=>array_keys($result)]);
-        return ['ok'=>false,'error'=>'ИИ вернул пустой промпт. Повторите еще раз.'];
+    if ($promptText==='') {
+        app_log('error','smart_wizard','Empty prompt after generate',[]);
+        return ['ok'=>false,'error'=>'ИИ вернул пустой prompt'];
     }
-    if ($step === 'generate') {
-        // Дополнительная фильтрация: удаляем из prompt перечисления источников, если модель их всё же вставила
-        $originalPrompt = $promptText;
-        // Удаляем скобочные блоки, содержащие только источники
-        $promptText = preg_replace('~\((?:[^()]*?(?:forums?|telegram|социальн(?:ые|ых)|social|news|reviews?)[^()]*)\)~iu','',$promptText);
-        // Удаляем явные фразы вида "источники: ..."
-        $promptText = preg_replace('~(?:источники|sources)\s*:\s*[^;,.]+~iu','',$promptText);
-        // Удаляем одиночные упоминания источников в конце
-        $promptText = preg_replace('~\b(forums?|telegram|social media|social networks?|news sites?|review sites?|reviews)\b~iu','', $promptText);
-        $promptText = preg_replace('~\s{2,}~u',' ', trim($promptText));
-        if ($originalPrompt !== $promptText) {
-            app_log('info','smart_wizard','Stripped sources from prompt',[ 'before'=>$originalPrompt, 'after'=>$promptText ]);
-        }
-    }
+    // Удаляем перечисления источников если просочились
+    $originalPrompt=$promptText;
+    $promptText = preg_replace('~\((?:[^()]*?(?:forums?|telegram|социальн(?:ые|ых)|social|news|reviews?)[^()]*)\)~iu','',$promptText);
+    $promptText = preg_replace('~(?:источники|sources)\s*:\s*[^;,.]+~iu','',$promptText);
+    $promptText = preg_replace('~\b(forums?|telegram|social media|social networks?|news sites?|review sites?|reviews)\b~iu','',$promptText);
+    $promptText = preg_replace('~\s{2,}~u',' ',trim($promptText));
+    if ($originalPrompt!==$promptText) app_log('info','smart_wizard','Stripped sources from prompt',[ 'before'=>$originalPrompt,'after'=>$promptText ]);
+
     return [
-        'ok' => true,
-        'step' => 'generate',
-        'prompt' => $promptText,
-        'languages' => $normLangs,
-        'regions' => $normRegs,
-        'sources' => $result['sources'] ?? [],
-        'reasoning' => $result['reasoning'] ?? ''
+        'ok'=>true,
+        'step'=>'generate',
+        'prompt'=>$promptText,
+        'languages'=>$normLangs,
+        'regions'=>$normRegs,
+        'sources'=>$result['sources'] ?? [],
+        'reasoning'=>$result['reasoning'] ?? ''
     ];
 }
