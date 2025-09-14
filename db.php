@@ -630,8 +630,8 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         ? '{"questions":[],"auto_detected":{"languages":[],"regions":[]},"recommendations":[]}'
         : '{"prompt":"...","languages":[],"regions":[],"sources":[]}';
     $chatSystem = $step==='clarify'
-        ? 'Ты помощник. Верни СТРОГО один JSON без текста вне него по форме '+$jsonShape+'. Вопросы только если реально нужны.'
-        : 'Верни СТРОГО один JSON по форме '+$jsonShape+' без пояснений вне JSON. Не перечисляй источники внутри prompt.';
+        ? 'Ты помощник. Верни СТРОГО один JSON без текста вне него по форме ' . $jsonShape . '. Вопросы только если реально нужны.'
+        : 'Верни СТРОГО один JSON по форме ' . $jsonShape . ' без пояснений вне JSON. Не перечисляй источники внутри prompt.';
     $chatMessages = [
         ['role'=>'system','content'=>$chatSystem],
         ['role'=>'user','content'=>$userInput]
