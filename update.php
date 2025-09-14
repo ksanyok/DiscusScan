@@ -57,11 +57,12 @@ $releaseNotes=[]; foreach($releases as $r){ if(!empty($r['tag_name'])) $releaseN
 
 try { $tagsRaw = fetch_tags($tagsApiUrl,$tagsCacheFile); } catch(Throwable $e){ $tagsRaw=[]; }
 foreach($tagsRaw as $tRow){ if(!isset($tRow['name'])) continue; $n=$tRow['name']; $tags[]=$n; }
-// Стабильные: строгий семвер X.Y.Z (без префиксов / суффиксов)
-foreach($tags as $t){ if(preg_match('~^\d+\.\d+\.\d+$~',$t)) $stableTags[]=$t; }
-// Сортировка стабильных по убыванию версии
-usort($stableTags,function($a,$b){ return version_compare($b,$a); });
-$latestStable = $stableTags[0] ?? null;
+// Стабильные: строгий семвер X.Y.Z с необязательным префиксом v
+$stableTags = []; // теперь массив вида [['tag'=>'v1.3.5','ver'=>'1.3.5'], ...]
+foreach($tags as $t){ if(preg_match('~^v?(\d+\.\d+\.\d+)$~',$t,$m)) $stableTags[]=['tag'=>$t,'ver'=>$m[1]]; }
+// Сортировка по нормализованной версии (ver)
+usort($stableTags,function($a,$b){ return version_compare($b['ver'],$a['ver']); });
+$latestStable = $stableTags[0]['tag'] ?? null;
 
 $updateType = $_POST['update_type'] ?? 'branch'; // branch|tag
 $selectedTag = $_POST['tag_name'] ?? '';
@@ -253,7 +254,9 @@ if (is_file($versionFile)) {
   <h1 style="margin-top:4px;margin-bottom:14px;">Обновление DiscusScan</h1>
   <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
     <span class="version-badge ver-local">Текущая: v<?=e($localVersion)?></span>
-    <?php if($latestStable): ?><span class="version-badge ver-remote">Последняя стабильная: v<?=e($latestStable)?></span><?php endif; ?>
+    <?php if($latestStable): $latestStableLabel = strpos($latestStable,'v')===0 ? $latestStable : ('v'.$latestStable); ?>
+      <span class="version-badge ver-remote">Последняя стабильная: <?=e($latestStableLabel)?></span>
+    <?php endif; ?>
     <?php if(isset($remoteVersionFound) && $remoteVersionFound): ?><span class="version-badge">Удалённая выбрана: v<?=e($remoteVersionFound)?></span><?php endif; ?>
   </div>
   <?php if ($message): ?>
@@ -269,7 +272,7 @@ if (is_file($versionFile)) {
         <div style="margin:10px 0 14px 4px;">
           <select name="tag_name" id="tagSelect" style="max-width:300px;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:#0f1733;color:#fff;" <?= $updateType==='tag'?'':'disabled'?>>
             <option value="">— выбрать тег —</option>
-            <?php foreach($stableTags as $t): ?>
+            <?php foreach($stableTags as $st): $t=$st['tag']; $ver=$st['ver']; ?>
               <option value="<?=e($t)?>" data-notes="<?= e(substr($releaseNotes[$t] ?? '',0,800)) ?>" <?= $t===$selectedTag?'selected':''?>><?=e($t)?><?=$t===$latestStable?'  • latest':''?></option>
             <?php endforeach; ?>
           </select>
@@ -279,7 +282,8 @@ if (is_file($versionFile)) {
           <input type="checkbox" name="force" value="1" <?= !empty($_POST['force'])?'checked':''?>> Принудительно (перезаписать даже если версия не новее)
         </label>
         <div class="submit-row">
-          <button type="submit" class="btn primary" style="min-width:180px;">Обновить → <?=e($updateType==='tag' && $selectedTag? ('v'.$selectedTag): 'Beta')?></button>
+          <?php $btnTagLabel = ($updateType==='tag' && $selectedTag) ? (strpos($selectedTag,'v')===0 ? $selectedTag : 'v'.$selectedTag) : 'Beta'; ?>
+          <button type="submit" class="btn primary" style="min-width:180px;">Обновить → <?=e($btnTagLabel)?></button>
           <div class="diff-info" id="diffInfo">&nbsp;</div>
         </div>
       </form>
@@ -299,9 +303,9 @@ if (is_file($versionFile)) {
       <hr style="margin:18px 0;border:none;border-top:1px solid var(--border);opacity:.4;">
       <h2 style="margin:0 0 12px;font-size:16px;">Последние стабильные</h2>
       <ul class="tags-list" id="tagsList">
-        <?php foreach(array_slice($stableTags,0,10) as $t): ?>
+        <?php foreach(array_slice($stableTags,0,10) as $st): $t=$st['tag']; ?>
           <li class="<?= $t===$selectedTag? 'active':''?>" data-tag="<?=e($t)?>" data-notes="<?= e(substr($releaseNotes[$t] ?? '',0,1200)) ?>">
-            <div class="tag-head"><span class="tag-name">v<?=e($t)?></span><span class="tag-meta"><?= $t===$latestStable?'latest':''?></span></div>
+            <div class="tag-head"><span class="tag-name"><?= strpos($t,'v')===0? e($t) : 'v'.e($t) ?></span><span class="tag-meta"><?= $t===$latestStable?'latest':''?></span></div>
             <?php if(!empty($releaseNotes[$t])): ?><div class="rel-notes" style="max-height:90px;"><?= nl2br(e(mb_substr($releaseNotes[$t],0,500))) ?></div><?php else: ?><div class="rel-notes" style="background:transparent;padding:0;color:var(--muted);">(нет заметок)</div><?php endif; ?>
             <div><button type="button" class="btn tiny" data-choose-tag="<?=e($t)?>">Выбрать</button></div>
           </li>
