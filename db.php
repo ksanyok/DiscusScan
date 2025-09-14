@@ -787,7 +787,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $infoR = curl_getinfo($chR);
         $statusR = (int)($infoR['http_code'] ?? 0);
         $headerSizeR = (int)($infoR['header_size'] ?? 0);
-        $bodyR = substr((string)$respR, $headerSize);
+        $bodyR = substr((string)$respR, $headerSizeR); // FIX: ранее использовался $headerSize
         $curlErrR = curl_error($chR);
         curl_close($chR);
         if ($statusR === 200) { $status = 200; $body = $bodyR; $curlErr = $curlErrR; }
@@ -831,36 +831,8 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         }
     }
     
-    app_log('info', 'smart_wizard', 'OpenAI request', [
-        'step' => $step,
-        'status' => $status,
-        'user_input_length' => strlen($userInput),
-        'response_length' => strlen($body)
-    ]);
-    
-    if ($status !== 200) {
-        $errorDetails = [
-            'status' => $status,
-            'curl_error' => $curlErr,
-            'body_preview' => substr($body, 0, 500)
-        ];
-        app_log('error', 'smart_wizard', 'OpenAI request failed', $errorDetails);
-        
-        $hint = '';
-        if (strpos($body, 'Invalid schema') !== false) {
-            $hint = 'Похоже, что OpenAI ожидает все свойства в required при strict=true. Мы обновили схему.';
-        }
-        
-        return [
-            'ok' => false,
-            'error' => "Ошибка запроса к OpenAI (код $status). Проверьте API ключ и интернет-соединение.",
-            'details' => $errorDetails,
-            'hint' => $hint
-        ];
-    }
-    
     $responseData = json_decode($body, true);
-    if (!$responseData || !isset($responseData['choices'][0]['message']['content'])) {
+    if (!$responseData || !isset($responseData['choices'][0]['message'])) { // ослабляем проверку: достаточно наличия message
         app_log('error', 'smart_wizard', 'Invalid OpenAI response format', ['body' => $body]);
         return ['ok' => false, 'error' => 'Некорректный формат ответа от OpenAI'];
     }
@@ -888,6 +860,51 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $content = $m[2];
     }
     $content = trim($content);
+    
+    if ($step === 'clarify' && ($finishReason === 'length' || trim($content) === '')) {
+        app_log('warning','smart_wizard','Truncated clarify content, retrying with higher token limit',[ 'finish_reason'=>$finishReason, 'old_limit'=>$outTokens ]);
+        $retryLimit = min($outTokens * 2, 1600);
+        $payloadRetry = $buildPayload($tokenParamName, $retryLimit);
+        // Убираем strict чтобы снизить риск повторного обрезания
+        if (isset($payloadRetry['response_format']['json_schema']['strict'])) {
+            $payloadRetry['response_format']['json_schema']['strict'] = false;
+        }
+        $chC = curl_init($requestUrl);
+        curl_setopt_array($chC,[
+            CURLOPT_POST=>true,
+            CURLOPT_HTTPHEADER=>$requestHeaders,
+            CURLOPT_POSTFIELDS=>json_encode($payloadRetry, JSON_UNESCAPED_UNICODE),
+            CURLOPT_RETURNTRANSFER=>true,
+            CURLOPT_TIMEOUT=>$timeout,
+            CURLOPT_HEADER=>true
+        ]);
+        $respC = curl_exec($chC);
+        $infoC = curl_getinfo($chC);
+        $statusC = (int)($infoC['http_code'] ?? 0);
+        $headerSizeC = (int)($infoC['header_size'] ?? 0);
+        $bodyC = substr((string)$respC, $headerSizeC);
+        curl_close($chC);
+        if ($statusC === 200) {
+            $dataC = json_decode($bodyC, true);
+            $msgNodeC = $dataC['choices'][0]['message'] ?? [];
+            $contentC = '';
+            if (isset($msgNodeC['content']) && is_string($msgNodeC['content'])) {
+                $contentC = $msgNodeC['content'];
+            } elseif (isset($msgNodeC['content']) && is_array($msgNodeC['content'])) {
+                foreach ($msgNodeC['content'] as $part) { if (is_array($part) && isset($part['text'])) $contentC .= $part['text']; }
+            }
+            if ($contentC !== '') {
+                if (preg_match('~```(json)?\s*(.+?)```~is', $contentC, $mmC)) { $contentC = $mmC[2]; }
+                $content = trim($contentC);
+                app_log('info','smart_wizard','Clarify retry success',['new_limit'=>$retryLimit,'len'=>strlen($content)]);
+                $responseData = $dataC; // обновляем для последующих шагов
+            } else {
+                app_log('error','smart_wizard','Clarify retry still empty',['status'=>$statusC,'body_preview'=>substr($bodyC,0,300)]);
+            }
+        } else {
+            app_log('error','smart_wizard','Clarify retry failed',['status'=>$statusC,'body_preview'=>substr($bodyC,0,300)]);
+        }
+    }
     
     // Fallback: для generate если контент пустой или finish_reason=length
     if ($step === 'generate' && (trim($content)==='' || $finishReason==='length')) {
