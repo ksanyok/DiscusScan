@@ -569,6 +569,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         'Authorization: Bearer ' . $apiKey,
         'Expect:'
     ];
+    $result = null; // init to avoid undefined variable and allow later fallbacks to populate
 
     // --- Определяем схему и подсказки ---
     if ($step === 'clarify') {
@@ -614,11 +615,11 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'sources' => ['type' => 'array','items' => ['type' => 'string']],
                 'reasoning' => ['type' => 'string']
             ],
-            // Добавили reasoning чтобы удовлетворить требование strict (хотя strict отключим)
-            'required' => ['prompt','languages','regions','sources','reasoning'],
+            // reasoning больше НЕ в required чтобы не провоцировать обрезку
+            'required' => ['prompt','languages','regions','sources'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Сформируй финальный JSON. prompt: цель мониторинга, ключевые термины/синонимы, аспекты (отзывы, баги, сравнения и т.п.), временной фокус (если был), исключения. НЕ перечисляй источники внутри текста prompt. languages: ISO 639-1. regions: ISO 3166-1 alpha-2. sources: массив (если извлечены). Без текста вне JSON. reasoning: краткое объяснение (1-2 фразы).";
+        $systemPrompt = "Сформируй финальный JSON. prompt: цель мониторинга, ключевые термины/синонимы, аспекты (отзывы, баги, сравнения и т.п.), временной фокус (если был), исключения. НЕ перечисляй источники внутри текста prompt. languages: ISO 639-1. regions: ISO 3166-1 alpha-2. sources: массив (если извлечены). Без текста вне JSON. reasoning (необязательно): краткое объяснение.";
         $userPrompt = $userInput;
     }
 
@@ -731,12 +732,17 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $compactSystem = $step==='clarify'
             ? 'Верни СРАЗУ КОРОТКИЙ JSON {"questions":[],"auto_detected":{"languages":[],"regions":[]},"recommendations":[]} без рассуждений. НИКАКОГО текста вне JSON.'
             : 'Выведи СРАЗУ только JSON {"prompt":...,"languages":[],"regions":[],"sources":[]} без пояснений.';
-        $compactPayload = $buildPayload(min($initialTokens*2, $step==='clarify'?600:1200), false, $compactSystem, $userPrompt, $schema);
+        $compactPayload = $buildPayload(min($initialTokens*2, $step==='clarify'?600:1000), false, $compactSystem, $userPrompt, $schema);
         [$status2,$body2,$err2] = $doRequest($compactPayload);
         app_log('warning','smart_wizard','Compact retry',[ 'step'=>$step,'status'=>$status2,'len'=>strlen($body2) ]);
         if ($status2===200) {
             $responseData2 = json_decode($body2,true) ?: [];
             [$content2,$finishReason2] = $extractContent($responseData2,$body2);
+            if ($content2 === '' && $step==='generate') {
+                // Попытка извлечь JSON с ключом "prompt"
+                if (preg_match('{\{[^{}]*"prompt"[^{}]*\}}u',$body2,$mP)) { $test=$mP[0]; if (json_decode($test,true)) $content2=$test; }
+                elseif (preg_match('{\{(?:[^{}]|(?R))*"prompt"(?:[^{}]|(?R))*\}}u',$body2,$mDeep)) { $test=$mDeep[0]; if (json_decode($test,true)) $content2=$test; }
+            }
             if ($content2 !== '') { $content = $content2; $finishReason = $finishReason2; $responseData = $responseData2; }
         }
     }
@@ -751,13 +757,53 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         if ($st3===200) {
             $rd3 = json_decode($b3,true) ?: [];
             [$c3,$fr3] = $extractContent($rd3,$b3);
+            if ($c3==='' && $step==='generate') {
+                if (preg_match('{\{[^{}]*"prompt"[^{}]*\}}u',$b3,$mP2)) { $t2=$mP2[0]; if (json_decode($t2,true)) $c3=$t2; }
+                elseif (preg_match('{\{(?:[^{}]|(?R))*"prompt"(?:[^{}]|(?R))*\}}u',$b3,$mDeep2)) { $t2=$mDeep2[0]; if (json_decode($t2,true)) $c3=$t2; }
+            }
             if ($c3!=='') { $content = $c3; $finishReason = $fr3; $responseData = $rd3; app_log('info','smart_wizard','Mini fallback success',[ 'step'=>$step,'len'=>strlen($c3) ]); }
         }
     }
 
+    if (!$result) {
+        if ($step === 'clarify') {
+            app_log('error','smart_wizard','Clarify model empty, using heuristic fallback',[ 'body_preview'=>mb_substr($body,0,500) ]);
+        } else {
+            // Попытка доп. regex извлечения из исходного body (responseData уже парсили)
+            if (preg_match('{\{[^{}]*"prompt"[^{}]*\}}u',$body,$mmP)) { $cand=$mmP[0]; $tmp=json_decode($cand,true); if(is_array($tmp)) { $result=$tmp; } }
+            if (!$result && preg_match('{\{(?:[^{}]|(?R))*"prompt"(?:[^{}]|(?R))*\}}u',$body,$mmDP)) { $cand=$mmDP[0]; $tmp=json_decode($cand,true); if(is_array($tmp)) { $result=$tmp; } }
+            if (!$result) {
+                // Fallback на chat/completions (многие мини модели всё ещё там стабильно возвращают content)
+                $chatUrl='https://api.openai.com/v1/chat/completions';
+                $chatPayload=[
+                    'model'=>$model,
+                    'messages'=>[
+                        ['role'=>'system','content'=>'Верни строго JSON {"prompt":string,"languages":[...],"regions":[...],"sources":[...]} без пояснений. Источники не перечислять внутри prompt.'],
+                        ['role'=>'user','content'=>$userPrompt]
+                    ],
+                    'max_completion_tokens'=>600
+                ];
+                $chF=curl_init($chatUrl);
+                curl_setopt_array($chF,[
+                    CURLOPT_POST=>true,
+                    CURLOPT_HTTPHEADER=>$requestHeaders,
+                    CURLOPT_POSTFIELDS=>json_encode($chatPayload, JSON_UNESCAPED_UNICODE),
+                    CURLOPT_RETURNTRANSFER=>true,
+                    CURLOPT_TIMEOUT=>60,
+                    CURLOPT_HEADER=>true
+                ]);
+                $respF=curl_exec($chF); $infoF=curl_getinfo($chF); $statusF=(int)($infoF['http_code']??0); $headerSizeF=(int)($infoF['header_size']??0); $bodyF=substr((string)$respF,$headerSizeF); curl_close($chF);
+                if($statusF===200){ $dF=json_decode($bodyF,true); $cF=$dF['choices'][0]['message']['content']??''; if(preg_match('~```(json)?\s*(.+?)```~is',$cF,$mmm)) $cF=$mmm[2]; $cF=trim($cF); $jF=json_decode($cF,true); if(is_array($jF)) { $result=$jF; app_log('info','smart_wizard','Chat fallback success',[ 'len'=>strlen($cF) ]); } else { app_log('warning','smart_wizard','Chat fallback empty',[ 'body_preview'=>mb_substr($bodyF,0,400) ]); } } else { app_log('error','smart_wizard','Chat fallback failed',[ 'status'=>$statusF,'body_preview'=>mb_substr($bodyF,0,400) ]); }
+            }
+            if (!$result) {
+                app_log('error','smart_wizard','Generate failed empty content',[ 'finish_reason'=>$finishReason,'body_preview'=>mb_substr($body,0,500) ]);
+                return ['ok'=>false,'error'=>'Модель вернула пустой ответ (включая fallback). Повторите позже.'];
+            }
+        }
+    }
+
     // === Разбор JSON ===
-    $result = null;
-    if ($content !== '') { $result = json_decode(trim($content), true); }
+    if ($result === null && $content !== '') { $result = json_decode(trim($content), true); }
 
     if (!$result) {
         if ($step === 'clarify') {
