@@ -563,7 +563,7 @@ function notify_new(array $findings): void {
  */
 function processSmartWizard(string $userInput, string $apiKey, string $model, string $step = 'clarify'): array {
     $userInput = mb_substr($userInput, 0, 4000);
-    $requestUrl = 'https://api.openai.com/v1/responses'; // Переход на responses API
+    $requestUrl = 'https://api.openai.com/v1/responses'; // Переход на responses API (используется как fallback)
     $requestHeaders = [
         'Content-Type: application/json',
         'Authorization: Bearer ' . $apiKey,
@@ -623,6 +623,78 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $userPrompt = $userInput;
     }
 
+    // === ПРИОРИТЕТ: chat/completions (устраняет проблему empty reasoning) ===
+    $chatUrl = 'https://api.openai.com/v1/chat/completions';
+    $chatHeaders = [ 'Content-Type: application/json','Authorization: Bearer '.$apiKey,'Expect:' ];
+    $jsonShape = $step==='clarify'
+        ? '{"questions":[],"auto_detected":{"languages":[],"regions":[]},"recommendations":[]}'
+        : '{"prompt":"...","languages":[],"regions":[],"sources":[]}';
+    $chatSystem = $step==='clarify'
+        ? 'Ты помощник. Верни СТРОГО один JSON без текста вне него по форме '+$jsonShape+'. Вопросы только если реально нужны.'
+        : 'Верни СТРОГО один JSON по форме '+$jsonShape+' без пояснений вне JSON. Не перечисляй источники внутри prompt.';
+    $chatMessages = [
+        ['role'=>'system','content'=>$chatSystem],
+        ['role'=>'user','content'=>$userInput]
+    ];
+    $chatPayload = [
+        'model'=>$model,
+        // Используем max_tokens (а не max_completion_tokens) — пустые ответы ранее возникали из-за неподдерживаемого параметра
+        'max_tokens'=>$step==='clarify'?400:900,
+        'messages'=>$chatMessages,
+        'temperature'=>0.1,
+        'response_format'=>['type'=>'json_object']
+    ];
+    $chC = curl_init($chatUrl);
+    curl_setopt_array($chC,[
+        CURLOPT_POST=>true,
+        CURLOPT_HTTPHEADER=>$chatHeaders,
+        CURLOPT_POSTFIELDS=>json_encode($chatPayload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_RETURNTRANSFER=>true,
+        CURLOPT_TIMEOUT=> ($step==='generate'?70:40),
+        CURLOPT_CONNECTTIMEOUT=>10
+    ]);
+    $chatResp = curl_exec($chC);
+    $chatStatus = (int)curl_getinfo($chC, CURLINFO_HTTP_CODE);
+    $chatErr = curl_error($chC);
+    curl_close($chC);
+    if ($chatStatus===200 && $chatResp) {
+        $chatData = json_decode($chatResp, true) ?: [];
+        $chatContent = trim($chatData['choices'][0]['message']['content'] ?? '');
+        if ($chatContent==='') {
+            // regex попытка вытащить JSON
+            if (preg_match('{\{(?:[^{}]|(?R))*\}}u',$chatResp,$mJSON)) $chatContent=$mJSON[0];
+        }
+        if ($chatContent!=='') {
+            if (preg_match('~```(json)?\s*(.+?)```~is',$chatContent,$mBlock)) $chatContent=trim($mBlock[2]);
+            $parsed = json_decode($chatContent,true);
+            if (is_array($parsed)) {
+                app_log('info','smart_wizard','chat_primary_success',[ 'step'=>$step,'len'=>strlen($chatContent) ]);
+                if ($step==='clarify') {
+                    $questions = $parsed['questions'] ?? [];
+                    $auto = $parsed['auto_detected'] ?? ['languages'=>[], 'regions'=>[]];
+                    $recs = $parsed['recommendations'] ?? [];
+                    return ['ok'=>true,'step'=>'clarify','questions'=>$questions,'auto_detected'=>$auto,'recommendations'=>$recs];
+                } else {
+                    $promptText = trim($parsed['prompt'] ?? '');
+                    if ($promptText==='') {
+                        app_log('warning','smart_wizard','chat_primary_empty_prompt',[]);
+                    } else {
+                        $normLangs=[]; foreach (($parsed['languages']??[]) as $l){ $l=strtolower(trim($l)); if(preg_match('~^[a-z]{2}$~',$l)) $normLangs[]=$l; } $normLangs=array_values(array_unique($normLangs));
+                        $normRegs=[]; foreach (($parsed['regions']??[]) as $r){ $r=strtoupper(trim($r)); if(preg_match('~^[A-Z]{2}$~',$r)) $normRegs[]=$r; } $normRegs=array_values(array_unique($normRegs));
+                        return [ 'ok'=>true,'step'=>'generate','prompt'=>$promptText,'languages'=>$normLangs,'regions'=>$normRegs,'sources'=>$parsed['sources']??[], 'reasoning'=>$parsed['reasoning']??'' ];
+                    }
+                }
+            } else {
+                app_log('warning','smart_wizard','chat_primary_non_json',[ 'preview'=>mb_substr($chatContent,0,120) ]);
+            }
+        } else {
+            app_log('warning','smart_wizard','chat_primary_empty_content',[ 'step'=>$step ]);
+        }
+    } else {
+        app_log('warning','smart_wizard','chat_primary_fail',[ 'status'=>$chatStatus,'error'=>$chatErr ]);
+    }
+
+    // === Ниже остаётся предыдущая responses-реализация как резервный путь ===
     $initialTokens = $step === 'clarify' ? 300 : 800;
     $timeout = $step === 'generate' ? 90 : 45;
 
