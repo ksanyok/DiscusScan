@@ -643,8 +643,8 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                     'strict' => $strict
                 ],
                 'verbosity' => 'low'
-            ],
-            'temperature' => 0
+            ]
+            // NOTE: temperature убран — модель не поддерживает
         ];
     };
 
@@ -731,7 +731,6 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             ? 'Верни СРАЗУ КОРОТКИЙ JSON {"questions":[],"auto_detected":{"languages":[],"regions":[]},"recommendations":[]} без рассуждений. НИКАКОГО текста вне JSON.'
             : 'Выведи СРАЗУ только JSON {"prompt":...,"languages":[],"regions":[],"sources":[]} без пояснений.';
         $compactPayload = $buildPayload(min($initialTokens*2, $step==='clarify'?600:1200), false, $compactSystem, $userPrompt, $schema);
-        $compactPayload['temperature'] = 0;
         [$status2,$body2,$err2] = $doRequest($compactPayload);
         app_log('warning','smart_wizard','Compact retry',[ 'step'=>$step,'status'=>$status2,'len'=>strlen($body2) ]);
         if ($status2===200) {
