@@ -106,13 +106,7 @@ if (isset($_GET['ajax'])) {
         $sql2 = "SELECT COUNT(*) FROM links l JOIN sources s ON s.id=l.source_id $where"; $stmt2=pdo()->prepare($sql2); $stmt2->execute($params); $total=(int)$stmt2->fetchColumn();
         json_out(['ok'=>true,'links'=>$rows,'offset'=>$offset,'limit'=>$limit,'total'=>$total]);
     } elseif ($ajax==='candidates') {
-        // FIX: MySQL не поддерживает "NULLS LAST" — используем (first_found IS NULL) сортировку.
-        // Добавлен try/catch чтобы при ошибке SQL не падал весь дашборд.
-        try {
-            $rows = pdo()->query("SELECT s.id,s.host,s.note,s.is_active, MIN(l.first_found) first_found, COUNT(l.id) link_count FROM sources s LEFT JOIN links l ON l.source_id=s.id WHERE s.is_active=0 AND (s.note LIKE '%candidate%' OR s.note LIKE '%cand%') GROUP BY s.id ORDER BY (first_found IS NULL), first_found DESC, s.id DESC LIMIT 100")->fetchAll();
-        } catch (Throwable $e) {
-            $rows = [];
-        }
+        $rows = pdo()->query("SELECT s.id,s.host,s.note,s.is_active, MIN(l.first_found) first_found, COUNT(l.id) link_count FROM sources s LEFT JOIN links l ON l.source_id=s.id WHERE s.is_active=0 AND (s.note LIKE '%candidate%' OR s.note LIKE '%cand%') GROUP BY s.id ORDER BY first_found DESC NULLS LAST, s.id DESC LIMIT 100")->fetchAll();
         json_out(['ok'=>true,'candidates'=>$rows]);
     } else {
         json_out(['ok'=>false,'error'=>'unknown_ajax']);
@@ -305,7 +299,7 @@ function drawSpark(svg, data){ if(!svg) return; const w=svg.clientWidth||160; co
 async function loadScanHistory(){ const r=await fetch('index.php?ajax=scans'); const j=await r.json(); if(!j.ok)return; const tb=document.querySelector('#scanHistoryTbl tbody'); tb.innerHTML=''; j.scans.forEach(s=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${s.id}</td><td>${s.started_at.slice(5,16)}</td><td>${s.finished_at? s.finished_at.slice(5,16):'—'}</td><td>${fmtDuration(s.duration_sec)}</td><td class="${s.new? 'history-new':'history-zero'}">${s.new}</td><td>${s.found}</td><td>${s.status}</td>`; tb.appendChild(tr);}); }
 
 // DAILY TREND
-async function loadDaily(){ const r=await fetch('index.php?ajax=daily'); const j=await r.json(); if(!j.ok)return; const wrap=document.getElementById('dailyGrid'); wrap.innerHTML=''; const max=Math.max(...j.days.map(d=>d.c),1); j.days.forEach(d=>{ const col=document.createElement('div'); col.className='daily-col'; const pct = d.c? ((d.c/max)*100):0; const pctU = d.u? ((d.u/max)*100):0; col.innerHTML=`<div class="day">${d.d.slice(5)}</div><div style="font-size:12px;color:var(--muted)">${d.c} links / ${d.u} dom</div><div class="bar-wrap"><div class="bar" style="height:100%"><span style="height:${pct||4}%;"></span><span class="u" style="height:${pctU||4}%;"></span></div></div>`; wrap.appendChild(col); }); }
+async function loadDaily(){ const r=await fetch('index.php?ajax=daily'); const j=await r.json(); if(!j.ok)return; const wrap=document.getElementById('dailyGrid'); wrap.innerHTML=''; const max=Math.max(...j.days.map(d=>d.c),1); j.days.forEach(d=>{ const col=document.createElement('div'); col.className='daily-col'; const pct = d.c? ((d.c/max)*100):0; col.innerHTML=`<div class="day">${d.d.slice(5)}</div><div style="font-size:12px;color:var(--muted)">${d.c} links / ${d.u} dom</div><div class="bar-wrap"><div class="bar" style="height:100%"><span style="height:${pct||4}%;"></span></div></div>`; wrap.appendChild(col); }); }
 
 // TOP DOMAINS
 async function loadTopDomains(){ const r=await fetch('index.php?ajax=top_domains'); const j=await r.json(); if(!j.ok)return; const tb=document.querySelector('#topDomainsTable tbody'); tb.innerHTML=''; let totalAll= j.domains.reduce((a,b)=>a+parseInt(b.total),0)||1; j.domains.forEach(d=>{ const share = d.total? ((d.total/totalAll)*100):0; const tr=document.createElement('tr'); const status = d.is_active? '✅':'⏸'; tr.innerHTML=`<td><a href="sources.php?source=${d.id}">${escapeHtml(d.host)}</a></td><td>${d.new_24}</td><td>${d.new_7d}</td><td>${d.total}</td><td><div class="dom-bar" style="width:${Math.max(4,share*1.4)}px" title="${share.toFixed(1)}%"></div></td><td>${status}</td>`; tb.appendChild(tr); }); document.getElementById('topDomCount').textContent='('+j.domains.length+')'; // fill domain filter
