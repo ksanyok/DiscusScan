@@ -614,18 +614,19 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'sources' => ['type' => 'array','items' => ['type' => 'string']],
                 'reasoning' => ['type' => 'string']
             ],
-            'required' => ['prompt','languages','regions','sources'],
+            // Добавили reasoning чтобы удовлетворить требование strict (хотя strict отключим)
+            'required' => ['prompt','languages','regions','sources','reasoning'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Сформируй финальный JSON. prompt: цель мониторинга, ключевые термины/синонимы, аспекты (отзывы, баги, сравнения и т.п.), временной фокус (если был), исключения. НЕ перечисляй источники внутри текста prompt. languages: ISO 639-1. regions: ISO 3166-1 alpha-2. sources: массив (если извлечены). Без текста вне JSON.";
+        $systemPrompt = "Сформируй финальный JSON. prompt: цель мониторинга, ключевые термины/синонимы, аспекты (отзывы, баги, сравнения и т.п.), временной фокус (если был), исключения. НЕ перечисляй источники внутри текста prompt. languages: ISO 639-1. regions: ISO 3166-1 alpha-2. sources: массив (если извлечены). Без текста вне JSON. reasoning: краткое объяснение (1-2 фразы).";
         $userPrompt = $userInput;
     }
 
     $initialTokens = $step === 'clarify' ? 300 : 800;
     $timeout = $step === 'generate' ? 90 : 45;
 
-    // strict=false на первом проходе clarify снижает шанс обрезки
-    $initialStrict = $step === 'clarify' ? false : true;
+    // Всегда strict=false (избегаем требований указать все поля при strict=true у модели)
+    $initialStrict = false;
 
     $buildPayload = function(int $maxTokens, bool $strict, string $sys, string $usr, array $schema) use ($model) {
         return [
