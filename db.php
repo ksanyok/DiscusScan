@@ -227,7 +227,7 @@ function ensure_defaults(PDO $pdo): void {
     // дефолтные настройки
     $defaults = [
         'openai_api_key' => '',
-        'openai_model' => 'gpt-4o-mini',
+        'openai_model' => 'gpt-5-mini',
         'scan_period_min' => 15,
         'search_prompt' => 'Искать упоминания моих плагинов и бренда BuyReadySite на русскоязычных форумах и сайтах за последние 30 дней. Возвращать только уникальные треды/темы.',
         'preferred_sources_enabled' => false,
@@ -970,48 +970,11 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         }
     }
     
-    // Fallback: для clarify если контент пустой или finish_reason=length
-    if ($step === 'clarify' && (trim($content)==='' || $finishReason==='length')) {
-        app_log('warning','smart_wizard','Empty or truncated content on clarify, fallback retry',[
-            'finish_reason'=>$finishReason,
-            'resp_len'=>strlen($body)
-        ]);
-        // Повторяем без response_format
-        unset($payload['response_format']);
-        $chC = curl_init($requestUrl);
-        curl_setopt_array($chC, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => $requestHeaders,
-            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => $timeout,
-            CURLOPT_HEADER => true
-        ]);
-        $respC = curl_exec($chC);
-        $infoC = curl_getinfo($chC);
-        $statusC = (int)($infoC['http_code'] ?? 0);
-        $headerSizeC = (int)($infoC['header_size'] ?? 0);
-        $bodyC = substr((string)$respC, $headerSizeC);
-        curl_close($chC);
-        if ($statusC === 200) {
-            $responseData = json_decode($bodyC, true) ?: $responseData; // перезапись
-            if (isset($responseData['choices'][0]['message']['content'])) {
-                $content = $responseData['choices'][0]['message']['content'];
-                if (preg_match('~```(json)?\s*(.+?)```~is', $content, $mm)) { $content = $mm[2]; }
-                $content = trim($content);
-            }
-            $finishReason = $responseData['choices'][0]['finish_reason'] ?? $finishReason;
-            app_log('info','smart_wizard','Fallback clarify retry success',['finish_reason'=>$finishReason,'len'=>strlen($content)]);
-        } else {
-            app_log('error','smart_wizard','Fallback clarify retry failed',['status'=>$statusC,'body_preview'=>substr($bodyC,0,300)]);
-        }
-    }
-    
     $result = $content !== '' ? json_decode($content, true) : null;
-
-    if ($result) {
+    
+    if (!$result) {
         $extracted = null;
-        if (preg_match('{\{(?:[^{}]*?(?:forums?|telegram|социальн(?:ые|ых)|social|news|review)[^{}]*?)*\}}u', $body, $mm)) {
+        if (preg_match('{\{(?:[^{}]|(?R))*\}}u', $body, $mm)) {
             $candidate = $mm[0];
             $decoded = json_decode($candidate, true);
             if (is_array($decoded)) { $extracted = $decoded; $result = $decoded; $content = $candidate; }
