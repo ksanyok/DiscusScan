@@ -255,11 +255,6 @@ if (($_GET['modal'] ?? '') === '1' && $_SERVER['REQUEST_METHOD'] === 'GET') {
               <button type="submit" class="btn primary">✨ Сгенерировать</button>
             </div>
           </form>
-          <div class="muted" style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-            <span style="opacity:.8;">Пресеты:</span>
-            <button type="button" class="btn btn-ghost" id="presetEnglish">Англоязычные страны</button>
-            <button type="button" class="btn btn-ghost" id="presetUkraine">Украина</button>
-          </div>
           <div id="wizardLoading" style="display:none; text-align:center; padding:18px;">
             <div class="spinner"></div>
             <p>ИИ анализирует данные...</p>
@@ -311,9 +306,16 @@ if (($_GET['modal'] ?? '') === '1' && $_SERVER['REQUEST_METHOD'] === 'GET') {
           if (promptEl) promptEl.value = data.prompt || '';
           if (langEl && Array.isArray(data.languages)) langEl.value = data.languages.join(', ');
           if (regEl && Array.isArray(data.regions)) regEl.value = data.regions.join(', ');
-          // Тост и закрытие
-          if (typeof showToast==='function') showToast('✨ Промпт и коды вставлены. Нажмите Сохранить.','success');
-          close();
+          // Автосохранение настроек
+          const settingsForm = document.querySelector('form.settings-form');
+          if (settingsForm) {
+            if (typeof showToast==='function') showToast('✨ Промпт применён, сохраняю настройки...','success');
+            close();
+            settingsForm.submit();
+          } else {
+            if (typeof showToast==='function') showToast('✨ Промпт вставлен. Сохраните настройки.','success');
+            close();
+          }
         }catch(ex){
           err.textContent = 'Сбой: '+ex.message;
           err.style.display='block';
@@ -321,28 +323,6 @@ if (($_GET['modal'] ?? '') === '1' && $_SERVER['REQUEST_METHOD'] === 'GET') {
           document.getElementById('wizardLoading').style.display='none';
         }
       });
-
-      function applyPreset(type){
-        const langEl = document.getElementById('search_languages_input');
-        const regEl  = document.getElementById('search_regions_input');
-        if (!langEl || !regEl) { alert('Не найдены поля языков/регионов на странице настроек'); return; }
-        if (type === 'english') {
-          langEl.value = 'en';
-          regEl.value = defaultEnglishRegions().join(', ');
-          if (typeof showToast==='function') showToast('Применён пресет: Англоязычные страны','success');
-        } else if (type === 'ukraine') {
-          // Если уже есть языки — не трогаем, иначе проставим uk,ru
-          if (!langEl.value.trim()) langEl.value = 'uk, ru';
-          regEl.value = 'UA';
-          if (typeof showToast==='function') showToast('Применён пресет: Украина','success');
-        }
-        close();
-      }
-      function defaultEnglishRegions(){ return ['US','GB','CA','AU','NZ','IE','SG','ZA']; }
-      const pe = document.getElementById('presetEnglish');
-      const pu = document.getElementById('presetUkraine');
-      if (pe) pe.addEventListener('click', ()=>applyPreset('english'));
-      if (pu) pu.addEventListener('click', ()=>applyPreset('ukraine'));
     })();
     </script>
     <?php

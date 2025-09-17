@@ -646,9 +646,9 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     
     // Динамический лимит токенов (уменьшаем для clarify чтобы снизить риск лимита)
     $outTokens = $step === 'clarify' ? 700 : 1200; 
-    // Автоопределение поддерживаемого параметра — пробуем сначала max_tokens, при 400 с Unsupported переключаемся
-    $tokenParamName = 'max_tokens';
-    $altTokenParamName = 'max_completion_tokens';
+    // Автоопределение поддерживаемого параметра — используем современный по умолчанию
+    $tokenParamName = 'max_completion_tokens';
+    $altTokenParamName = 'max_tokens';
     
     $buildPayload = function($paramName,$limit) use ($model,$systemPrompt,$userPrompt,$schema){
         return [
@@ -803,8 +803,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 ['role' => 'system', 'content' => $fallbackSystem],
                 ['role' => 'user', 'content' => $userPrompt]
             ],
-            $tokenParamName => 500,
-            'temperature' => 0.1
+            $tokenParamName => 500
         ];
         $ch3 = curl_init($requestUrl);
         curl_setopt_array($ch3, [
@@ -987,7 +986,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     
     if (!$result) {
         $extracted = null;
-        if (preg_match('{\{(?:[^{}]|(?R))*\}}u', $body, $mm)) {
+        if (preg_match('{\{(?:[^{}]*?(?:forums?|telegram|социальн(?:ые|ых)|social|news|review)[^{}]*?)*\}}u', $body, $mm)) {
             $candidate = $mm[0];
             $decoded = json_decode($candidate, true);
             // Принимаем только если есть доменные ключи (prompt/questions/languages/regions)
@@ -1010,8 +1009,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                     ['role' => 'system', 'content' => 'Верни строго JSON вида {"prompt": string}. Никакого текста вне JSON. Не перечисляй источники (форумы/соцсети и т.д.) внутри prompt.'],
                     ['role' => 'user', 'content' => $userPrompt]
                 ],
-                $tokenParamName => 800,
-                'temperature' => 0.2
+                $tokenParamName => 800
             ];
             $chP = curl_init($requestUrl);
             curl_setopt_array($chP,[
