@@ -990,12 +990,69 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         if (preg_match('{\{(?:[^{}]|(?R))*\}}u', $body, $mm)) {
             $candidate = $mm[0];
             $decoded = json_decode($candidate, true);
-            if (is_array($decoded)) { $extracted = $decoded; $result = $decoded; $content = $candidate; }
+            // Принимаем только если есть доменные ключи (prompt/questions/languages/regions)
+            if (is_array($decoded) && (isset($decoded['prompt']) || isset($decoded['questions']) || isset($decoded['auto_detected']) || isset($decoded['languages']) || isset($decoded['regions']))) {
+                $extracted = $decoded; $result = $decoded; $content = $candidate;
+            }
         }
         if (!$result && $rawContentForLog !== '' && $rawContentForLog !== $content) {
             $decoded = json_decode($rawContentForLog, true);
-            if (is_array($decoded)) { $result = $decoded; }
+            if (is_array($decoded) && (isset($decoded['prompt']) || isset($decoded['questions']) || isset($decoded['auto_detected']) || isset($decoded['languages']) || isset($decoded['regions']))) {
+                $result = $decoded;
+            }
         }
+        // Ещё один фолбэк: если generate и ничего не распарсили — запрашиваем только prompt
+        if (!$result && $step === 'generate') {
+            app_log('info','smart_wizard','Prompt-only fallback start', []);
+            $promptOnlyPayload = [
+                'model' => $model,
+                'messages' => [
+                    ['role' => 'system', 'content' => 'Верни строго JSON вида {"prompt": string}. Никакого текста вне JSON. Не перечисляй источники (форумы/соцсети и т.д.) внутри prompt.'],
+                    ['role' => 'user', 'content' => $userPrompt]
+                ],
+                $tokenParamName => 800,
+                'temperature' => 0.2
+            ];
+            $chP = curl_init($requestUrl);
+            curl_setopt_array($chP,[
+                CURLOPT_POST=>true,
+                CURLOPT_HTTPHEADER=>$requestHeaders,
+                CURLOPT_POSTFIELDS=>json_encode($promptOnlyPayload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER=>true,
+                CURLOPT_TIMEOUT=>60,
+                CURLOPT_HEADER=>true
+            ]);
+            $respP = curl_exec($chP);
+            $infoP = curl_getinfo($chP);
+            $statusP = (int)($infoP['http_code'] ?? 0);
+            $headerSizeP = (int)($infoP['header_size'] ?? 0);
+            $bodyP = substr((string)$respP, $headerSizeP);
+            curl_close($chP);
+            if ($statusP === 200) {
+                $dataP = json_decode($bodyP, true);
+                $msgP = $dataP['choices'][0]['message'] ?? [];
+                $contP = is_string($msgP['content'] ?? null) ? $msgP['content'] : '';
+                if ($contP === '' && isset($msgP['parsed']) && is_array($msgP['parsed'])) {
+                    $contP = json_encode($msgP['parsed'], JSON_UNESCAPED_UNICODE);
+                }
+                if (preg_match('~```(json)?\s*(.+?)```~is', (string)$contP, $mP)) { $contP = $mP[2]; }
+                $decP = json_decode(trim((string)$contP), true);
+                if (is_array($decP) && !empty($decP['prompt'])) {
+                    $result = [
+                        'prompt' => (string)$decP['prompt'],
+                        'languages' => [],
+                        'regions' => [],
+                        'sources' => []
+                    ];
+                    app_log('info','smart_wizard','Prompt-only fallback success', ['len'=>strlen($result['prompt'])]);
+                } else {
+                    app_log('error','smart_wizard','Prompt-only fallback parse fail', ['body_preview'=>substr($bodyP,0,300)]);
+                }
+            } else {
+                app_log('error','smart_wizard','Prompt-only fallback http fail', ['status'=>$statusP,'body_preview'=>substr($bodyP,0,300)]);
+            }
+        }
+        
         if (!$result) {
             app_log('error', 'smart_wizard', 'Failed to parse JSON content', [
                 'content_preview' => mb_substr($content,0,400),
