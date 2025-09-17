@@ -84,148 +84,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (($_POST['action'] ?? '') === 'clea
     }
 }
 
-// Обработка умного мастера
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['smart_wizard'])) {
-    $userInput = trim($_POST['user_description'] ?? '');
-    $apiKey = (string)get_setting('openai_api_key', '');
-    $model = (string)get_setting('openai_model', 'gpt-5-mini');
-    $step = $_POST['wizard_step'] ?? 'clarify';
-    
-    // Используем исходное описание из сессии на этапе generate, если не пришло новое
-    if ($step === 'generate' && $userInput === '') {
-        $wizardDataTmp = $_SESSION['wizard_data'] ?? null;
-        if ($wizardDataTmp && !empty($wizardDataTmp['original_input'])) {
-            $userInput = $wizardDataTmp['original_input'];
-        }
-    }
-    
-    if (!empty($userInput) && !empty($apiKey)) {
-        if ($step === 'clarify') {
-            // Первый этап: анализ и генерация вопросов
-            $wizardResult = processSmartWizard($userInput, $apiKey, $model, 'clarify');
-            
-            if ($wizardResult['ok']) {
-                if (empty($wizardResult['questions'])) {
-                    // Информации достаточно, сразу генерируем промпт
-                    $finalResult = processSmartWizard($userInput, $apiKey, $model, 'generate');
-                    
-                    if ($finalResult['ok']) {
-                        set_setting('search_prompt', $finalResult['prompt']);
-                        if (!empty($finalResult['languages'])) {
-                            set_setting('detected_languages', json_encode($finalResult['languages']));
-                            $existing = get_setting('search_languages', []);
-                            if (empty($existing) || (is_string($existing) && trim($existing)==='')) {
-                                set_setting('search_languages', json_encode($finalResult['languages']));
-                            }
-                        }
-                        if (!empty($finalResult['regions'])) {
-                            set_setting('detected_regions', json_encode($finalResult['regions']));
-                            $existingR = get_setting('search_regions', []);
-                            if (empty($existingR) || (is_string($existingR) && trim($existingR)==='')) {
-                                set_setting('search_regions', json_encode($finalResult['regions']));
-                            }
-                        }
-                        
-                        $ok = 'Промпт сформирован автоматически! Языки и регионы определены.';
-                        header('Location: settings.php?wizard_success=1');
-                        exit;
-                    } else {
-                        $ok = 'Ошибка генерации промпта: ' . ($finalResult['error'] ?? 'Неизвестная ошибка');
-                    }
-                } else {
-                    // Нужны уточняющие вопросы - сохраняем в сессии (добавлены recommendations)
-                    $_SESSION['wizard_data'] = [
-                        'original_input' => $userInput,
-                        'questions' => $wizardResult['questions'],
-                        'auto_detected' => $wizardResult['auto_detected'] ?? [],
-                        'recommendations' => $wizardResult['recommendations'] ?? []
-                    ];
-                    header('Location: settings.php?wizard_questions=1');
-                    exit;
-                }
-            } else {
-                $ok = 'Ошибка анализа: ' . ($wizardResult['error'] ?? 'Неизвестная ошибка');
-            }
-        } elseif ($step === 'generate') {
-            // Второй этап: генерация финального промпта на основе ответов
-            $wizardData = $_SESSION['wizard_data'] ?? null;
-            if (!$wizardData) {
-                $ok = 'Ошибка: данные мастера не найдены';
-            } else {
-                // Объединяем оригинальное описание с ответами
-                $combinedInput = $wizardData['original_input'] . "\n\nДополнительная информация:\n";
-                
-                foreach ($wizardData['questions'] as $i => $question) {
-                    $answer = $_POST["question_$i"] ?? '';
-                    if (is_array($answer)) { $answer = implode(', ', $answer); }
-                    $answer = trim($answer);
-                    if ($answer !== '') {
-                        $combinedInput .= $question['question'] . ": " . $answer . "\n";
-                    }
-                }
-
-                // Новые блоки: свободный ввод языков и регионов (без чекбоксов)
-                // Поддерживаем обратную совместимость: если пришли wizard_languages[] (старый формат) — добавим их тоже
-                $langs = [];
-                $freeLangs = trim($_POST['wizard_languages_custom'] ?? '');
-                if ($freeLangs !== '') {
-                    $langs = preg_split('~[;:,\n\r\t\s]+~u', $freeLangs, -1, PREG_SPLIT_NO_EMPTY);
-                } elseif (!empty($_POST['wizard_languages']) && is_array($_POST['wizard_languages'])) { // fallback
-                    $langs = $_POST['wizard_languages'];
-                }
-                $langs = array_values(array_unique(array_filter(array_map('trim', $langs))));
-                if ($langs) {
-                    $combinedInput .= "Предпочитаемые языки: " . implode(', ', $langs) . "\n";
-                }
-                
-                $regions = [];
-                $freeRegs = trim($_POST['wizard_regions_custom'] ?? '');
-                if ($freeRegs !== '') {
-                    $regions = preg_split('~[;:,\n\r\t\s]+~u', $freeRegs, -1, PREG_SPLIT_NO_EMPTY);
-                } elseif (!empty($_POST['wizard_regions']) && is_array($_POST['wizard_regions'])) { // fallback
-                    $regions = $_POST['wizard_regions'];
-                }
-                $regions = array_values(array_unique(array_filter(array_map('trim', $regions))));
-                if ($regions) {
-                    $combinedInput .= "Предпочитаемые регионы: " . implode(', ', $regions) . "\n";
-                }
-
-                // Передаём дополненный ввод
-                $finalResult = processSmartWizard($combinedInput, $apiKey, $model, 'generate');
-                
-                if ($finalResult['ok']) {
-                    set_setting('search_prompt', $finalResult['prompt']);
-                    if (!empty($finalResult['languages'])) {
-                        set_setting('detected_languages', json_encode($finalResult['languages']));
-                        $existing = get_setting('search_languages', []);
-                        if (empty($existing) || (is_string($existing) && trim($existing)==='')) {
-                            set_setting('search_languages', json_encode($finalResult['languages']));
-                        }
-                    }
-                    if (!empty($finalResult['regions'])) {
-                        set_setting('detected_regions', json_encode($finalResult['regions']));
-                        $existingR = get_setting('search_regions', []);
-                        if (empty($existingR) || (is_string($existingR) && trim($existingR)==='')) {
-                            set_setting('search_regions', json_encode($finalResult['regions']));
-                        }
-                    }
-                    
-                    // Очищаем данные мастера
-                    unset($_SESSION['wizard_data']);
-                    
-                    $ok = 'Промпт сформирован с учетом ваших ответов! Языки и регионы определены.';
-                    header('Location: settings.php?wizard_success=1');
-                    exit;
-                } else {
-                    $ok = 'Ошибка генерации финального промпта: ' . ($finalResult['error'] ?? 'Неизвестная ошибка');
-                }
-            }
-        }
-    } else {
-        $ok = 'Заполните описание и убедитесь что указан OpenAI API ключ';
-    }
-}
-
 // Обработка обычных настроек (исключаем очистку данных, чтобы не затирать ключи пустыми значениями)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['smart_wizard']) && (($_POST['action'] ?? '') !== 'clear_data')) {
     // базовые настройки
@@ -399,6 +257,14 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
           </div>
         </div>
         <div class="hint">Укажите языки и регионы (через запятую или пробел). Эти списки будут использоваться при поиске. Клик по рекомендации добавит её в поле.</div>
+        <div class="hint" style="margin-top:8px;">
+          Пресеты:
+          <button type="button" class="preset-btn" data-langs="en, de, fr, es, it" data-regs="DE, FR, GB, ES, IT">Европа (top‑5)</button>
+          <button type="button" class="preset-btn" data-langs="en, es, pt, fr, de, ru, ar, zh, hi, ja" data-regs="US, GB, DE, FR, ES, IT, IN, BR, CA, AU">Мир (top‑10)</button>
+          <button type="button" class="preset-btn" data-langs="ru, uk, kk, be, uz" data-regs="RU, UA, KZ, BY, UZ">СНГ</button>
+          <button type="button" class="preset-btn" data-langs="en, fr, es" data-regs="US, CA">Северная Америка</button>
+          <button type="button" class="preset-btn" data-langs="pl, cs, sk, hu, ro, bg" data-regs="PL, CZ, SK, HU, RO, BG">Восточная Европа</button>
+        </div>
       </label>
 
       <!-- НОВЫЙ блок: области поиска -->
@@ -453,7 +319,7 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
       </div>
 
       <div class="hint">CRON URL: <code><?=e($cronUrl)?></code></div>
-      <div class="hint">CLI: <code>php <?=e(__DIR__ . '/scan.php')?></code></div>
+      <div class="hint">CLI: <code>php <?=e(__DIR__ . '/scan.php')?> </code></div>
 
       <button class="btn primary">Сохранить</button>
     </form>
@@ -469,63 +335,9 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
 </main>
 <?php include 'footer.php'; ?>
 
-<!-- Модальное окно умного мастера -->
-<div id="smartWizardModal" class="modal" style="display: none;">
-  <div class="modal-backdrop"></div>
-  <div class="modal-content">
-    <div class="modal-header">
-      <h3>🤖 Умный мастер промптов</h3>
-      <button type="button" class="modal-close">&times;</button>
-    </div>
-    <div class="modal-body">
-      <p class="muted">Опишите в произвольной форме что вы хотите отслеживать. Не нужно писать код или JSON — просто текст. ИИ сформирует промпт и подскажет языки/регионы.</p>
-      
-      <form id="wizardForm" method="post">
-        <input type="hidden" name="smart_wizard" value="1">
-        <input type="hidden" name="wizard_step" value="clarify">
-        
-        <label>Описание задачи
-          <textarea name="user_description" rows="6" placeholder="Например: Хочу отслеживать упоминания моего стартапа по продаже органических овощей в Украине и Польше. Интересуют обсуждения на форумах про здоровое питание, отзывы покупателей, сравнения с конкурентами..." required></textarea>
-        </label>
-        
-        <div class="modal-actions">
-          <button type="button" class="btn btn-ghost" onclick="closeWizardModal()">Отмена</button>
-          <button type="submit" class="btn primary" id="generateBtn">✨ Сгенерировать промпт</button>
-        </div>
-      </form>
-      
-      <div id="loadingState" style="display: none; text-align: center; padding: 20px;">
-        <div class="spinner"></div>
-        <p>ИИ анализирует ваше описание и формирует промпт...</p>
-      </div>
-    </div>
-  </div>
-</div>
-
 <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
 <style>
-.modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; }
-.modal-backdrop { position: absolute; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); }
-.modal-content { position: relative; max-width: 760px; margin: 4% auto; background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); max-height: 92vh; display: flex; flex-direction: column; }
-.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px 16px; border-bottom: 1px solid var(--border); }
-.modal-header h3 { margin: 0; }
-.modal-close { background: none; border: none; font-size: 24px; color: var(--muted); cursor: pointer; line-height: 1; }
-.modal-close:hover { color: var(--text); }
-.modal-body { padding: 20px 24px; overflow-y: auto; }
-.modal-body form input[type=text], .modal-body form textarea { width: 100%; }
-.modal-body .inline-group { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
-.modal-body .inline-group label { background: rgba(255,255,255,0.04); padding: 4px 10px; border-radius: 20px; display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; border: 1px solid var(--border); }
-.modal-body .inline-group input { width: auto; height: auto; }
-.small-note { font-size: 11px; color: var(--muted); margin-top: 4px; }
-.checkbox input[type=checkbox], .checkbox input[type=radio] { width: 16px; height: 16px; }
-.spinner { width: 40px; height: 40px; border: 4px solid var(--border); border-top: 4px solid var(--pri); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px; }
-@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-.tag-add{ background:rgba(255,255,255,0.05); border:1px solid var(--border); color:var(--text); padding:2px 8px; border-radius:14px; font-size:11px; cursor:pointer; margin:0 4px 4px 0; }
-.tag-add:hover{ background:var(--pri); color:#fff; }
-.btn.danger{background:linear-gradient(135deg,#ff5555,#ff2d2d);color:#fff;}
-.btn.danger:hover{filter:brightness(1.1);} 
-.btn.small{padding:6px 10px; font-size:12px; font-weight:600;}
 .toast-container{ position:fixed; top:12px; right:12px; display:flex; flex-direction:column; gap:10px; z-index:1200; max-width:300px; }
 .toast{ background:var(--card); border:1px solid var(--border); box-shadow:0 4px 18px -4px rgba(0,0,0,0.4); padding:10px 14px; border-radius:12px; font-size:13px; line-height:1.4; display:flex; justify-content:space-between; gap:12px; align-items:flex-start; animation:toastIn .35s ease; }
 .toast-success{ border-color:#2e8b57; }
@@ -551,131 +363,30 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
 .wizard-fab:before{content:''; position:absolute; inset:0; border-radius:inherit; background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.35),transparent 60%); mix-blend-mode:overlay; pointer-events:none;}
 .wizard-fab .wf-label{font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; line-height:1; margin-top:-2px;}
 @media (max-width:700px){ .wizard-fab{width:54px; height:54px; font-size:18px;} .wizard-fab .wf-label{font-size:9px;} .prompt-wrapper.with-wizard textarea{padding-bottom:62px;} }
+.preset-btn{ background:rgba(255,255,255,0.05); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:10px; font-size:12px; cursor:pointer; margin:0 6px 6px 0; }
+.preset-btn:hover{ background:var(--pri); color:#fff; }
+.tag-add{ background:rgba(255,255,255,0.05); border:1px solid var(--border); color:var(--text); padding:2px 8px; border-radius:14px; font-size:11px; cursor:pointer; margin:0 4px 4px 0; }
+.tag-add:hover{ background:var(--pri); color:#fff; }
+.btn.danger{background:linear-gradient(135deg,#ff5555,#ff2d2d);color:#fff;}
+.btn.danger:hover{filter:brightness(1.1);} 
+.btn.small{padding:6px 10px; font-size:12px; font-weight:600;}
 </style>
 <script>
-function openWizardModal() {
-  document.getElementById('smartWizardModal').style.display = 'block';
-  document.body.style.overflow = 'hidden';
-}
-
-function closeWizardModal() {
-  document.getElementById('smartWizardModal').style.display = 'none';
-  document.body.style.overflow = '';
-}
-
-// Открытие модального окна
-document.getElementById('smartWizardBtn').addEventListener('click', openWizardModal);
-
-// Закрытие по клику на backdrop
-document.querySelector('.modal-backdrop').addEventListener('click', closeWizardModal);
-
-// Закрытие по ESC
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeWizardModal();
-});
-
-// Обработка формы
-document.getElementById('wizardForm').addEventListener('submit', function(e) {
-  const description = this.user_description.value.trim();
-  if (!description) {
-    e.preventDefault();
-    alert('Пожалуйста, опишите что вы хотите отслеживать');
-    return;
-  }
-  
-  // Показываем загрузку
-  document.querySelector('.modal-body form').style.display = 'none';
-  document.getElementById('loadingState').style.display = 'block';
-  
-  // Форма отправится автоматически
-});
-
-// Показать сообщение об успехе если пришли после генерации
-<?php if (isset($_GET['wizard_success'])): ?>
-setTimeout(function(){
-  showToast('✨ Промпт успешно сгенерирован! Проверьте поле ниже.','success');
-}, 150);
-<?php endif; ?>
-
-// Показать вопросы если ИИ их сгенерировал
-<?php if (isset($_GET['wizard_questions']) && isset($_SESSION['wizard_data'])): ?>
-setTimeout(function() {
-  showQuestionsModal();
-}, 100);
-<?php endif; ?>
-
-function showQuestionsModal() {
-  const questionsData = <?= json_encode($_SESSION['wizard_data'] ?? null, JSON_UNESCAPED_UNICODE) ?>;
-  if (!questionsData || !questionsData.questions) return;
-  const modal = document.getElementById('smartWizardModal');
-  const modalBody = modal.querySelector('.modal-body');
-  let questionsHtml = '<p class="muted">Уточните детали в свободной форме. Ответьте текстом — никаких чекбоксов, просто впишите что считаете нужным. Можно пропускать вопросы.</p>';
-  if (Array.isArray(questionsData.recommendations) && questionsData.recommendations.length) {
-    questionsHtml += '<div style="margin:12px 0 18px; padding:10px 14px; border:1px solid var(--border); border-radius:10px; background:rgba(255,255,255,0.04);">';
-    questionsHtml += '<div style="font-weight:600; font-size:13px; margin-bottom:6px;">Рекомендации улучшения</div><ul style="margin:0; padding-left:18px; font-size:12.5px; line-height:1.45;">';
-    questionsData.recommendations.forEach(r => { questionsHtml += '<li>'+escapeHtml(r)+'</li>'; });
-    questionsHtml += '</ul></div>';
-  }
-  questionsHtml += '<form id="questionsForm" method="post">';
-  questionsHtml += '<input type="hidden" name="smart_wizard" value="1">';
-  questionsHtml += '<input type="hidden" name="wizard_step" value="generate">';
-  
-  questionsData.questions.forEach((question, index) => {
-    questionsHtml += '<div style="margin-bottom: 16px;">';
-    questionsHtml += '<label style="font-weight: 600; margin-bottom: 6px; display:block;">' + escapeHtml(question.question) + '</label>';
-    questionsHtml += '<textarea name="question_' + index + '" rows="2" placeholder="Ваш ответ..." style="width:100%; resize:vertical;"></textarea>';
-    questionsHtml += '</div>';
+// Открыть мастер из отдельного файла
+const smartBtn = document.getElementById('smartWizardBtn');
+if (smartBtn) {
+  smartBtn.addEventListener('click', async ()=>{
+    try{
+      const r = await fetch('wizard.php?modal=1', {headers:{'X-Requested-With':'fetch'}});
+      const html = await r.text();
+      const wrap = document.createElement('div');
+      wrap.innerHTML = html;
+      document.body.appendChild(wrap.firstElementChild);
+    }catch(e){ showToast('Не удалось открыть мастер: '+e,'error'); }
   });
-  
-  if (questionsData.auto_detected) {
-    const detected = questionsData.auto_detected;
-    const langs = Array.isArray(detected.languages) ? detected.languages : [];
-    const regions = Array.isArray(detected.regions) ? detected.regions : [];
-    if (langs.length || regions.length) {
-      questionsHtml += '<div style="margin:20px 0; padding:12px; border:1px solid var(--border); border-radius:10px; background:rgba(91,140,255,0.07);">';
-      if (langs.length) {
-        questionsHtml += '<div style="margin-bottom:10px;"><strong>Предполагаемые языки:</strong> '+escapeHtml(langs.join(', '))+'</div>';
-      }
-      questionsHtml += '<label style="display:block; font-size:12px; margin-bottom:4px;">Языки (коды через запятую)</label>';
-      questionsHtml += '<input type="text" name="wizard_languages_custom" placeholder="ru, en, uk..." value="'+escapeHtml(langs.join(', '))+'" style="width:100%; margin-bottom:12px;">';
-      if (regions.length) {
-        questionsHtml += '<div style="margin-bottom:10px;"><strong>Предполагаемые регионы:</strong> '+escapeHtml(regions.join(', '))+'</div>';
-      }
-      questionsHtml += '<label style="display:block; font-size:12px; margin-bottom:4px;">Регионы (коды стран через запятую)</label>';
-      questionsHtml += '<input type="text" name="wizard_regions_custom" placeholder="UA, PL, DE..." value="'+escapeHtml(regions.join(', '))+'" style="width:100%;">';
-      questionsHtml += '<div class="small-note" style="margin-top:8px;">Можно удалить лишнее или добавить свои через запятую.</div>';
-      questionsHtml += '</div>';
-    }
-  }
-  
-  questionsHtml += '<div class="modal-actions">';
-  questionsHtml += '<button type="button" class="btn btn-ghost" onclick="closeWizardModal()">Отмена</button>';
-  questionsHtml += '<button type="submit" class="btn primary">✨ Создать промпт</button>';
-  questionsHtml += '</div>';
-  questionsHtml += '</form>';
-  
-  questionsHtml += '<div id="questionsLoadingState" style="display: none; text-align: center; padding: 20px;">';
-  questionsHtml += '<div class="spinner"></div>';
-  questionsHtml += '<p>ИИ создает финальный промпт...</p>';
-  questionsHtml += '</div>';
-  
-  modalBody.innerHTML = questionsHtml;
-  
-  document.getElementById('questionsForm').addEventListener('submit', function() {
-    this.style.display = 'none';
-    document.getElementById('questionsLoadingState').style.display = 'block';
-  });
-  
-  modal.style.display = 'block';
-  document.body.style.overflow = 'hidden';
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
+// Добавление значений из рекомендаций
 document.querySelectorAll('.tag-add').forEach(btn=>{
   btn.addEventListener('click',()=>{
     const targetId = btn.getAttribute('data-add-target');
@@ -687,6 +398,19 @@ document.querySelectorAll('.tag-add').forEach(btn=>{
     inp.value = current.join(', ');
   });
 });
+
+// Пресеты языков/регионов
+function applyPreset(btn){
+  const langs = (btn.getAttribute('data-langs')||'').trim();
+  const regs  = (btn.getAttribute('data-regs')||'').trim();
+  const langInp = document.getElementById('search_languages_input');
+  const regInp  = document.getElementById('search_regions_input');
+  if (langInp && langs) langInp.value = langs;
+  if (regInp && regs) regInp.value = regs;
+  showToast('Пресет применён','success');
+}
+
+document.querySelectorAll('.preset-btn').forEach(b=>b.addEventListener('click', ()=>applyPreset(b)));
 
 const testBtn = document.getElementById('testApiBtn');
 if (testBtn){
@@ -716,9 +440,7 @@ function showToast(message, type='success', timeout=5000){
   el.querySelector('.toast-close').addEventListener('click', remove);
   setTimeout(remove, timeout);
 }
-
-// Закрыть подсказку по ESC если фокус внутри
-addEventListener('keydown', e=>{ if(e.key==='Escape'){ const a=document.activeElement; if(a && a.classList.contains('prompt-help')) a.blur(); }});
+function escapeHtml(text){ const div=document.createElement('div'); div.textContent=text; return div.innerHTML; }
 </script>
 
 </body>
