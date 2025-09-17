@@ -860,6 +860,19 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     }
     
     $responseData = json_decode($body, true);
+    if (!$responseData) {
+        // Попытка спасти ответ: вырезаем от первой '{' до последней '}' и парсим снова
+        $start = strpos($body, '{');
+        $end   = strrpos($body, '}');
+        if ($start !== false && $end !== false && $end > $start) {
+            $candidate = substr($body, $start, $end - $start + 1);
+            $responseData = json_decode($candidate, true);
+            if ($responseData) {
+                app_log('info','smart_wizard','Recovered JSON from body slice',[ 'slice_len' => strlen($candidate) ]);
+                $body = $candidate; // на всякий случай
+            }
+        }
+    }
     if (!$responseData || !isset($responseData['choices'][0]['message']['content'])) {
         app_log('error', 'smart_wizard', 'Invalid OpenAI response format', ['body' => $body]);
         return ['ok' => false, 'error' => 'Некорректный формат ответа от OpenAI'];

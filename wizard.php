@@ -141,20 +141,72 @@ function openai_regions_langs(string $apiKey, string $model, string $context): a
         CURLOPT_HTTPHEADER=>$headers,
         CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
         CURLOPT_RETURNTRANSFER=>true,
-        CURLOPT_TIMEOUT=>50
+        CURLOPT_TIMEOUT=>50,
+        CURLOPT_HEADER=>true
     ]);
     $resp = curl_exec($ch);
-    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $info = curl_getinfo($ch);
+    $code = (int)($info['http_code'] ?? 0);
+    $hsize = (int)($info['header_size'] ?? 0);
+    $body = substr((string)$resp, $hsize);
     $err = curl_error($ch);
     curl_close($ch);
     if ($resp === false || $code !== 200) {
-        app_log('error','wizard_geo','OpenAI geo fail',[ 'code'=>$code, 'err'=>$err, 'preview'=>mb_substr((string)$resp,0,300) ]);
+        app_log('error','wizard_geo','OpenAI geo fail',[ 'code'=>$code, 'err'=>$err, 'preview'=>mb_substr((string)$body,0,300) ]);
         return ['languages'=>[], 'regions'=>[]];
     }
-    $data = json_decode($resp,true);
-    $content = $data['choices'][0]['message']['content'] ?? '';
+    $data = json_decode($body,true);
+    if (!$data) {
+        $start = strpos($body,'{'); $end = strrpos($body,'}');
+        if ($start!==false && $end!==false && $end>$start) {
+            $slice = substr($body,$start,$end-$start+1);
+            $data = json_decode($slice,true) ?: $data;
+        }
+    }
+    $msg = $data['choices'][0]['message'] ?? [];
+    $finish = $data['choices'][0]['finish_reason'] ?? '';
+    $content = is_string($msg['content'] ?? null) ? $msg['content'] : '';
+    if ($content === '' && isset($msg['parsed']) && is_array($msg['parsed'])) {
+        $content = json_encode($msg['parsed'], JSON_UNESCAPED_UNICODE);
+    }
     if (preg_match('~```json\s*(.+?)```~is', $content, $m)) $content = $m[1];
-    $parsed = json_decode(trim($content), true);
+    $parsed = json_decode(trim((string)$content), true);
+
+    // Fallback if empty or truncated
+    if (!$parsed || $finish === 'length' || $content === '') {
+        $fallbackPayload = [
+            'model'=>$model,
+            'messages'=>[
+                ['role'=>'system','content'=>"Верни строго JSON с массивами languages (ISO 639-1, lower-case) и regions (ISO 3166-1 alpha-2, upper-case). Никакого текста вне JSON."],
+                ['role'=>'user','content'=>$context]
+            ],
+            'max_tokens'=>400
+        ];
+        $ch2 = curl_init($url);
+        curl_setopt_array($ch2,[
+            CURLOPT_POST=>true,
+            CURLOPT_HTTPHEADER=>$headers,
+            CURLOPT_POSTFIELDS=>json_encode($fallbackPayload, JSON_UNESCAPED_UNICODE),
+            CURLOPT_RETURNTRANSFER=>true,
+            CURLOPT_TIMEOUT=>40,
+            CURLOPT_HEADER=>true
+        ]);
+        $resp2 = curl_exec($ch2);
+        $info2 = curl_getinfo($ch2);
+        $code2 = (int)($info2['http_code'] ?? 0);
+        $hsize2 = (int)($info2['header_size'] ?? 0);
+        $body2 = substr((string)$resp2, $hsize2);
+        curl_close($ch2);
+        if ($code2 === 200) {
+            $d2 = json_decode($body2,true);
+            $m2 = $d2['choices'][0]['message']['content'] ?? '';
+            if (preg_match('~```json\s*(.+?)```~is', $m2, $mm)) $m2 = $mm[1];
+            $parsed = json_decode(trim((string)$m2), true) ?: $parsed;
+        } else {
+            app_log('error','wizard_geo','Fallback geo codes failed',[ 'code'=>$code2, 'preview'=>mb_substr($body2,0,200) ]);
+        }
+    }
+
     $langs = []; $regs = [];
     if (is_array($parsed)) {
         foreach (($parsed['languages'] ?? []) as $l) { $l = strtolower(trim($l)); if (preg_match('~^[a-z]{2}$~',$l)) $langs[]=$l; }
