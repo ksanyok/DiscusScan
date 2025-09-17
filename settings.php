@@ -372,17 +372,39 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
 .btn.small{padding:6px 10px; font-size:12px; font-weight:600;}
 </style>
 <script>
-// Открыть мастер из отдельного файла
+// Открыть мастер из отдельного файла с корректной инициализацией стилей и скриптов
 const smartBtn = document.getElementById('smartWizardBtn');
 if (smartBtn) {
-  smartBtn.addEventListener('click', async ()=>{
-    try{
-      const r = await fetch('wizard.php?modal=1', {headers:{'X-Requested-With':'fetch'}});
+  smartBtn.addEventListener('click', async () => {
+    try {
+      // Если уже открыт — не плодим дубликаты
+      const existing = document.getElementById('smartWizardModal');
+      if (existing) { return; }
+      const r = await fetch('wizard.php?modal=1', { headers: { 'X-Requested-With': 'fetch' } });
       const html = await r.text();
-      const wrap = document.createElement('div');
-      wrap.innerHTML = html;
-      document.body.appendChild(wrap.firstElementChild);
-    }catch(e){ showToast('Не удалось открыть мастер: '+e,'error'); }
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const modal = doc.getElementById('smartWizardModal');
+      if (!modal) { throw new Error('Нет содержимого мастера'); }
+      // Подключаем стили из ответа
+      doc.querySelectorAll('style').forEach(styleEl => {
+        const s = document.createElement('style');
+        s.textContent = styleEl.textContent;
+        document.head.appendChild(s);
+      });
+      // Вставляем модалку
+      document.body.appendChild(modal);
+      document.body.style.overflow = 'hidden';
+      // Исполняем скрипты из ответа
+      doc.querySelectorAll('script').forEach(se => {
+        const s = document.createElement('script');
+        // Копируем inline-скрипт
+        if (se.textContent) s.textContent = se.textContent;
+        // Копируем src, если вдруг будет
+        if (se.src) s.src = se.src;
+        document.body.appendChild(s);
+      });
+    } catch (e) { showToast('Не удалось открыть мастер: ' + e, 'error'); }
   });
 }
 
