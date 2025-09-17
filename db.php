@@ -787,7 +787,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $infoR = curl_getinfo($chR);
         $statusR = (int)($infoR['http_code'] ?? 0);
         $headerSizeR = (int)($infoR['header_size'] ?? 0);
-        $bodyR = substr((string)$respR, $headerSize);
+        $bodyR = substr((string)$respR, $headerSizeR);
         $curlErrR = curl_error($chR);
         curl_close($chR);
         if ($statusR === 200) { $status = 200; $body = $bodyR; $curlErr = $curlErrR; }
