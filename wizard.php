@@ -223,6 +223,8 @@ function merge_codes(array $a, array $b, int $maxLangs = 10, int $maxRegs = 10):
     return ['languages'=>$langs,'regions'=>$regs];
 }
 
+function default_english_regions(): array { return ['US','GB','CA','AU','NZ','IE','SG','ZA']; }
+
 // --- Routing ---
 if (($_GET['modal'] ?? '') === '1' && $_SERVER['REQUEST_METHOD'] === 'GET') {
     // Render modal HTML (injected into DOM)
@@ -253,6 +255,11 @@ if (($_GET['modal'] ?? '') === '1' && $_SERVER['REQUEST_METHOD'] === 'GET') {
               <button type="submit" class="btn primary">✨ Сгенерировать</button>
             </div>
           </form>
+          <div class="muted" style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span style="opacity:.8;">Пресеты:</span>
+            <button type="button" class="btn btn-ghost" id="presetEnglish">Англоязычные страны</button>
+            <button type="button" class="btn btn-ghost" id="presetUkraine">Украина</button>
+          </div>
           <div id="wizardLoading" style="display:none; text-align:center; padding:18px;">
             <div class="spinner"></div>
             <p>ИИ анализирует данные...</p>
@@ -314,6 +321,28 @@ if (($_GET['modal'] ?? '') === '1' && $_SERVER['REQUEST_METHOD'] === 'GET') {
           document.getElementById('wizardLoading').style.display='none';
         }
       });
+
+      function applyPreset(type){
+        const langEl = document.getElementById('search_languages_input');
+        const regEl  = document.getElementById('search_regions_input');
+        if (!langEl || !regEl) { alert('Не найдены поля языков/регионов на странице настроек'); return; }
+        if (type === 'english') {
+          langEl.value = 'en';
+          regEl.value = defaultEnglishRegions().join(', ');
+          if (typeof showToast==='function') showToast('Применён пресет: Англоязычные страны','success');
+        } else if (type === 'ukraine') {
+          // Если уже есть языки — не трогаем, иначе проставим uk,ru
+          if (!langEl.value.trim()) langEl.value = 'uk, ru';
+          regEl.value = 'UA';
+          if (typeof showToast==='function') showToast('Применён пресет: Украина','success');
+        }
+        close();
+      }
+      function defaultEnglishRegions(){ return ['US','GB','CA','AU','NZ','IE','SG','ZA']; }
+      const pe = document.getElementById('presetEnglish');
+      const pu = document.getElementById('presetUkraine');
+      if (pe) pe.addEventListener('click', ()=>applyPreset('english'));
+      if (pu) pu.addEventListener('click', ()=>applyPreset('ukraine'));
     })();
     </script>
     <?php
@@ -352,6 +381,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $merged = merge_codes(['languages'=>$langs1,'regions'=>$regs1], $geo, 10, 10);
         $languages = $merged['languages'];
         $regions   = $merged['regions'];
+
+        // Preset-aware fallback based on "where" if regions empty or явно запрошены пресеты
+        $w = mb_strtolower($where);
+        $mentionsEnglish = (strpos($w,'англояз')!==false) || (strpos($w,'англоговор')!==false) || (strpos($w,'english')!==false);
+        $mentionsUkraine = (strpos($w,'украин')!==false) || (strpos($w,'ukraine')!==false) || (trim($w)==='украина');
+        if ($mentionsEnglish && count($regions) === 0) {
+            $regions = default_english_regions();
+            if (!in_array('en',$languages,true)) { $languages[] = 'en'; }
+        }
+        if ($mentionsUkraine && count($regions) === 0) {
+            $regions = ['UA'];
+            if (empty($languages)) { $languages = ['uk','ru']; }
+        }
 
         // Сохраняем рекомендации (detected_*) чтобы кнопки-подсказки появились
         try {
