@@ -1024,6 +1024,96 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         }
     }
 
+    // Альтернативный фолбэк: пробуем другую модель, если generate всё ещё пусто
+    if (!$result && $step === 'generate') {
+        $altModels = ['o4-mini', 'gpt-4o-mini', 'gpt-4.1-mini'];
+        foreach ($altModels as $altModel) {
+            if ($altModel === $model) continue;
+            app_log('info','smart_wizard','Alt-model fallback try', ['alt_model'=>$altModel]);
+            $altSchema = [
+                'type' => 'object',
+                'properties' => [
+                    'prompt' => ['type' => 'string'],
+                    'languages' => ['type' => 'array','items' => ['type' => 'string']],
+                    'regions' => ['type' => 'array','items' => ['type' => 'string']],
+                    'sources' => ['type' => 'array','items' => ['type' => 'string']]
+                ],
+                'required' => ['prompt','languages','regions','sources'],
+                'additionalProperties' => false
+            ];
+            $altPayload = [
+                'model' => $altModel,
+                'messages' => [
+                    ['role' => 'system', 'content' => 'Верни строго JSON с ключами prompt,languages,regions,sources. Не включай упоминания источников внутрь текста prompt. Никакого текста вне JSON.'],
+                    ['role' => 'user', 'content' => $userPrompt]
+                ],
+                'response_format' => [
+                    'type' => 'json_schema',
+                    'json_schema' => [
+                        'name' => 'wizard_response_alt',
+                        'schema' => $altSchema,
+                        'strict' => true
+                    ]
+                ],
+                $tokenParamName => 1600,
+                'temperature' => 0.2
+            ];
+            $chAlt = curl_init($requestUrl);
+            curl_setopt_array($chAlt,[
+                CURLOPT_POST=>true,
+                CURLOPT_HTTPHEADER=>$requestHeaders,
+                CURLOPT_POSTFIELDS=>json_encode($altPayload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER=>true,
+                CURLOPT_TIMEOUT=>70,
+                CURLOPT_HEADER=>true
+            ]);
+            $respAlt = curl_exec($chAlt);
+            $infoAlt = curl_getinfo($chAlt);
+            $statusAlt = (int)($infoAlt['http_code'] ?? 0);
+            $headerSizeAlt = (int)($infoAlt['header_size'] ?? 0);
+            $bodyAlt = substr((string)$respAlt, $headerSizeAlt);
+            curl_close($chAlt);
+            if ($statusAlt !== 200) {
+                app_log('warning','smart_wizard','Alt-model http fail', ['alt_model'=>$altModel,'status'=>$statusAlt,'preview'=>substr($bodyAlt,0,240)]);
+                continue;
+            }
+            $dataAlt = json_decode($bodyAlt,true);
+            $msgAlt = $dataAlt['choices'][0]['message'] ?? [];
+            $contAlt = is_string($msgAlt['content'] ?? null) ? $msgAlt['content'] : '';
+            if ($contAlt === '' && isset($msgAlt['parsed']) && is_array($msgAlt['parsed'])) {
+                $contAlt = json_encode($msgAlt['parsed'], JSON_UNESCAPED_UNICODE);
+            }
+            if (preg_match('~```(json)?\s*(.+?)```~is', (string)$contAlt, $mAlt)) { $contAlt = $mAlt[2]; }
+            $decAlt = json_decode(trim((string)$contAlt), true);
+            if (is_array($decAlt) && !empty($decAlt['prompt'])) {
+                // Нормализуем и выходим
+                $normLangs = [];
+                foreach (($decAlt['languages'] ?? []) as $l) { $l = strtolower(trim($l)); if (preg_match('~^[a-z]{2}$~',$l)) $normLangs[] = $l; }
+                $normLangs = array_values(array_unique($normLangs));
+                $normRegs = [];
+                foreach (($decAlt['regions'] ?? []) as $r) { $r = strtoupper(trim($r)); if (preg_match('~^[A-Z]{2}$~',$r)) $normRegs[] = $r; }
+                $promptText = trim((string)$decAlt['prompt']);
+                // Чистим источники из prompt
+                $promptText = preg_replace('~\((?:[^()]*?(?:forums?|telegram|социальн(?:ые|ых)|social|news|reviews?)[^()]*)\)~iu','',$promptText);
+                $promptText = preg_replace('~(?:источники|sources)\s*:\s*[^;,.]+~iu','',$promptText);
+                $promptText = preg_replace('~\b(forums?|telegram|social media|social networks?|news sites?|review sites?|reviews)\b~iu','', $promptText);
+                $promptText = preg_replace('~\s{2,}~u',' ', trim($promptText));
+                app_log('info','smart_wizard','Alt-model success', ['alt_model'=>$altModel,'len'=>strlen($promptText)]);
+                return [
+                    'ok' => true,
+                    'step' => 'generate',
+                    'prompt' => $promptText,
+                    'languages' => $normLangs,
+                    'regions' => $normRegs,
+                    'sources' => $decAlt['sources'] ?? [],
+                    'reasoning' => ''
+                ];
+            } else {
+                app_log('warning','smart_wizard','Alt-model parse fail', ['alt_model'=>$altModel,'preview'=>substr((string)$contAlt,0,200)]);
+            }
+        }
+    }
+
     if (!$result) {
         app_log('error', 'smart_wizard', 'Failed to parse JSON content', [
             'content_preview' => mb_substr($content,0,400),
