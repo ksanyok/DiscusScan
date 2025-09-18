@@ -581,60 +581,80 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     
     // Динамический лимит токенов (уменьшаем для clarify чтобы снизить риск лимита)
     $outTokens = $step === 'clarify' ? 700 : 1200;
-    // Кандидаты имён для лимита токенов (часть API может не поддерживать конкретные)
-    $tokenParamCandidates = ['max_tokens','max_completion_tokens','max_output_tokens'];
 
-    $buildPayload = function(string $paramName, int $limit) use ($model,$systemPrompt,$userPrompt) {
-        return [
+    $buildPayload = function(int $limit, bool $withResponseFormat = true) use ($model,$systemPrompt,$userPrompt) {
+        $payload = [
             'model' => $model,
             'messages' => [
                 ['role' => 'system', 'content' => $systemPrompt],
                 ['role' => 'user',   'content' => $userPrompt]
             ],
-            // В chat/completions используем json_object для принудительного JSON
-            'response_format' => [ 'type' => 'json_object' ],
-            $paramName => $limit,
+            // Chat Completions: используем только совместимый параметр ограничения
+            'max_tokens' => $limit,
             'temperature' => 0.2,
         ];
+        if ($withResponseFormat) {
+            // В chat/completions json_object поддерживается не всеми моделями — будет фолбэк без него
+            $payload['response_format'] = [ 'type' => 'json_object' ];
+        }
+        return $payload;
     };
 
     $lastErr = '';
     $status = 0;
     $body = '';
 
-    // Пробуем с разными именами параметра лимита
-    foreach ($tokenParamCandidates as $paramName) {
-        $payload = $buildPayload($paramName, $outTokens);
-        $ch = curl_init($requestUrl);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => $requestHeaders,
-            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => ($step === 'generate') ? 90 : 45,
-            CURLOPT_HEADER => true
-        ]);
-        $resp = curl_exec($ch);
-        $info = curl_getinfo($ch);
-        $status = (int)($info['http_code'] ?? 0);
-        $headerSize = (int)($info['header_size'] ?? 0);
-        $body = substr((string)$resp, $headerSize);
-        $curlErr = curl_error($ch);
-        curl_close($ch);
-        if ($status === 200 && $resp !== false) {
-            break;
-        }
-        $lastErr = $curlErr ?: ('HTTP '.$status.' Body: '.mb_substr((string)$body,0,300));
-        // Если ошибка о неизвестном параметре — попробуем следующий
-        if (strpos((string)$body,'Unsupported parameter') !== false || strpos((string)$body,'Unknown parameter') !== false) {
-            continue;
-        }
-        // Иначе не связано с параметром — тоже попробуем следующий как фолбэк
-    }
+    // 1) Основная попытка: с response_format=json_object
+    $payload = $buildPayload($outTokens, true);
+    $ch = curl_init($requestUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => $requestHeaders,
+        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => ($step === 'generate') ? 90 : 45,
+        CURLOPT_HEADER => true
+    ]);
+    $resp = curl_exec($ch);
+    $info = curl_getinfo($ch);
+    $status = (int)($info['http_code'] ?? 0);
+    $headerSize = (int)($info['header_size'] ?? 0);
+    $body = substr((string)$resp, $headerSize);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
 
-    if ($status !== 200) {
-        app_log('error','smart_wizard','API request failed',[ 'status'=>$status, 'error'=>$lastErr ]);
-        return ['ok'=>false, 'error'=>'AI request failed: '.$lastErr];
+    // 2) Фолбэк: если ошибка из-за response_format или иная 4xx — пробуем без него
+    if ($status !== 200 || $resp === false) {
+        $preview = mb_substr((string)$body,0,300);
+        $lastErr = $curlErr ?: ('HTTP '.$status.' Body: '.$preview);
+        if (strpos((string)$body,'response_format') !== false || strpos((string)$body,'unsupported') !== false || $status >= 400) {
+            app_log('info','smart_wizard','Retry without response_format',['step'=>$step,'status'=>$status]);
+            $payload = $buildPayload($outTokens, false);
+            $ch2 = curl_init($requestUrl);
+            curl_setopt_array($ch2, [
+                CURLOPT_POST => true,
+                CURLOPT_HTTPHEADER => $requestHeaders,
+                CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => ($step === 'generate') ? 90 : 45,
+                CURLOPT_HEADER => true
+            ]);
+            $resp2 = curl_exec($ch2);
+            $info2 = curl_getinfo($ch2);
+            $status = (int)($info2['http_code'] ?? 0);
+            $headerSize2 = (int)($info2['header_size'] ?? 0);
+            $body = substr((string)$resp2, $headerSize2);
+            $curlErr2 = curl_error($ch2);
+            curl_close($ch2);
+            if ($status !== 200 || $resp2 === false) {
+                $lastErr = $curlErr2 ?: ('HTTP '.$status.' Body: '.mb_substr((string)$body,0,300));
+                app_log('error','smart_wizard','API request failed',[ 'status'=>$status, 'error'=>$lastErr ]);
+                return ['ok'=>false, 'error'=>'AI request failed: '.$lastErr];
+            }
+        } else {
+            app_log('error','smart_wizard','API request failed',[ 'status'=>$status, 'error'=>$lastErr ]);
+            return ['ok'=>false, 'error'=>'AI request failed: '.$lastErr];
+        }
     }
 
     // Парсинг ответа API (ищем JSON в message.content)
