@@ -962,6 +962,115 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'usage'=>$responseData['usage'] ?? null,
             'body_preview'=> substr($body,0,800)
         ]);
+        // Anti-reasoning fallback: если все токены ушли на reasoning и контент пустой
+        $usage = $responseData['usage'] ?? [];
+        $ct = (int)($usage['completion_tokens'] ?? 0);
+        $rt = (int)($usage['completion_tokens_details']['reasoning_tokens'] ?? 0);
+        if ($finishReason === 'length' && $ct > 0 && $rt >= max(600, (int)floor($ct * 0.8))) {
+            app_log('info','smart_wizard','Anti-reasoning fallback start',[ 'ct'=>$ct, 'rt'=>$rt ]);
+            // 1) Пытаемся попросить модель не рассуждать и вернуть JSON-объект
+            $antiPayload = [
+                'model' => $model,
+                'messages' => [
+                    ['role' => 'system', 'content' => $step==='generate'
+                        ? 'Не рассуждай вслух. Верни строго JSON-объект с ключами prompt,languages,regions,sources. Никакого текста вне JSON.'
+                        : 'Не рассуждай вслух. Верни строго JSON-объект с ключами questions,auto_detected,recommendations. Никакого текста вне JSON.'
+                    ],
+                    ['role' => 'user', 'content' => $userPrompt]
+                ],
+                'response_format' => [ 'type' => 'json_object' ],
+                $tokenParamName => min($outTokens+400, 2000),
+                // Параметр может быть не поддержан, обработаем 400 ниже
+                'reasoning' => [ 'effort' => 'low' ]
+            ];
+            $chAR = curl_init($requestUrl);
+            curl_setopt_array($chAR,[
+                CURLOPT_POST=>true,
+                CURLOPT_HTTPHEADER=>$requestHeaders,
+                CURLOPT_POSTFIELDS=>json_encode($antiPayload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER=>true,
+                CURLOPT_TIMEOUT=>90,
+                CURLOPT_HEADER=>true
+            ]);
+            $respAR = curl_exec($chAR);
+            $infoAR = curl_getinfo($chAR);
+            $statusAR = (int)($infoAR['http_code'] ?? 0);
+            $headerSizeAR = (int)($infoAR['header_size'] ?? 0);
+            $bodyAR = substr((string)$respAR, $headerSizeAR);
+            curl_close($chAR);
+            if ($statusAR === 400 && (strpos($bodyAR,'reasoning') !== false || strpos($bodyAR,'Unknown') !== false)) {
+                // Удаляем параметр reasoning и пробуем снова
+                unset($antiPayload['reasoning']);
+                app_log('info','smart_wizard','Anti-reasoning retry without reasoning param',[]);
+                $chAR2 = curl_init($requestUrl);
+                curl_setopt_array($chAR2,[
+                    CURLOPT_POST=>true,
+                    CURLOPT_HTTPHEADER=>$requestHeaders,
+                    CURLOPT_POSTFIELDS=>json_encode($antiPayload, JSON_UNESCAPED_UNICODE),
+                    CURLOPT_RETURNTRANSFER=>true,
+                    CURLOPT_TIMEOUT=>90,
+                    CURLOPT_HEADER=>true
+                ]);
+                $respAR2 = curl_exec($chAR2);
+                $infoAR2 = curl_getinfo($chAR2);
+                $statusAR = (int)($infoAR2['http_code'] ?? 0);
+                $headerSizeAR2 = (int)($infoAR2['header_size'] ?? 0);
+                $bodyAR = substr((string)$respAR2, $headerSizeAR2);
+                curl_close($chAR2);
+            }
+            if ($statusAR === 200) {
+                $dataAR = json_decode($bodyAR,true);
+                $msgAR = $dataAR['choices'][0]['message'] ?? [];
+                $contAR = is_string($msgAR['content'] ?? null) ? $msgAR['content'] : '';
+                if ($contAR === '' && isset($msgAR['parsed']) && is_array($msgAR['parsed'])) {
+                    $contAR = json_encode($msgAR['parsed'], JSON_UNESCAPED_UNICODE);
+                }
+                $contAR = trim((string)$contAR);
+                if ($contAR !== '') {
+                    $content = $contAR;
+                    app_log('info','smart_wizard','Anti-reasoning success',[ 'len'=>strlen($contAR) ]);
+                } else {
+                    app_log('warning','smart_wizard','Anti-reasoning empty',[ 'body_preview'=>substr($bodyAR,0,500) ]);
+                }
+            } else {
+                app_log('error','smart_wizard','Anti-reasoning http fail',[ 'status'=>$statusAR, 'body_preview'=>substr($bodyAR,0,400) ]);
+            }
+
+            // 2) Если всё ещё пусто — меняем модель на gpt-4o-mini для стабильности ответа
+            if (trim($content) === '') {
+                $altModel = 'gpt-4o-mini';
+                app_log('info','smart_wizard','Model fallback start',[ 'from'=>$model, 'to'=>$altModel ]);
+                $altPayload = $antiPayload; $altPayload['model'] = $altModel;
+                $chMF = curl_init($requestUrl);
+                curl_setopt_array($chMF,[
+                    CURLOPT_POST=>true,
+                    CURLOPT_HTTPHEADER=>$requestHeaders,
+                    CURLOPT_POSTFIELDS=>json_encode($altPayload, JSON_UNESCAPED_UNICODE),
+                    CURLOPT_RETURNTRANSFER=>true,
+                    CURLOPT_TIMEOUT=>90,
+                    CURLOPT_HEADER=>true
+                ]);
+                $respMF = curl_exec($chMF);
+                $infoMF = curl_getinfo($chMF);
+                $statusMF = (int)($infoMF['http_code'] ?? 0);
+                $headerSizeMF = (int)($infoMF['header_size'] ?? 0);
+                $bodyMF = substr((string)$respMF, $headerSizeMF);
+                curl_close($chMF);
+                if ($statusMF === 200) {
+                    $dataMF = json_decode($bodyMF,true);
+                    $msgMF = $dataMF['choices'][0]['message'] ?? [];
+                    $contMF = is_string($msgMF['content'] ?? null) ? $msgMF['content'] : '';
+                    if ($contMF === '' && isset($msgMF['parsed']) && is_array($msgMF['parsed'])) {
+                        $contMF = json_encode($msgMF['parsed'], JSON_UNESCAPED_UNICODE);
+                    }
+                    $contMF = trim((string)$contMF);
+                    if ($contMF !== '') { $content = $contMF; app_log('info','smart_wizard','Model fallback success',[ 'len'=>strlen($contMF) ]); }
+                    else { app_log('warning','smart_wizard','Model fallback empty',[ 'body_preview'=>substr($bodyMF,0,500) ]); }
+                } else {
+                    app_log('error','smart_wizard','Model fallback http fail',[ 'status'=>$statusMF, 'body_preview'=>substr($bodyMF,0,400) ]);
+                }
+            }
+        }
     }
     
     // Fallback: для generate если контент пустой или finish_reason=length
