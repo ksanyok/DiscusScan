@@ -698,31 +698,49 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     curl_close($ch);
     
     // Переключение параметра ограничения токенов при ошибке
-    if ($status === 400 && strpos($body,'Unsupported parameter') !== false) {
-        if (strpos($body, $tokenParamName) !== false) {
-            $prev = $tokenParamName;
-            // Перебор по трём вариантам: max_output_tokens -> max_completion_tokens -> max_tokens
-            if ($tokenParamName === 'max_output_tokens') $tokenParamName = $altTokenParamName;
-            elseif ($tokenParamName === $altTokenParamName) $tokenParamName = $thirdTokenParamName;
-            else $tokenParamName = 'max_output_tokens';
-            app_log('info','smart_wizard','Retry with alternate token param', ['from'=>$prev,'to'=>$tokenParamName]);
-            $payload = $buildPayload($tokenParamName,$outTokens);
-            $chA = curl_init($requestUrl);
-            curl_setopt_array($chA,[
-                CURLOPT_POST=>true,
-                CURLOPT_HTTPHEADER=>$requestHeaders,
-                CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
-                CURLOPT_RETURNTRANSFER=>true,
-                CURLOPT_TIMEOUT=>$timeout,
-                CURLOPT_HEADER=>true
-            ]);
-            $respA = curl_exec($chA);
-            $infoA = curl_getinfo($chA);
-            $status = (int)($infoA['http_code'] ?? 0);
-            $headerSize = (int)($infoA['header_size'] ?? 0);
-            $body = substr((string)$respA, $headerSize);
-            $curlErr = curl_error($chA);
-            curl_close($chA);
+    if ($status === 400) {
+        $errJson = json_decode($body, true);
+        $errMsg = (string)$body;
+        $isParamError = false;
+        $errParam = $errJson['error']['param'] ?? '';
+        if (strpos($errMsg, 'Unsupported parameter') !== false || strpos($errMsg, 'Unknown parameter') !== false) {
+            $isParamError = true;
+        }
+        if (($errJson['error']['code'] ?? '') === 'unknown_parameter') { $isParamError = true; }
+        if ($isParamError && ($errParam === $tokenParamName || strpos($errMsg, $tokenParamName) !== false)) {
+            // Попробуем последовательно переключить параметр до двух раз
+            for ($attempt = 0; $attempt < 2; $attempt++) {
+                $prev = $tokenParamName;
+                if ($tokenParamName === 'max_output_tokens') $tokenParamName = $altTokenParamName;
+                elseif ($tokenParamName === $altTokenParamName) $tokenParamName = $thirdTokenParamName;
+                else $tokenParamName = 'max_output_tokens';
+                app_log('info','smart_wizard','Retry with alternate token param', ['from'=>$prev,'to'=>$tokenParamName]);
+                $payload = $buildPayload($tokenParamName,$outTokens);
+                $chA = curl_init($requestUrl);
+                curl_setopt_array($chA,[
+                    CURLOPT_POST=>true,
+                    CURLOPT_HTTPHEADER=>$requestHeaders,
+                    CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE),
+                    CURLOPT_RETURNTRANSFER=>true,
+                    CURLOPT_TIMEOUT=>$timeout,
+                    CURLOPT_HEADER=>true
+                ]);
+                $respA = curl_exec($chA);
+                $infoA = curl_getinfo($chA);
+                $status = (int)($infoA['http_code'] ?? 0);
+                $headerSize = (int)($infoA['header_size'] ?? 0);
+                $body = substr((string)$respA, $headerSize);
+                $curlErr = curl_error($chA);
+                curl_close($chA);
+                if ($status === 200) { break; }
+                // Проверим, нужно ли крутить ещё раз
+                $errJson = json_decode($body, true);
+                $errMsg = (string)$body;
+                $errParam = $errJson['error']['param'] ?? '';
+                if (!($status === 400 && (strpos($errMsg,'Unknown parameter')!==false || strpos($errMsg,'Unsupported parameter')!==false || ($errJson['error']['code']??'')==='unknown_parameter') && ($errParam===$tokenParamName || strpos($errMsg,$tokenParamName)!==false))) {
+                    break; // другая ошибка — выходим
+                }
+            }
         }
     }
     
