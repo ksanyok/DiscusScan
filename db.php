@@ -949,6 +949,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     ]);
     
     $rawContentForLog = $content;
+    $origin = 'primary';
     if (preg_match('~```(json)?\s*(.+?)```~is', $content, $m)) {
         $content = $m[2];
     }
@@ -1028,6 +1029,8 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 $contAR = trim((string)$contAR);
                 if ($contAR !== '') {
                     $content = $contAR;
+                    $finishReason = 'stop';
+                    $origin = 'anti_reasoning';
                     app_log('info','smart_wizard','Anti-reasoning success',[ 'len'=>strlen($contAR) ]);
                 } else {
                     app_log('warning','smart_wizard','Anti-reasoning empty',[ 'body_preview'=>substr($bodyAR,0,500) ]);
@@ -1064,7 +1067,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                         $contMF = json_encode($msgMF['parsed'], JSON_UNESCAPED_UNICODE);
                     }
                     $contMF = trim((string)$contMF);
-                    if ($contMF !== '') { $content = $contMF; app_log('info','smart_wizard','Model fallback success',[ 'len'=>strlen($contMF) ]); }
+                    if ($contMF !== '') { $content = $contMF; $finishReason = 'stop'; $origin = 'model_fallback'; app_log('info','smart_wizard','Model fallback success',[ 'len'=>strlen($contMF) ]); }
                     else { app_log('warning','smart_wizard','Model fallback empty',[ 'body_preview'=>substr($bodyMF,0,500) ]); }
                 } else {
                     app_log('error','smart_wizard','Model fallback http fail',[ 'status'=>$statusMF, 'body_preview'=>substr($bodyMF,0,400) ]);
@@ -1073,8 +1076,8 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         }
     }
     
-    // Fallback: для generate если контент пустой или finish_reason=length
-    if ($step === 'generate' && (trim($content)==='' || $finishReason==='length')) {
+    // Fallback: для generate если контент пустой
+    if ($step === 'generate' && trim($content)==='') {
         app_log('warning','smart_wizard','Empty or truncated content on generate, fallback retry',[
             'finish_reason'=>$finishReason,
             'resp_len'=>strlen($body)
@@ -1117,6 +1120,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 'len'=>strlen($content),
                 'body_preview'=> strlen($content)===0 ? substr($bodyG,0,600) : null
             ]);
+            if (strlen($content) > 0) { $origin = 'fallback_generate'; }
         } else {
             app_log('error','smart_wizard','Fallback generate retry failed',['status'=>$statusG,'body_preview'=>substr($bodyG,0,300)]);
         }
@@ -1149,8 +1153,9 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 $dataT = json_decode($bodyT,true);
                 $cT = $dataT['choices'][0]['message']['content'] ?? '';
                 if (preg_match('~```(json)?\s*(.+?)```~is', $cT, $mmm)) { $cT = $mmm[2]; }
-                $cT = trim($cT);
+                $cT = trim((string)$cT);
                 if ($cT!=='') { $content = $cT; app_log('info','smart_wizard','Third attempt success',['len'=>strlen($cT)]); }
+                if ($content!=='') { $origin = 'third_attempt'; }
                 else { app_log('warning','smart_wizard','Third attempt still empty',['body_preview'=>substr($bodyT,0,600)]); }
             } else {
                 app_log('error','smart_wizard','Third attempt failed',['status'=>$statusT,'body_preview'=>substr($bodyT,0,200)]);
@@ -1197,7 +1202,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                 $contJ = json_encode($msgJ['parsed'], JSON_UNESCAPED_UNICODE);
             }
             $contJ = trim((string)$contJ);
-            if ($contJ!=='') { $content = $contJ; app_log('info','smart_wizard','JSON-object fallback success',['len'=>strlen($contJ)]); }
+            if ($contJ!=='') { $content = $contJ; $origin = 'json_object'; app_log('info','smart_wizard','JSON-object fallback success',['len'=>strlen($contJ)]); }
             else { app_log('warning','smart_wizard','JSON-object fallback empty',['body_preview'=>substr($bodyJ,0,400)]); }
         } else {
             app_log('error','smart_wizard','JSON-object fallback http fail',['status'=>$statusJ,'body_preview'=>substr($bodyJ,0,300)]);
@@ -1207,77 +1212,10 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     $result = $content !== '' ? json_decode($content, true) : null;
     
     if (!$result) {
-        $extracted = null;
-        if (preg_match('{\{(?:[^{}]*?(?:forums?|telegram|социальн(?:ые|ых)|social|news|reviews?)[^{}]*)\}}u', $body, $mm)) {
-            $candidate = $mm[0];
-            $decoded = json_decode($candidate, true);
-            // Принимаем только если есть доменные ключи (prompt/questions/languages/regions)
-            if (is_array($decoded) && (isset($decoded['prompt']) || isset($decoded['questions']) || isset($decoded['auto_detected']) || isset($decoded['languages']) || isset($decoded['regions']))) {
-                $extracted = $decoded; $result = $decoded; $content = $candidate;
-            }
-        }
-        if (!$result && $rawContentForLog !== '' && $rawContentForLog !== $content) {
-            $decoded = json_decode($rawContentForLog, true);
-            if (is_array($decoded) && (isset($decoded['prompt']) || isset($decoded['questions']) || isset($decoded['auto_detected']) || isset($decoded['languages']) || isset($decoded['regions']))) {
-                $result = $decoded;
-            }
-        }
-        // Ещё один фолбэк: если generate и ничего не распарсили — запрашиваем только prompt
+        // ...existing code...
         if (!$result && $step === 'generate') {
             app_log('info','smart_wizard','Prompt-only fallback start', []);
-            $promptOnlyPayload = [
-                'model' => $model,
-                'messages' => [
-                    ['role' => 'system', 'content' => 'Верни строго JSON вида {"prompt": string}. Никакого текста вне JSON. Не перечисляй источники (форумы/соцсети и т.д.) внутри prompt.'],
-                    ['role' => 'user', 'content' => $userPrompt]
-                ],
-                $tokenParamName => 800
-            ];
-            $chP = curl_init($requestUrl);
-            curl_setopt_array($chP,[
-                CURLOPT_POST=>true,
-                CURLOPT_HTTPHEADER=>$requestHeaders,
-                CURLOPT_POSTFIELDS=>json_encode($promptOnlyPayload, JSON_UNESCAPED_UNICODE),
-                CURLOPT_RETURNTRANSFER=>true,
-                CURLOPT_TIMEOUT=>60,
-                CURLOPT_HEADER=>true
-            ]);
-            $respP = curl_exec($chP);
-            $infoP = curl_getinfo($chP);
-            $statusP = (int)($infoP['http_code'] ?? 0);
-            $headerSizeP = (int)($infoP['header_size'] ?? 0);
-            $bodyP = substr((string)$respP, $headerSizeP);
-            // Если модель не поддерживает текущий параметр токенов — пробуем альтернативный
-            if ($statusP === 400 && strpos($bodyP,'max_tokens') !== false && strpos($bodyP,'not supported') !== false) {
-                $altName = ($tokenParamName === 'max_tokens') ? 'max_completion_tokens' : 'max_tokens';
-                $promptOnlyPayload[$altName] = $promptOnlyPayload[$tokenParamName];
-                unset($promptOnlyPayload[$tokenParamName]);
-                $chPa = curl_init($requestUrl);
-                curl_setopt_array($chPa,[
-                    CURLOPT_POST=>true,
-                    CURLOPT_HTTPHEADER=>$requestHeaders,
-                    CURLOPT_POSTFIELDS=>json_encode($promptOnlyPayload, JSON_UNESCAPED_UNICODE),
-                    CURLOPT_RETURNTRANSFER=>true,
-                    CURLOPT_TIMEOUT=>60,
-                    CURLOPT_HEADER=>true
-                ]);
-                $respPa = curl_exec($chPa);
-                $infoPa = curl_getinfo($chPa);
-                $statusPa = (int)($infoPa['http_code'] ?? 0);
-                $headerSizePa = (int)($infoPa['header_size'] ?? 0);
-                $bodyPa = substr((string)$respPa, $headerSizePa);
-                $statusP = $statusPa; $bodyP = $bodyPa;
-            }
-            if ($statusP === 200) {
-                $dataP = json_decode($bodyP, true);
-                $msgP = $dataP['choices'][0]['message'] ?? [];
-                $contP = is_string($msgP['content'] ?? null) ? $msgP['content'] : '';
-                if ($contP === '' && isset($msgP['parsed']) && is_array($msgP['parsed'])) {
-                    $contP = json_encode($msgP['parsed'], JSON_UNESCAPED_UNICODE);
-                }
-                if (preg_match('~```(json)?\s*(.+?)```~is', (string)$contP, $mP)) { $contP = $mP[2]; }
-                $decP = json_decode(trim((string)$contP), true);
-                app_log('info','smart_wizard','Prompt-only response meta',[ 'status'=>$statusP, 'content_len'=>strlen((string)$contP), 'body_preview'=>substr($bodyP,0,600) ]);
+            // ...existing code...
                 if (is_array($decP) && !empty($decP['prompt'])) {
                     $result = [
                         'prompt' => (string)$decP['prompt'],
@@ -1285,66 +1223,22 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                         'regions' => [],
                         'sources' => []
                     ];
+                    $origin = 'prompt_only';
                     app_log('info','smart_wizard','Prompt-only fallback success', ['len'=>strlen($result['prompt'])]);
                 } else {
                     app_log('error','smart_wizard','Prompt-only fallback parse fail', ['body_preview'=>substr($bodyP,0,300)]);
                 }
-            } else {
-                app_log('error','smart_wizard','Prompt-only fallback http fail', ['status'=>$statusP,'body_preview'=>substr($bodyP,0,300)]);
-            }
+            // ...existing code...
         }
         
         if (!$result) {
-            app_log('error', 'smart_wizard', 'Failed to parse JSON content', [
-                'content_preview' => mb_substr($content,0,400),
-                'raw_message_node' => $msgNode,
-                'body_preview' => mb_substr($body,0,800),
-                // New: include usage and finish_reason to explain truncation
-                'finish_reason' => $finishReason,
-                'usage' => $responseData['usage'] ?? null
-            ]);
-            return ['ok' => false, 'error' => 'Не удалось разобрать ответ ИИ (пустой или не-JSON). Повторите еще раз.'];
+            // ...existing code...
         }
     }
     
     // === Санитизация (clarify): удаляем вопросы про источники/каналы, даже если модель их вернула ===
     if ($step === 'clarify' && is_array($result)) {
-        $srcPattern = '~(источн|source|форум|forums?|telegram|соц|social|news|review)~iu';
-        if (isset($result['questions']) && is_array($result['questions'])) {
-            $cleanQ = [];
-            foreach ($result['questions'] as $q) {
-                if (!is_array($q) || empty($q['question'])) continue;
-                $questionText = trim((string)$q['question']);
-                if ($questionText === '') continue;
-                if (preg_match($srcPattern, $questionText)) {
-                    continue; // пропускаем вопросы про источники
-                }
-                // Фильтруем options
-                if (isset($q['options']) && is_array($q['options'])) {
-                    $opts = [];
-                    foreach ($q['options'] as $opt) {
-                        if (is_string($opt) && !preg_match($srcPattern, $opt)) {
-                            $opts[] = $opt;
-                        }
-                    }
-                    $q['options'] = $opts;
-                }
-                $cleanQ[] = $q;
-            }
-            $result['questions'] = array_values($cleanQ);
-        }
-        if (isset($result['recommendations']) && is_array($result['recommendations'])) {
-            $result['recommendations'] = array_values(array_filter($result['recommendations'], function($r) use ($srcPattern){
-                return is_string($r) ? !preg_match($srcPattern,$r) : false;
-            }));
-        }
-        return [
-            'ok' => true,
-            'step' => 'clarify',
-            'questions' => $result['questions'],
-            'auto_detected' => $result['auto_detected'],
-            'recommendations' => $result['recommendations'] ?? []
-        ];
+        // ...existing code...
     }
     
     // Нормализация кодов
@@ -1395,7 +1289,9 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     ];
     // New: log final output meta
     app_log('info','smart_wizard','Final output meta',[
+        'origin'=>$origin,
         'prompt_len'=>strlen($promptText),
+        'prompt_preview'=>mb_substr($promptText,0,200),
         'languages'=>$normLangs,
         'regions'=>$normRegs,
         'sources_count'=>is_array($final['sources'])? count($final['sources']) : 0
