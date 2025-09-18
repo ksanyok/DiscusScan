@@ -697,6 +697,36 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     $curlErr = curl_error($ch);
     curl_close($ch);
     
+    // Если API не поддерживает reasoning — убрать и ретраить
+    if ($status === 400) {
+        $errJson = json_decode($body, true);
+        $errMsg = (string)$body;
+        $errParam = $errJson['error']['param'] ?? '';
+        $unknownParam = ($errJson['error']['code'] ?? '') === 'unknown_parameter' || strpos($errMsg,'Unknown parameter')!==false || strpos($errMsg,'Unsupported parameter')!==false;
+        if ($unknownParam && ($errParam === 'reasoning' || strpos($errMsg,'"reasoning"')!==false || strpos($errMsg,'reasoning')!==false)) {
+            if (isset($payload['reasoning'])) {
+                unset($payload['reasoning']);
+                app_log('info','smart_wizard','Retry without reasoning param', ['step'=>$step]);
+                $chRsn = curl_init($requestUrl);
+                curl_setopt_array($chRsn, [
+                    CURLOPT_POST => true,
+                    CURLOPT_HTTPHEADER => $requestHeaders,
+                    CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => $timeout,
+                    CURLOPT_HEADER => true
+                ]);
+                $respRsn = curl_exec($chRsn);
+                $infoRsn = curl_getinfo($chRsn);
+                $status = (int)($infoRsn['http_code'] ?? 0);
+                $headerSize = (int)($infoRsn['header_size'] ?? 0);
+                $body = substr((string)$respRsn, $headerSize);
+                $curlErr = curl_error($chRsn);
+                curl_close($chRsn);
+            }
+        }
+    }
+    
     // Переключение параметра ограничения токенов при ошибке
     if ($status === 400) {
         $errJson = json_decode($body, true);
