@@ -75,8 +75,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (($_POST['action'] ?? '') === 'clea
         pdo()->exec('SET FOREIGN_KEY_CHECKS=1');
         // Сброс инкрементального маркера, чтобы следующий скан не пытался искать только "после прошлого"
         set_setting('last_scan_at', '');
-        // Сброс оффсета ротации доменов
-        set_setting('domain_rotation_offset', 0);
         $ok = 'Данные очищены (links/topics/scans/runs/domains/sources). Маркер last_scan_at сброшен.';
         app_log('info','maintenance','Data cleared + last_scan_at reset',[]);
     } catch (Throwable $e) {
@@ -136,11 +134,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['smart_wizard']) && (
     if ($cron_secret === '') $cron_secret = bin2hex(random_bytes(12));
     set_setting('cron_secret', $cron_secret);
 
-    // Новая настройка: лимит доменов на один скан (для ротации)
-    $dps = (int)($_POST['domain_jobs_per_scan'] ?? 25);
-    if ($dps < 1) $dps = 1; if ($dps > 1000) $dps = 1000;
-    set_setting('domain_jobs_per_scan', $dps);
-
     $ok = 'Сохранено';
     app_log('info', 'settings', 'Settings updated', []);
 }
@@ -180,7 +173,6 @@ try {
     $activeDomainsCount = (int)get_setting('active_sources_count', 0); // fallback, если нет таблицы
 }
 $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
-$domainsPerScan = (int)get_setting('domain_jobs_per_scan', 25);
 ?>
 <!doctype html>
 <html lang="ru">
@@ -307,11 +299,6 @@ $domainsPerScan = (int)get_setting('domain_jobs_per_scan', 25);
         </label>
 
       </div>
-
-      <label>Доменов за один скан
-        <input type="number" name="domain_jobs_per_scan" value="<?= (int)$domainsPerScan ?>" min="1" max="1000">
-        <div class="hint">При включённой области «По моим доменам» используется ротация: каждый запуск берёт следующий блок из <?= (int)$activeDomainsCount ?> активных доменов.</div>
-      </label>
 
       <div class="grid-2">
         <label>Период проверки, минут

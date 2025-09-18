@@ -66,10 +66,7 @@ if (!$isCli) {
 // ----------------------- Period guard -----------------------
 $periodMin = (int)get_setting('scan_period_min', 15);
 $lastScanRow = pdo()->query("SELECT finished_at FROM scans ORDER BY id DESC LIMIT 1")->fetchColumn();
-
-// Allow bypassing the period guard for CLI or authenticated manual runs (or explicit ?force=1)
-$forceBypass = $isCli || isset($_GET['manual']) || ((string)($_GET['force'] ?? '') === '1');
-if (!$forceBypass && $lastScanRow) {
+if ($lastScanRow) {
     $diff = time() - strtotime($lastScanRow);
     if ($diff < $periodMin * 60) {
         header('Content-Type: application/json; charset=utf-8');
@@ -268,8 +265,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     }
     $payload = [
         'model' => $model,
-        // use Chat/Responses-compatible token limit param
-        'max_tokens' => $maxTokens,
+        'max_output_tokens' => $maxTokens,
         'input' => [
             ['role' => 'system', 'content' => $sys . "\n\nMANDATORY: When finished, output ONLY the JSON that matches the schema (even if empty)."],
             ['role' => 'user',   'content' => $user],
@@ -304,19 +300,18 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     $body   = substr((string)$resp, (int)($info['header_size'] ?? 0));
     curl_close($ch);
 
-    $log("OpenAI REQUEST [{$jobName}]", [ 'url' => $requestUrl, 'model' => $model, 'max_tokens' => $maxTokens ], json_encode($payload, JSON_UNESCAPED_UNICODE));
+    $log("OpenAI REQUEST [{$jobName}]", [ 'url' => $requestUrl, 'model' => $model, 'max_output_tokens' => $maxTokens ], json_encode($payload, JSON_UNESCAPED_UNICODE));
     $log("OpenAI RESPONSE [{$jobName}]", [ 'status' => $status, 'content_type' => $info['content_type'] ?? null ], (string)$body);
 
     $bumped = false;
 
     // If incomplete due to max tokens — bump once
     $parsed = json_decode((string)$body, true);
-    $reason = strtolower((string)arr_get($parsed, 'incomplete_details')['reason'] ?? '');
     if ($status === 200 && is_array($parsed)
         && (arr_get($parsed, 'status') === 'incomplete')
-        && in_array($reason, ['max_output_tokens','max_tokens'], true)) {
+        && strtolower((string)arr_get($parsed, 'incomplete_details')['reason'] ?? '') === 'max_output_tokens') {
 
-        $payload['max_tokens'] = min(8192, max(2048, $maxTokens * 2));
+        $payload['max_output_tokens'] = min(8192, max(2048, $maxTokens * 2));
         $bumped = true;
 
         $ch2 = curl_init($requestUrl);
@@ -377,7 +372,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     if (empty($links)) {
         $fallbackPayload = [
             'model' => $model,
-            'max_tokens' => $maxTokens,
+            'max_output_tokens' => $maxTokens,
             'input' => [
                 ['role' => 'system', 'content' =>
                     $sys
@@ -394,7 +389,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
             CURLOPT_HTTPHEADER => $requestHeaders,
             CURLOPT_POSTFIELDS => json_encode($fallbackPayload, JSON_UNESCAPED_UNICODE),
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 10,
+            CURLOPT_TIMEOUT => $timeout,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_HEADER => true
         ]);
@@ -462,34 +457,8 @@ if ($scopeForums) {
     $jobs[] = ['name'=>'discover_forums','sys'=>$sys,'user'=>$user,'country'=>null,'purpose'=>'discovery'];
 }
 
-$MAX_DOMAIN_JOBS = (int)get_setting('domain_jobs_per_scan', 25);
-if ($MAX_DOMAIN_JOBS < 1) $MAX_DOMAIN_JOBS = 1; if ($MAX_DOMAIN_JOBS > 1000) $MAX_DOMAIN_JOBS = 1000; // safety bounds
-// NEW: rotate through active domains across scans using stored offset
-$domainJobHosts = [];
-$domainRotationUsed = false;
-$domainNewOffset = null;
-if (!empty($activeHosts)) {
-    $totalActive = count($activeHosts);
-    if ($totalActive > $MAX_DOMAIN_JOBS) {
-        $offset = (int)get_setting('domain_rotation_offset', 0);
-        if ($offset < 0) { $offset = 0; }
-        if ($offset >= $totalActive) { $offset = $offset % $totalActive; }
-
-        // Take slice from offset, wrapping if needed
-        $first = array_slice($activeHosts, $offset, $MAX_DOMAIN_JOBS);
-        if (count($first) < $MAX_DOMAIN_JOBS) {
-            $need = $MAX_DOMAIN_JOBS - count($first);
-            $wrap = array_slice($activeHosts, 0, $need);
-            $domainJobHosts = array_merge($first, $wrap);
-        } else {
-            $domainJobHosts = $first;
-        }
-        $domainRotationUsed = true;
-        $domainNewOffset = ($offset + $MAX_DOMAIN_JOBS) % $totalActive;
-    } else {
-        $domainJobHosts = $activeHosts; // no rotation needed
-    }
-}
+$MAX_DOMAIN_JOBS = 25; // limit per scan for cost control
+$domainJobHosts = array_slice($activeHosts,0,$MAX_DOMAIN_JOBS);
 
 foreach ($searchRegions as $regCode) {
     $regionLine = $regionLineTpl($regCode);
@@ -558,11 +527,6 @@ foreach ($jobs as $job) {
     $jobStats[$job['name']] = ['status' => $status, 'count' => $cnt];
 
     foreach ($links as $it) { $it['__job'] = $job['name']; $it['__purpose'] = $job['purpose'] ?? null; $allLinks[] = $it; }
-}
-
-// After successful job execution, advance rotation offset (if used)
-if ($scopeDomains && $domainRotationUsed && $domainNewOffset !== null) {
-    try { set_setting('domain_rotation_offset', (int)$domainNewOffset); } catch (Throwable $e) {}
 }
 
 // ----------------------- Local post-processing -----------------------
