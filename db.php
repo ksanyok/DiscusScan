@@ -640,7 +640,17 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             'required' => ['prompt','languages','regions','sources'],
             'additionalProperties' => false
         ];
-        $systemPrompt = "Сформируй финальный JSON.\nprompt: сжатый, точный, включает: цель мониторинга, ключевые бренды/термины/синонимы, релевантные аспекты (например: отзывы, баги, сравнения, запросы пользователей), временной фокус (если был), исключения (если были). НЕ добавляй перечисление типов источников (forums, telegram, social, news, reviews) внутрь текста prompt. Не добавляй служебных пояснений.\nlanguages: ISO 639-1 lower-case (только упомянутые или подтверждённые).\nregions: ISO 3166-1 alpha-2 upper-case (только упомянутые или подтверждённые).\nsources: просто массив (если переданы или подразумеваются), НО НЕ включай их в сам prompt. Если нет данных — пустой массив.\nreasoning: кратко почему так структурирован prompt (может быть опущено моделью).\nСтрого JSON без текста вне.";
+        $systemPrompt = "Сформируй финальный JSON.\n".
+            "prompt: сжатый, точный, включает: цель мониторинга, ключевые бренды/термины/синонимы, релевантные аспекты (например: отзывы, баги, сравнения, запросы пользователей), временной фокус (если был), исключения (если были). НЕ добавляй перечисление типов источников (forums, telegram, social, news, reviews) внутрь текста prompt. Не добавляй служебных пояснений.\n".
+            "languages: ISO 639-1 lower-case (только упомянутые или подтверждённые).\n".
+            "regions: ISO 3166-1 alpha-2 upper-case (только упомянутые или подтверждённые).\n".
+            "sources: просто массив (если переданы или подразумеваются), НО НЕ включай их в сам prompt. Если нет данных — пустой массив.\n".
+            "reasoning: кратко почему так структурирован prompt (может быть опущено моделью).\n".
+            // Новое правило: язык вывода промпта
+            "ВАЖНО: Текст prompt ДОЛЖЕН быть написан на языке, который лучше всего подходит для выбранных языков/регионов:\n".
+            "— если массив languages не пуст — используй languages[0];\n".
+            "— иначе определи по регионам: RU→ru, UA→uk, PL→pl, DE→de, FR→fr, ES→es, IT→it, US/GB→en; если определить нельзя — используй язык исходного ввода, иначе en.\n".
+            "Строго JSON без текста вне.";
         $userPrompt = $userInput;
     }
     
@@ -796,15 +806,14 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
     
     // Второй fallback: если всё ещё не 200 и step=clarify — пробуем без json_schema
     if ($status !== 200 && $step === 'clarify') {
-        $fallbackSystem = "Верни кратчайший возможный валидный JSON вида {\"questions\":[],\"auto_detected\":{\"languages\":[],\"regions\":[],\"sources\":[]}}. Не добавляй текст вне JSON. Нужно 0 вопросов если достаточно данных или 2-4 вопроса (single/multiple/text). Опций максимум 6.";
+        $fallbackSystem = "Верни кратчайший возможный валидный JSON вида {\"questions\":[],\"auto_detected\":{\"languages\":[],\"regions\":[]}}. Не добавляй текст вне JSON. Нужно 0 вопросов если достаточно данных или 2-4 вопроса (single/multiple/text). Опций максимум 6.";
         $fallbackPayload = [
             'model' => $model,
             'messages' => [
                 ['role' => 'system', 'content' => $fallbackSystem],
                 ['role' => 'user', 'content' => $userPrompt]
             ],
-            $tokenParamName => 500,
-            'temperature' => 0.1
+            $tokenParamName => 500
         ];
         $ch3 = curl_init($requestUrl);
         curl_setopt_array($ch3, [
@@ -823,11 +832,29 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
         $curlErr3 = curl_error($ch3);
         curl_close($ch3);
         app_log('info', 'smart_wizard', 'Fallback clarify no-schema request', ['status' => $status3, 'len' => strlen($body3)]);
-        if ($status3 === 200) {
-            $status = 200; $body = $body3; $curlErr = $curlErr3; // перезаписываем для дальнейшего парсинга (ниже общий парсер)
-            // Парсер ниже не ожидает schema, просто найдём JSON
-        } else {
-            app_log('error', 'smart_wizard', 'Fallback clarify failed', ['status' => $status3, 'curl_error' => $curlErr3, 'body_preview' => substr($body3,0,300)]);
+        // Если модель не принимает выбранный параметр токенов — пробуем альтернативный
+        if ($status3 === 400 && strpos($body3,'max_tokens') !== false && strpos($body3,'not supported') !== false) {
+            $altName = ($tokenParamName === 'max_tokens') ? 'max_completion_tokens' : 'max_tokens';
+            $fallbackPayload[$altName] = $fallbackPayload[$tokenParamName];
+            unset($fallbackPayload[$tokenParamName]);
+            $ch3b = curl_init($requestUrl);
+            curl_setopt_array($ch3b, [
+                CURLOPT_POST => true,
+                CURLOPT_HTTPHEADER => $requestHeaders,
+                CURLOPT_POSTFIELDS => json_encode($fallbackPayload, JSON_UNESCAPED_UNICODE),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => $timeout,
+                CURLOPT_HEADER => true
+            ]);
+            $resp3b = curl_exec($ch3b);
+            $info3b = curl_getinfo($ch3b);
+            $status3b = (int)($info3b['http_code'] ?? 0);
+            $headerSize3b = (int)($info3b['header_size'] ?? 0);
+            $body3b = substr((string)$resp3b, $headerSize3b);
+            curl_close($ch3b);
+            if ($status3b === 200) { $status = 200; $body = $body3b; $curlErr = ''; }
+        } elseif ($status3 === 200) {
+            $status = 200; $body = $body3; $curlErr = $curlErr3;
         }
     }
     
@@ -1010,8 +1037,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
                     ['role' => 'system', 'content' => 'Верни строго JSON вида {"prompt": string}. Никакого текста вне JSON. Не перечисляй источники (форумы/соцсети и т.д.) внутри prompt.'],
                     ['role' => 'user', 'content' => $userPrompt]
                 ],
-                $tokenParamName => 800,
-                'temperature' => 0.2
+                $tokenParamName => 800
             ];
             $chP = curl_init($requestUrl);
             curl_setopt_array($chP,[
@@ -1028,6 +1054,28 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             $headerSizeP = (int)($infoP['header_size'] ?? 0);
             $bodyP = substr((string)$respP, $headerSizeP);
             curl_close($chP);
+            // Если модель не поддерживает текущий параметр токенов — пробуем альтернативный
+            if ($statusP === 400 && strpos($bodyP,'max_tokens') !== false && strpos($bodyP,'not supported') !== false) {
+                $altName = ($tokenParamName === 'max_tokens') ? 'max_completion_tokens' : 'max_tokens';
+                $promptOnlyPayload[$altName] = $promptOnlyPayload[$tokenParamName];
+                unset($promptOnlyPayload[$tokenParamName]);
+                $chPa = curl_init($requestUrl);
+                curl_setopt_array($chPa,[
+                    CURLOPT_POST=>true,
+                    CURLOPT_HTTPHEADER=>$requestHeaders,
+                    CURLOPT_POSTFIELDS=>json_encode($promptOnlyPayload, JSON_UNESCAPED_UNICODE),
+                    CURLOPT_RETURNTRANSFER=>true,
+                    CURLOPT_TIMEOUT=>60,
+                    CURLOPT_HEADER=>true
+                ]);
+                $respPa = curl_exec($chPa);
+                $infoPa = curl_getinfo($chPa);
+                $statusPa = (int)($infoPa['http_code'] ?? 0);
+                $headerSizePa = (int)($infoPa['header_size'] ?? 0);
+                $bodyPa = substr((string)$respPa, $headerSizePa);
+                curl_close($chPa);
+                $statusP = $statusPa; $bodyP = $bodyPa;
+            }
             if ($statusP === 200) {
                 $dataP = json_decode($bodyP, true);
                 $msgP = $dataP['choices'][0]['message'] ?? [];
