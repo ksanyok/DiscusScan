@@ -44,6 +44,9 @@ if (!is_dir(LOG_DIR)) { @mkdir(LOG_DIR, 0775, true); }
 @touch(PHP_ERR_LOG);
 ini_set('log_errors', '1');
 ini_set('error_log', PHP_ERR_LOG);
+// Ensure PHP errors are not sent to the client (they break JSON/AJAX); they are logged instead
+ini_set('display_errors', '0');
+ini_set('html_errors', '0');
 
 // Простой JSON-логгер
 function app_log(string $level, string $component, string $msg, array $ctx = []): void {
@@ -648,7 +651,7 @@ function processSmartWizard(string $userInput, string $apiKey, string $model, st
             "— уточни временной фокус (если задан): за сколько времени искать;\n".
             "— задай отрицательные фильтры (исключить): вакансии, объявления/продажи, промо, оффтоп, мемы, нерелевантные односложные упоминания;\n".
             "— учитывай лексику сообществ: тред/тема/ответ/цитата, пост/переслано/репост, без упоминания конкретных платформ;\n".
-            "— избегай перечисления источников (forums, telegram, social, news, reviews) внутри текста. Никаких служебных пояснений.\n".
+            "— избегай перечисления источников (forums, telegram, social media, social networks, news sites, review sites) внутри текста. Никаких служебных пояснений.\n".
             "Сделай prompt структурированным: 6–12 коротких фраз/правил, разделённых точками с запятой или короткими предложениями.\n".
             
             // LANGUAGE/REGION RULES

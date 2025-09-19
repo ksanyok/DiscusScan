@@ -2,10 +2,20 @@
 require_once __DIR__ . '/db.php';
 require_login();
 
+// Start output buffering to prevent stray output from corrupting JSON
+if (!headers_sent()) { @ob_start(); }
+
 // Utility helpers
 function json_out($arr){
+    // Clear any previous output to keep JSON clean
+    if (function_exists('ob_get_level') && ob_get_level() > 0) { @ob_clean(); }
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit;
+}
+
+// If this is an ajax/json request, don't display PHP warnings in response body
+if (isset($_GET['ajax']) || (isset($_POST['action']) && $_POST['action'])) {
+    @ini_set('display_errors','0');
 }
 
 $period = (int)get_setting('scan_period_min', 15);
@@ -277,48 +287,68 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
 <?php include 'footer.php'; ?>
 <div id="modalRoot"></div>
 <script>
+// Safe JSON fetch wrapper: avoids SyntaxError when server returns HTML
+async function fetchJson(url, opts){
+  const res = await fetch(url, opts);
+  const ct = (res.headers.get('content-type')||'').toLowerCase();
+  const text = await res.text();
+  try {
+    if (ct.includes('application/json') || text.trim().startsWith('{') || text.trim().startsWith('[')) {
+      return JSON.parse(text);
+    }
+  } catch (e) {
+    console.error('JSON parse error for', url, e, text.slice(0,400));
+    throw e;
+  }
+  console.error('Expected JSON, got:', url, text.slice(0,400));
+  throw new Error('Bad JSON response');
+}
+
 const fmtDuration = s=> s==null? '—' : (s<60? (s+'s') : ( (s/60).toFixed(1)+'m'));
 const timeAgo = iso=>{ if(!iso) return '—'; const t=new Date(iso.replace(' ','T')); const diff=(Date.now()-t.getTime())/1000; if(diff<60) return Math.floor(diff)+'s ago'; if(diff<3600) return Math.floor(diff/60)+'m ago'; if(diff<86400) return Math.floor(diff/3600)+'h ago'; return Math.floor(diff/86400)+'d ago'; };
 
 // METRICS
 async function loadMetrics(){
-  const r = await fetch('index.php?ajax=metrics'); const j = await r.json(); if(!j.ok) return;
-  const m=j.metrics; const lastAge = document.getElementById('m-last-age');
-  if(m.last_scan_at){ lastAge.textContent = timeAgo(m.last_scan_at); }
-  document.getElementById('m-active').textContent = m.active_sources; document.getElementById('m-total').textContent=m.total_links; document.getElementById('m-last-found').textContent=m.last_scan_found; document.getElementById('m-24h').textContent=m.new_24h; document.getElementById('m-cand').textContent=m.candidates;
-  // guard
-  const guardEl = document.getElementById('guardInfo');
-  let remain = m.guard_remaining; const btn = document.getElementById('scanBtn');
-  if(remain>0){ btn.disabled=true; guardEl.textContent='guard '+remain+'s'; const iv=setInterval(()=>{remain--; guardEl.textContent='guard '+remain+'s'; if(remain<=0){clearInterval(iv); btn.disabled=false; guardEl.textContent='готов';}},1000);} else { guardEl.textContent='готов'; btn.disabled=false; }
-  // sparkline
-  drawSpark(document.getElementById('spark-total'), m.spark.map(x=>x.c));
+  try {
+    const j = await fetchJson('index.php?ajax=metrics'); if(!j.ok) return;
+    const m=j.metrics; const lastAge = document.getElementById('m-last-age');
+    if(m.last_scan_at){ lastAge.textContent = timeAgo(m.last_scan_at); }
+    document.getElementById('m-active').textContent = m.active_sources; document.getElementById('m-total').textContent=m.total_links; document.getElementById('m-last-found').textContent=m.last_scan_found; document.getElementById('m-24h').textContent=m.new_24h; document.getElementById('m-cand').textContent=m.candidates;
+    // guard
+    const guardEl = document.getElementById('guardInfo');
+    let remain = m.guard_remaining; const btn = document.getElementById('scanBtn');
+    if(remain>0){ btn.disabled=true; guardEl.textContent='guard '+remain+'s'; const iv=setInterval(()=>{remain--; guardEl.textContent='guard '+remain+'s'; if(remain<=0){clearInterval(iv); btn.disabled=false; guardEl.textContent='готов';}},1000);} else { guardEl.textContent='готов'; btn.disabled=false; }
+    // sparkline
+    drawSpark(document.getElementById('spark-total'), m.spark.map(x=>x.c));
+  } catch(e){ console.error('loadMetrics failed', e); }
 }
 function drawSpark(svg, data){ if(!svg) return; const w=svg.clientWidth||160; const h=svg.clientHeight||28; const max=Math.max(...data,1); const step=w/(data.length-1); let d=''; data.forEach((v,i)=>{ const x=i*step; const y=h - (v/max)* (h-4) -2; d += (i?'L':'M')+x+','+y;}); svg.setAttribute('viewBox','0 0 '+w+' '+h); svg.innerHTML='<path d="'+d+'" fill="none" stroke="url(#g)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />'+`<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#7ea2ff"/></linearGradient></defs>`; }
 
 // SCAN HISTORY
-async function loadScanHistory(){ const r=await fetch('index.php?ajax=scans'); const j=await r.json(); if(!j.ok)return; const tb=document.querySelector('#scanHistoryTbl tbody'); tb.innerHTML=''; j.scans.forEach(s=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${s.id}</td><td>${s.started_at.slice(5,16)}</td><td>${s.finished_at? s.finished_at.slice(5,16):'—'}</td><td>${fmtDuration(s.duration_sec)}</td><td class="${s.new? 'history-new':'history-zero'}">${s.new}</td><td>${s.found}</td><td>${s.status}</td>`; tb.appendChild(tr);}); }
+async function loadScanHistory(){ try{ const j=await fetchJson('index.php?ajax=scans'); if(!j.ok)return; const tb=document.querySelector('#scanHistoryTbl tbody'); tb.innerHTML=''; j.scans.forEach(s=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${s.id}</td><td>${s.started_at.slice(5,16)}</td><td>${s.finished_at? s.finished_at.slice(5,16):'—'}</td><td>${fmtDuration(s.duration_sec)}</td><td class="${s.new? 'history-new':'history-zero'}">${s.new}</td><td>${s.found}</td><td>${s.status}</td>`; tb.appendChild(tr);}); } catch(e){ console.error('loadScanHistory failed', e);} }
 
 // DAILY TREND
-async function loadDaily(){ const r=await fetch('index.php?ajax=daily'); const j=await r.json(); if(!j.ok)return; const wrap=document.getElementById('dailyGrid'); wrap.innerHTML=''; const max=Math.max(...j.days.map(d=>d.c),1); j.days.forEach(d=>{ const col=document.createElement('div'); col.className='daily-col'; const pct = d.c? ((d.c/max)*100):0; col.innerHTML=`<div class="day">${d.d.slice(5)}</div><div style="font-size:12px;color:var(--muted)">${d.c} links / ${d.u} dom</div><div class="bar-wrap"><div class="bar" style="height:100%"><span style="height:${pct||4}%;"></span></div></div>`; wrap.appendChild(col); }); }
+async function loadDaily(){ try{ const j=await fetchJson('index.php?ajax=daily'); if(!j.ok)return; const wrap=document.getElementById('dailyGrid'); wrap.innerHTML=''; const max=Math.max(...j.days.map(d=>d.c),1); j.days.forEach(d=>{ const col=document.createElement('div'); col.className='daily-col'; const pct = d.c? ((d.c/max)*100):0; col.innerHTML=`<div class="day">${d.d.slice(5)}</div><div style="font-size:12px;color:var(--muted)">${d.c} links / ${d.u} dom</div><div class="bar-wrap"><div class="bar" style="height:100%"><span style="height:${pct||4}%;"></span></div></div>`; wrap.appendChild(col); }); } catch(e){ console.error('loadDaily failed', e);} }
 
 // TOP DOMAINS
-async function loadTopDomains(){ const r=await fetch('index.php?ajax=top_domains'); const j=await r.json(); if(!j.ok)return; const tb=document.querySelector('#topDomainsTable tbody'); tb.innerHTML=''; let totalAll= j.domains.reduce((a,b)=>a+parseInt(b.total),0)||1; j.domains.forEach(d=>{ const share = d.total? ((d.total/totalAll)*100):0; const tr=document.createElement('tr'); const status = d.is_active? '✅':'⏸'; tr.innerHTML=`<td><a href="sources.php?source=${d.id}">${escapeHtml(d.host)}</a></td><td>${d.new_24}</td><td>${d.new_7d}</td><td>${d.total}</td><td><div class="dom-bar" style="width:${Math.max(4,share*1.4)}px" title="${share.toFixed(1)}%"></div></td><td>${status}</td>`; tb.appendChild(tr); }); document.getElementById('topDomCount').textContent='('+j.domains.length+')'; // fill domain filter
-  const sel=document.getElementById('linksDomain'); const cur=sel.value; const added=new Set(); Array.from(sel.options).forEach((o,i)=>{ if(i>0) sel.removeChild(o);}); j.domains.forEach(d=>{ if(!added.has(d.host)){ const opt=document.createElement('option'); opt.value=d.host; opt.textContent=d.host; sel.appendChild(opt); added.add(d.host);} }); if(cur) sel.value=cur; }
+async function loadTopDomains(){ try{ const j=await fetchJson('index.php?ajax=top_domains'); if(!j.ok)return; const tb=document.querySelector('#topDomainsTable tbody'); tb.innerHTML=''; let totalAll= j.domains.reduce((a,b)=>a+parseInt(b.total),0)||1; j.domains.forEach(d=>{ const share = d.total? ((d.total/totalAll)*100):0; const tr=document.createElement('tr'); const status = d.is_active? '✅':'⏸'; tr.innerHTML=`<td><a href="sources.php?source=${d.id}">${escapeHtml(d.host)}</a></td><td>${d.new_24}</td><td>${d.new_7d}</td><td>${d.total}</td><td><div class="dom-bar" style="width:${Math.max(4,share*1.4)}px" title="${share.toFixed(1)}%"></div></td><td>${status}</td>`; tb.appendChild(tr); }); document.getElementById('topDomCount').textContent='('+j.domains.length+')'; // fill domain filter
+  const sel=document.getElementById('linksDomain'); const cur=sel.value; const added=new Set(); Array.from(sel.options).forEach((o,i)=>{ if(i>0) sel.removeChild(o);}); j.domains.forEach(d=>{ if(!added.has(d.host)){ const opt=document.createElement('option'); opt.value=d.host; opt.textContent=d.host; sel.appendChild(opt); added.add(d.host);} }); if(cur) sel.value=cur; } catch(e){ console.error('loadTopDomains failed', e);} }
 
 // RECENT LINKS + filters
 let linksOffset=0; let linksTotal=0; let linksRange='24h'; let linksDomain=''; let linksQ='';
-async function loadLinks(reset=false){ if(reset){ linksOffset=0; } const params=new URLSearchParams({ajax:'links', offset:linksOffset, range:linksRange}); if(linksDomain) params.append('domain',linksDomain); if(linksQ) params.append('q',linksQ); const r=await fetch('index.php?'+params.toString()); const j=await r.json(); if(!j.ok)return; linksTotal=j.total; document.getElementById('linksTotal').textContent='Всего: '+linksTotal; const tb=document.querySelector('#linksTable tbody'); if(reset) tb.innerHTML=''; j.links.forEach(l=>{ const tr=document.createElement('tr'); tr.className='link-row'; tr.dataset.id=l.id; tr.innerHTML=`<td>${escapeHtml(l.host)}</td><td class="ellipsis" style="max-width:240px;">${escapeHtml(l.title||'—')}</td><td class="ellipsis" style="max-width:340px;"><a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.url)}</a></td><td>${l.first_found? l.first_found.slice(5,16):'—'}</td><td>${l.last_seen? l.last_seen.slice(5,16):'—'}</td><td>${l.times_seen||1}</td>`; tb.appendChild(tr); }); linksOffset += j.links.length; document.getElementById('linksOffsetInfo').textContent = linksOffset + ' / ' + linksTotal; const moreBtn=document.getElementById('linksMore'); moreBtn.disabled = linksOffset >= linksTotal; }
+async function loadLinks(reset=false){ try{ if(reset){ linksOffset=0; } const params=new URLSearchParams({ajax:'links', offset:linksOffset, range:linksRange}); if(linksDomain) params.append('domain',linksDomain); if(linksQ) params.append('q',linksQ); const j=await fetchJson('index.php?'+params.toString()); if(!j.ok)return; linksTotal=j.total; document.getElementById('linksTotal').textContent='Всего: '+linksTotal; const tb=document.querySelector('#linksTable tbody'); if(reset) tb.innerHTML=''; j.links.forEach(l=>{ const tr=document.createElement('tr'); tr.className='link-row'; tr.dataset.id=l.id; tr.innerHTML=`<td>${escapeHtml(l.host)}</td><td class="ellipsis" style="max-width:240px;">${escapeHtml(l.title||'—')}</td><td class="ellipsis" style="max-width:340px;"><a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.url)}</a></td><td>${l.first_found? l.first_found.slice(5,16):'—'}</td><td>${l.last_seen? l.last_seen.slice(5,16):'—'}</td><td>${l.times_seen||1}</td>`; tb.appendChild(tr); }); linksOffset += j.links.length; document.getElementById('linksOffsetInfo').textContent = linksOffset + ' / ' + linksTotal; const moreBtn=document.getElementById('linksMore'); moreBtn.disabled = linksOffset >= linksTotal; } catch(e){ console.error('loadLinks failed', e);} }
 
 // INLINE link detail toggle
 const linksTable=document.getElementById('linksTable');
 linksTable.addEventListener('click',e=>{ const row=e.target.closest('.link-row'); if(!row) return; const next=row.nextElementSibling; if(next && next.classList.contains('link-detail')){ next.remove(); return; } if(next && next.classList.contains('link-row')){} else if(next){ next.remove(); } const detail=document.createElement('tr'); detail.className='link-detail'; detail.innerHTML=`<td colspan="6" style="font-size:12px;padding:10px 12px;">ID: ${row.dataset.id} • <a href="sources.php" style="text-decoration:none">Домены</a> • <span class="muted-inline">Подробнее функционал позже</span></td>`; row.parentNode.insertBefore(detail,row.nextSibling); });
 
 // CANDIDATES
-async function loadCandidates(){ const r=await fetch('index.php?ajax=candidates'); const j=await r.json(); if(!j.ok)return; const tb=document.querySelector('#candTable tbody'); tb.innerHTML=''; if(!j.candidates.length){ tb.innerHTML='<tr><td colspan="5" style="font-size:12px;color:var(--muted)">Нет кандидатов</td></tr>'; return; } j.candidates.forEach(c=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${escapeHtml(c.host)}</td><td>${c.link_count}</td><td>${c.first_found? c.first_found.slice(5,16):'—'}</td><td class="ellipsis" style="max-width:200px;">${escapeHtml(c.note||'candidate')}</td><td><button class="btn small" data-act-cand="${c.id}">Активировать</button></td>`; tb.appendChild(tr); }); }
+async function loadCandidates(){ try{ const j=await fetchJson('index.php?ajax=candidates'); if(!j.ok)return; const tb=document.querySelector('#candTable tbody'); tb.innerHTML=''; if(!j.candidates.length){ tb.innerHTML='<tr><td colspan="5" style="font-size:12px;color:var(--muted)">Нет кандидатов</td></tr>'; return; } j.candidates.forEach(c=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${escapeHtml(c.host)}</td><td>${c.link_count}</td><td>${c.first_found? c.first_found.slice(5,16):'—'}</td><td class="ellipsis" style="max-width:200px;">${escapeHtml(c.note||'candidate')}</td><td><button class="btn small" data-act-cand="${c.id}">Активировать</button></td>`; tb.appendChild(tr); }); } catch(e){ console.error('loadCandidates failed', e);} }
 
 // Quick actions: candidates activation
- document.getElementById('activateAllCand').addEventListener('click', async()=>{ if(!confirm('Активировать все кандидаты?')) return; const r=await fetch('index.php',{method:'POST',body:new URLSearchParams({action:'activate_candidates'})}); const j=await r.json(); if(j.ok){ loadCandidates(); loadMetrics(); loadTopDomains(); }});
- document.getElementById('candTable').addEventListener('click', async e=>{ const btn=e.target.closest('button[data-act-cand]'); if(!btn) return; const id=btn.getAttribute('data-act-cand'); btn.disabled=true; btn.textContent='...'; const r=await fetch('index.php',{method:'POST',body:new URLSearchParams({action:'activate_candidate',id})}); const j=await r.json(); if(j.ok){ btn.textContent='OK'; setTimeout(()=>{loadCandidates(); loadMetrics(); loadTopDomains();},500);} else { btn.textContent='ERR'; } });
+ document.getElementById('activateAllCand').addEventListener('click', async()=>{ if(!confirm('Активировать все кандидаты?')) return; try{ const j=await fetchJson('index.php',{method:'POST',body:new URLSearchParams({action:'activate_candidates'})}); if(j.ok){ loadCandidates(); loadMetrics(); loadTopDomains(); } }catch(e){ console.error('activate all failed', e);} });
+ document.getElementById('candTable').addEventListener('click', async e=>{ const btn=e.target.closest('button[data-act-cand]'); if(!btn) return; const id=btn.getAttribute('data-act-cand'); btn.disabled=true; btn.textContent='...'; try{ const j=await fetchJson('index.php',{method:'POST',body:new URLSearchParams({action:'activate_candidate',id})}); if(j.ok){ btn.textContent='OK'; setTimeout(()=>{loadCandidates(); loadMetrics(); loadTopDomains();},500);} else { btn.textContent='ERR'; } } catch(e){ console.error('activate failed', e); btn.textContent='ERR'; }
+ });
 
 // Scan button
  document.getElementById('scanBtn').addEventListener('click',()=>{ const u=document.getElementById('scanBtn').dataset.url; window.open(u,'_blank'); setTimeout(()=>{ refreshAll(); }, 4000); });
