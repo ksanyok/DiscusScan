@@ -216,6 +216,22 @@ if (is_file($versionFile)) {
     $localVersion = APP_VERSION; // fallback
   }
 }
+
+// Новый AJAX эндпоинт: быстрая проверка последних версий
+if (($_GET['action'] ?? '') === 'check_latest') {
+  header('Content-Type: application/json; charset=utf-8');
+  $latestStableTag = $latestStable;
+  $latestStableVer = $stableTags[0]['ver'] ?? null;
+  $remoteBranchVer = fetch_remote_version($remoteRawVersionUrl);
+  echo json_encode([
+    'ok' => true,
+    'latestStableTag' => $latestStableTag,
+    'latestStableVer' => $latestStableVer,
+    'remoteBranchVer' => $remoteBranchVer,
+    'localVersion' => $localVersion,
+  ], JSON_UNESCAPED_UNICODE);
+  exit;
+}
 ?>
 <!doctype html>
 <html lang="ru">
@@ -246,6 +262,22 @@ if (is_file($versionFile)) {
     .radio-row{display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:13px;}
     .submit-row{display:flex;gap:16px;align-items:center;margin-top:18px;}
     .diff-info{font-size:11px;color:var(--muted);}
+    /* Segmented control */
+    .segmented{display:inline-flex;background:rgba(255,255,255,0.06);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+    .segmented .seg{appearance:none;background:transparent;border:0;color:var(--text);padding:8px 12px;font-size:13px;cursor:pointer}
+    .segmented .seg.active{background:linear-gradient(135deg,#5b8cff,#8f5bff);color:#fff}
+    .segmented .seg:not(.active):hover{background:rgba(255,255,255,.08)}
+    /* Modern switch */
+    .switch-modern{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none;margin-top:4px}
+    .switch-modern input{display:none}
+    .switch-modern .slider{position:relative;width:42px;height:24px;border-radius:999px;background:#29324a;border:1px solid var(--border);transition:.2s}
+    .switch-modern .slider:before{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#9aa6c1;transition:.2s}
+    .switch-modern input:checked + .slider{background:#4b72ff;border-color:#4b72ff}
+    .switch-modern input:checked + .slider:before{transform:translateX(18px);background:#fff}
+    .switch-modern .switch-label{font-size:13px;color:var(--text)}
+    /* Small utilities */
+    .inline-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+    .btn.small{padding:6px 10px;font-size:12px}
   </style>
 </head>
 <body>
@@ -267,23 +299,29 @@ if (is_file($versionFile)) {
       <h2>Режим</h2>
       <form method="post" id="updateForm">
         <input type="hidden" name="update" value="1">
-        <div class="radio-row"><label><input type="radio" name="update_type" value="branch" <?= $updateType!=='tag'?'checked':''?>> Beta (ветка <?=e($branch)?>, самая свежая, может быть нестабильной)</label></div>
-        <div class="radio-row"><label><input type="radio" name="update_type" value="tag" <?= $updateType==='tag'?'checked':''?>> Стабильный релиз (тег)</label></div>
-        <div style="margin:10px 0 14px 4px;">
-          <select name="tag_name" id="tagSelect" style="max-width:300px;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:#0f1733;color:#fff;" <?= $updateType==='tag'?'':'disabled'?>>
+        <div class="segmented" role="tablist" aria-label="Режим обновления">
+          <button type="button" class="seg <?= $updateType!=='tag'?'active':''?>" data-mode="branch">Beta (ветка <?=e($branch)?>)</button>
+          <button type="button" class="seg <?= $updateType==='tag'?'active':''?>" data-mode="tag">Стабильный релиз</button>
+        </div>
+        <input type="hidden" name="update_type" id="modeInput" value="<?= $updateType==='tag'?'tag':'branch' ?>">
+        <div class="inline-actions" style="margin-top:12px;">
+          <select name="tag_name" id="tagSelect" style="max-width:320px;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:#0f1733;color:#fff;" <?= $updateType==='tag'?'':'disabled'?>>
             <option value="">— выбрать тег —</option>
             <?php foreach($stableTags as $st): $t=$st['tag']; $ver=$st['ver']; ?>
               <option value="<?=e($t)?>" data-notes="<?= e(substr($releaseNotes[$t] ?? '',0,800)) ?>" <?= $t===$selectedTag?'selected':''?>><?=e($t)?><?=$t===$latestStable?'  • latest':''?></option>
             <?php endforeach; ?>
           </select>
-          <?php if(!$stableTags): ?><div class="changelog-hint">Не удалось получить список тегов (возможно, ограничение GitHub API). Попробуйте позже.</div><?php endif; ?>
+          <button type="button" class="btn small" id="chooseLatestBtn" title="Выбрать последний стабильный тег" <?= $latestStable? '':'disabled'?>>Выбрать latest</button>
         </div>
-        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:4px;">
-          <input type="checkbox" name="force" value="1" <?= !empty($_POST['force'])?'checked':''?>> Принудительно (перезаписать даже если версия не новее)
+        <label class="switch-modern">
+          <input type="checkbox" name="force" value="1" <?= !empty($_POST['force'])?'checked':''?>>
+          <span class="slider" aria-hidden="true"></span>
+          <span class="switch-label">Принудительно (перезаписать даже если версия не новее)</span>
         </label>
         <div class="submit-row">
           <?php $btnTagLabel = ($updateType==='tag' && $selectedTag) ? (strpos($selectedTag,'v')===0 ? $selectedTag : 'v'.$selectedTag) : 'Beta'; ?>
-          <button type="submit" class="btn primary" style="min-width:180px;">Обновить → <?=e($btnTagLabel)?></button>
+          <button type="submit" class="btn primary" id="updateBtn" style="min-width:180px;">Обновить → <?=e($btnTagLabel)?></button>
+          <button type="button" class="btn" id="checkUpdatesBtn">Проверить обновления</button>
           <div class="diff-info" id="diffInfo">&nbsp;</div>
         </div>
       </form>
@@ -317,19 +355,42 @@ if (is_file($versionFile)) {
 </main>
 <?php include 'footer.php'; ?>
 <script>
-const tagRadios=document.querySelectorAll('input[name=update_type]');
 const tagSelect=document.getElementById('tagSelect');
-const relNotesBox=document.getElementById('relNotesBox');
 const form=document.getElementById('updateForm');
-function setMode(){ const isTag=document.querySelector('input[name=update_type][value=tag]').checked; tagSelect.disabled=!isTag; if(!isTag){ relNotesBox.innerHTML='<div class="empty-box">Режим Beta: заметки не отображаются.</div>'; } else { if(tagSelect.value===''){ relNotesBox.innerHTML='<div class="empty-box">Выберите стабильный тег чтобы увидеть заметки релиза.</div>'; } else updateNotes(); } }
-function updateNotes(){ const opt=tagSelect.options[tagSelect.selectedIndex]; if(!opt){ return; } const notes=opt.dataset.notes||''; if(notes){ relNotesBox.innerHTML='<div class="rel-notes" id="relNotesContent">'+notes.replace(/\n/g,'<br>')+'</div>'; } else { relNotesBox.innerHTML='<div class="empty-box">Нет заметок для этого тега.</div>'; } }
+const modeInput=document.getElementById('modeInput');
+const segBtns=document.querySelectorAll('.segmented .seg');
+const diffInfo=document.getElementById('diffInfo');
+const relNotesBox=document.getElementById('relNotesBox');
+const localVer=<?= json_encode($localVersion) ?>;
 
-tagRadios.forEach(r=>r.addEventListener('change', setMode));
-tagSelect && tagSelect.addEventListener('change', updateNotes);
-setMode();
-// Quick choose buttons
-const list=document.getElementById('tagsList');
-if(list){ list.addEventListener('click',e=>{ const btn=e.target.closest('[data-choose-tag]'); if(!btn) return; const tag=btn.getAttribute('data-choose-tag'); document.querySelector('input[name=update_type][value=tag]').checked=true; setMode(); for(const o of tagSelect.options){ if(o.value===tag){ tagSelect.value=tag; updateNotes(); break; } } list.querySelectorAll('li').forEach(li=>li.classList.toggle('active', li.dataset.tag===tag)); }); }
+function parseVer(v){ return (v||'').replace(/^v/i,''); }
+function cmp(a,b){ const pa=parseVer(a).split('.').map(n=>parseInt(n||'0')); const pb=parseVer(b).split('.').map(n=>parseInt(n||'0')); for(let i=0;i<3;i++){ const da=(pa[i]||0)-(pb[i]||0); if(da!==0) return da>0?1:-1; } return 0; }
+
+function setModeUI(){ const isTag = (modeInput.value==='tag'); if(tagSelect) tagSelect.disabled = !isTag; if(!isTag){ relNotesBox.innerHTML='<div class="empty-box">Режим Beta: заметки не отображаются.</div>'; diffInfo.innerHTML='&nbsp;'; }
+  else { if(tagSelect.value===''){ relNotesBox.innerHTML='<div class="empty-box">Выберите стабильный тег чтобы увидеть заметки релиза.</div>'; diffInfo.innerHTML='&nbsp;'; }
+         else { updateNotes(); updateDiffInfo(); } }
+}
+segBtns.forEach(b=>b.addEventListener('click',()=>{ segBtns.forEach(x=>x.classList.toggle('active', x===b)); modeInput.value=b.dataset.mode; setModeUI(); }));
+
+function updateNotes(){ const opt=tagSelect.options[tagSelect.selectedIndex]; if(!opt){ return; } const notes=opt?.dataset?.notes||''; if(notes){ relNotesBox.innerHTML='<div class="rel-notes" id="relNotesContent">'+notes.replace(/\n/g,'<br>')+'</div>'; } else { relNotesBox.innerHTML='<div class="empty-box">Нет заметок для этого тега.</div>'; } }
+function updateDiffInfo(){ if(modeInput.value!=='tag'){ diffInfo.innerHTML='&nbsp;'; return; } const val=tagSelect.value; if(!val){ diffInfo.innerHTML='&nbsp;'; return; } const v=parseVer(val); const c=cmp(v, localVer); if(c>0) diffInfo.textContent='Новая версия (v'+v+' > v'+localVer+')'; else if(c<0) diffInfo.textContent='Старее текущей (v'+v+' < v'+localVer+')'; else diffInfo.textContent='Та же версия (v'+v+')'; }
+
+if(tagSelect){ tagSelect.addEventListener('change', ()=>{ updateNotes(); updateDiffInfo(); }); }
+setModeUI();
+
+// Quick choose latest
+const chooseLatestBtn=document.getElementById('chooseLatestBtn');
+if(chooseLatestBtn && tagSelect){ chooseLatestBtn.addEventListener('click',()=>{ const latestTag=<?= json_encode($latestStable) ?>; if(!latestTag) return; for(const o of tagSelect.options){ if(o.value===latestTag){ tagSelect.value=latestTag; updateNotes(); updateDiffInfo(); break; } } const tagBtn=document.querySelector('.segmented .seg[data-mode="tag"]'); if(tagBtn) tagBtn.click(); }); }
+
+// Check updates
+const checkBtn=document.getElementById('checkUpdatesBtn');
+if(checkBtn){ checkBtn.addEventListener('click', async ()=>{ diffInfo.textContent='Проверка...'; try{ const r=await fetch('update.php?action=check_latest', {headers:{'Accept':'application/json'}}); const data=await r.json(); let msg=''; if(modeInput.value==='branch'){ if(data.remoteBranchVer){ const c=cmp(parseVer(data.remoteBranchVer), localVer); msg = c>0 ? ('Доступна beta v'+data.remoteBranchVer) : 'Обновлений beta нет'; } else { msg='Не удалось определить beta версию'; } }
+  else { if(data.latestStableTag){ msg='Последний стабильный: '+data.latestStableTag; } else { msg='Теги недоступны'; } }
+  diffInfo.textContent=msg; } catch(e){ diffInfo.textContent='Ошибка проверки'; } }); }
+
+// Submit spinner
+const updateBtn=document.getElementById('updateBtn');
+if(form && updateBtn){ form.addEventListener('submit', ()=>{ updateBtn.dataset.prev=updateBtn.textContent; updateBtn.textContent='Обновление...'; updateBtn.disabled=true; }); }
 </script>
 </body>
 </html>

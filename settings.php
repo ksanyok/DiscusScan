@@ -264,6 +264,18 @@ $sourcesUrl = $baseUrl . dirname($_SERVER['SCRIPT_NAME']) . '/sources.php';
           <button type="button" class="preset-btn" data-langs="ru, uk, kk, be, uz" data-regs="RU, UA, KZ, BY, UZ">СНГ</button>
           <button type="button" class="preset-btn" data-langs="en, fr, es" data-regs="US, CA">Северная Америка</button>
           <button type="button" class="preset-btn" data-langs="pl, cs, sk, hu, ro, bg" data-regs="PL, CZ, SK, HU, RO, BG">Восточная Европа</button>
+          
+          <!-- Новые пресеты -->
+          <button type="button" class="preset-btn" data-langs="en" data-regs="US, GB, CA, AU, NZ, IE, ZA, SG">Англоязычные страны</button>
+          <button type="button" class="preset-btn" data-langs="ru" data-regs="RU, UA, BY, KZ, KG">Русскоязычные</button>
+          <button type="button" class="preset-btn" data-langs="es" data-regs="ES, MX, AR, CO, CL, PE">Испаноязычные</button>
+          <button type="button" class="preset-btn" data-langs="de" data-regs="DE, AT, CH">Немецкоязычные (DACH)</button>
+          <button type="button" class="preset-btn" data-langs="fr" data-regs="FR, CA, BE, CH">Франкоязычные</button>
+          <button type="button" class="preset-btn" data-langs="ar" data-regs="SA, AE, EG, MA, DZ, QA">MENA (арабский)</button>
+          <button type="button" class="preset-btn" data-langs="sv, no, da, fi, en" data-regs="SE, NO, DK, FI, IS">Скандинавия</button>
+          <button type="button" class="preset-btn" data-langs="nl, fr, en" data-regs="NL, BE, LU">Бенилюкс</button>
+          <button type="button" class="preset-btn" data-langs="pt" data-regs="PT, BR">Португалоязычные</button>
+          <button type="button" class="preset-btn" data-langs="en" data-regs="SG, HK, MY, PH, IN, AU, NZ">APAC (англ.)</button>
         </div>
       </label>
 
