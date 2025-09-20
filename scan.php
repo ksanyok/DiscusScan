@@ -111,41 +111,6 @@ try {
     }
 } catch (Throwable $e) {}
 
-// ----------------------- DB: start scan row -----------------------
-$scanId = null;
-try {
-    $ins = pdo()->prepare("INSERT INTO scans (started_at, status, model, prompt) VALUES (NOW(), 'started', ?, ?)");
-    $ins->execute([$model, $prompt]);
-    $scanId = (int)pdo()->lastInsertId();
-} catch (Throwable $e) {}
-
-$scanState = [
-    'scanId' => $scanId,
-    'found' => 0,
-    'new' => 0,
-    'newLinks' => [],
-    'allLinks' => [],
-    'jobStats' => [],
-    'bumpedAny' => false,
-    'finalized' => false,
-    'status' => 'started',
-    'error' => null
-];
-
-register_shutdown_function(function () use (&$scanState) {
-    if (!empty($scanState['finalized']) || empty($scanState['scanId'])) {
-        return;
-    }
-    $err = error_get_last();
-    $message = $scanState['error'] ?? null;
-    if ($err) {
-        $message = 'Shutdown: ' . ($err['message'] ?? 'unknown') . ' @ ' . ($err['file'] ?? '?') . ':' . ($err['line'] ?? '?');
-    } elseif (!$message) {
-        $message = 'Скан прерван (shutdown)';
-    }
-    finalize_scan($scanState, 'error', $message);
-});
-
 // ----------------------- OpenAI client helpers -----------------------
 $MAX_OUTPUT_TOKENS   = (int)get_setting('openai_max_output_tokens', 4096);
 $OPENAI_HTTP_TIMEOUT = (int)get_setting('openai_timeout_sec', 300);
@@ -714,6 +679,63 @@ function save_links_batch(array &$links): array {
     return ['found' => $found, 'new' => $new, 'new_links' => $newLinks];
 }
 
+function get_active_scan_row(): ?array {
+    try {
+        $stmt = pdo()->query("SELECT * FROM scans WHERE finished_at IS NULL ORDER BY id DESC LIMIT 1");
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row && in_array($row['status'], ['started','running','paused'], true)) {
+            return $row;
+        }
+    } catch (Throwable $e) {}
+    return null;
+}
+
+function create_scan_jobs(int $scanId, array $jobs): void {
+    if (empty($jobs)) return;
+    $pdo = pdo();
+    $check = $pdo->prepare("SELECT COUNT(*) FROM scan_jobs WHERE scan_id=?");
+    $check->execute([$scanId]);
+    if ((int)$check->fetchColumn() > 0) {
+        return;
+    }
+    $ins = $pdo->prepare("INSERT INTO scan_jobs (scan_id, position, job_name, payload) VALUES (?,?,?,?)");
+    $position = 1;
+    foreach ($jobs as $job) {
+        $payload = json_encode($job, JSON_UNESCAPED_UNICODE);
+        $ins->execute([$scanId, $position++, $job['name'] ?? null, $payload]);
+    }
+}
+
+function fetch_pending_scan_jobs(int $scanId, int $limit): array {
+    $pdo = pdo();
+    $stmt = $pdo->prepare("SELECT * FROM scan_jobs WHERE scan_id=? AND status='pending' ORDER BY position LIMIT ?");
+    $stmt->bindValue(1, $scanId, PDO::PARAM_INT);
+    $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+    $stmt->execute();
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if (!$rows) {
+        $pdo->prepare("UPDATE scan_jobs SET status='pending', started_at=NULL WHERE scan_id=? AND status='running'")
+            ->execute([$scanId]);
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    return $rows ?: [];
+}
+
+function count_pending_scan_jobs(int $scanId): int {
+    $pdo = pdo();
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM scan_jobs WHERE scan_id=? AND status IN ('pending','running')");
+    $stmt->execute([$scanId]);
+    return (int)$stmt->fetchColumn();
+}
+
+function mark_remaining_jobs_cancelled(int $scanId): void {
+    try {
+        pdo()->prepare("UPDATE scan_jobs SET status='cancelled', finished_at=NOW(), error='cancelled by user' WHERE scan_id=? AND status IN ('pending','running')")
+            ->execute([$scanId]);
+    } catch (Throwable $e) {}
+}
+
 function notify_telegram_scan(array $state, string $status, ?string $errorMessage): void {
     $tgToken = (string)get_setting('telegram_token', '');
     $tgChat  = (string)get_setting('telegram_chat_id', '');
@@ -945,162 +967,287 @@ foreach ($searchRegions as $regCode) {
     }
 }
 
-// ----------------------- Execute jobs & persist incrementally -----------------------
-$seenUrls = [];
-$allLinks = [];
-$bumpedAny = false;
-$jobStats = [];
-$found = 0;
-$new = 0;
-$newLinks = [];
-$scanProgressStmt = null;
-if ($scanId) {
+// ----------------------- Execute jobs in batches -----------------------
+$MAX_JOBS_PER_PASS = max(1, (int)get_setting('scan_batch_size', 4));
+$MAX_RUNTIME_SEC = max(60, (int)get_setting('scan_max_runtime_sec', 240));
+$loopStart = microtime(true);
+
+$activeScanRow = get_active_scan_row();
+$isNewScan = false;
+
+if ($activeScanRow) {
+    $scanId = (int)$activeScanRow['id'];
+    $found = (int)$activeScanRow['found_links'];
+    $new = (int)$activeScanRow['new_links'];
+    $existingStatus = (string)$activeScanRow['status'];
+} else {
+    $scanId = null;
     try {
-        $scanProgressStmt = pdo()->prepare("UPDATE scans SET status='running', found_links=?, new_links=? WHERE id=?");
-    } catch (Throwable $e) {
-        $scanProgressStmt = null;
+        $ins = pdo()->prepare("INSERT INTO scans (started_at, status, model, prompt) VALUES (NOW(), 'started', ?, ?)");
+        $ins->execute([$model, $prompt]);
+        $scanId = (int)pdo()->lastInsertId();
+    } catch (Throwable $e) {}
+    if (!$scanId) {
+        http_response_code(500);
+        echo json_encode(['ok'=>false,'error'=>'scan_not_created'], JSON_UNESCAPED_UNICODE);
+        return;
+    }
+    create_scan_jobs($scanId, $jobs);
+    $found = 0;
+    $new = 0;
+    $existingStatus = 'started';
+    $isNewScan = true;
+}
+
+$scanState = [
+    'scanId' => $scanId,
+    'found' => $found,
+    'new' => $new,
+    'newLinks' => [],
+    'allLinks' => [],
+    'jobStats' => [],
+    'bumpedAny' => false,
+    'finalized' => false,
+    'status' => $existingStatus,
+    'error' => null
+];
+
+register_shutdown_function(function () use (&$scanState) {
+    if (!empty($scanState['finalized']) || empty($scanState['scanId'])) {
+        return;
+    }
+    $err = error_get_last();
+    $message = $scanState['error'] ?? null;
+    if ($err) {
+        $message = 'Shutdown: ' . ($err['message'] ?? 'unknown') . ' @ ' . ($err['file'] ?? '?') . ':' . ($err['line'] ?? '?');
+    } elseif (!$message) {
+        $message = 'Скан прерван (shutdown)';
+    }
+    finalize_scan($scanState, 'error', $message);
+});
+
+$pdo = pdo();
+$pdo->prepare("UPDATE scan_jobs SET status='pending', started_at=NULL WHERE scan_id=? AND status='running'")->execute([$scanId]);
+
+$pendingJobs = fetch_pending_scan_jobs($scanId, $MAX_JOBS_PER_PASS);
+if (empty($pendingJobs)) {
+    $remainingCount = count_pending_scan_jobs($scanId);
+    if ($remainingCount === 0) {
+        $scanState['found'] = $found;
+        $scanState['new'] = $new;
+        finalize_scan($scanState, 'done', null);
+        echo json_encode([
+            'ok' => true,
+            'scan_id' => $scanId,
+            'found' => $found,
+            'new' => $new,
+            'bumped_any' => false,
+            'job_stats' => [],
+            'status' => 'done',
+            'error' => null,
+            'pending_jobs' => 0
+        ], JSON_UNESCAPED_UNICODE);
+        return;
     }
 }
 
-$scanState['status'] = 'running';
+$scanProgressStmt = null;
+try {
+    $scanProgressStmt = $pdo->prepare("UPDATE scans SET status='running', found_links=?, new_links=?, error=NULL WHERE id=?");
+    $scanProgressStmt->execute([$found, $new, $scanId]);
+} catch (Throwable $e) {
+    $scanProgressStmt = null;
+}
+
+$claimJobStmt = $pdo->prepare("UPDATE scan_jobs SET status='running', started_at=NOW(), updated_at=NOW() WHERE id=? AND status='pending'");
+$updateJobStmt = $pdo->prepare("UPDATE scan_jobs SET status=?, finished_at=NOW(), links_total=?, links_new=?, error=?, updated_at=NOW() WHERE id=?");
+
+$seenUrls = [];
+$allLinks = [];
+$newLinks = [];
+$jobStats = [];
+$bumpedAny = false;
 $hasError = false;
 $errorMessage = null;
 $cancelledByUser = false;
-$statusCheckStmt = null;
-if ($scanId) {
+$statusCheckStmt = $pdo->prepare("SELECT status FROM scans WHERE id=? LIMIT 1");
+
+foreach ($pendingJobs as $jobRow) {
+    if ((microtime(true) - $loopStart) >= $MAX_RUNTIME_SEC) {
+        break;
+    }
     try {
-        $statusCheckStmt = pdo()->prepare("SELECT status FROM scans WHERE id=? LIMIT 1");
-    } catch (Throwable $e) {
-        $statusCheckStmt = null;
+        $statusCheckStmt->execute([$scanId]);
+        $externalStatus = $statusCheckStmt->fetchColumn();
+        if ($externalStatus === 'cancelled') {
+            $cancelledByUser = true;
+            $scanState['status'] = 'cancelled';
+            $scanState['error'] = 'cancelled by user';
+            break;
+        }
+    } catch (Throwable $e) {}
+    if ($cancelledByUser) {
+        break;
     }
-}
 
-try {
-    foreach ($jobs as $job) {
-        if ($statusCheckStmt) {
-            try {
-                $statusCheckStmt->execute([$scanId]);
-                $externalStatus = $statusCheckStmt->fetchColumn();
-                if ($externalStatus === 'cancelled') {
-                    $cancelledByUser = true;
-                    $scanState['status'] = 'cancelled';
-                    $scanState['error'] = 'cancelled by user';
-                    break;
-                }
-            } catch (Throwable $e) {}
+    $jobId = (int)$jobRow['id'];
+    $claimJobStmt->execute([$jobId]);
+    if ($claimJobStmt->rowCount() === 0) {
+        continue;
+    }
+
+    $payload = json_decode((string)$jobRow['payload'], true);
+    if (!is_array($payload)) {
+        $updateJobStmt->execute(['error', 0, 0, 'payload decode error', $jobId]);
+        $hasError = true;
+        $errorMessage = 'payload decode error';
+        break;
+    }
+
+    [$status, $cnt, $rawLinks, $bumped] = run_openai_job(
+        (string)($payload['name'] ?? ''),
+        (string)($payload['sys'] ?? ''),
+        (string)($payload['user'] ?? ''),
+        $requestUrl, $requestHeaders, $schema,
+        $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog,
+        $payload['country'] ?? null,
+        $payload['max_tool_calls'] ?? null
+    );
+    $bumpedAny = $bumpedAny || $bumped;
+    $scanState['bumpedAny'] = $bumpedAny;
+
+    $jobLinks = [];
+    foreach ($rawLinks as $it) {
+        $url = canonicalize_url(arr_get($it, 'url', ''));
+        if ($url === '' || isset($seenUrls[$url])) {
+            continue;
         }
-
-        if ($cancelledByUser) {
-            break;
+        $domain = normalize_host(arr_get($it, 'domain', ''));
+        if ($domain === '') {
+            $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
         }
-
-        [$status, $cnt, $rawLinks, $bumped] = run_openai_job(
-            $job['name'], $job['sys'], $job['user'],
-            $requestUrl, $requestHeaders, $schema,
-            $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog, $job['country'] ?? null, $job['max_tool_calls'] ?? null
-        );
-        $bumpedAny = $bumpedAny || $bumped;
-        $scanState['bumpedAny'] = $bumpedAny;
-
-        $jobLinks = [];
-        foreach ($rawLinks as $it) {
-            $url = canonicalize_url(arr_get($it, 'url', ''));
-            if ($url === '' || isset($seenUrls[$url])) {
-                continue;
-            }
-
-            $domain = normalize_host(arr_get($it, 'domain', ''));
-            if ($domain === '') {
-                $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
-            }
-            if ($domain === '') {
-                continue;
-            }
-
-            $seenUrls[$url] = 1;
-            $title = trim((string)arr_get($it, 'title', ''));
-            $jobLinks[] = [
-                'url' => $url,
-                'title' => $title,
-                'domain' => $domain,
-                'content_updated_at' => null,
-                '__job' => $job['name'],
-                '__purpose' => $job['purpose'] ?? null
-            ];
+        if ($domain === '') {
+            continue;
         }
+        $seenUrls[$url] = 1;
+        $title = trim((string)arr_get($it, 'title', ''));
+        $jobLinks[] = [
+            'url' => $url,
+            'title' => $title,
+            'domain' => $domain,
+            'content_updated_at' => null,
+            '__job' => $payload['name'] ?? null,
+            '__purpose' => $payload['purpose'] ?? null
+        ];
+    }
 
-        $jobStats[$job['name']] = ['status' => $status, 'count' => $cnt, 'saved' => count($jobLinks)];
-        $scanState['jobStats'] = $jobStats;
-
-        if ($status !== 200) {
-            $hasError = true;
-            $errorMessage = "HTTP {$status} на шаге {$job['name']}";
-            $jobStats[$job['name']]['error'] = $errorMessage;
-            $scanState['jobStats'] = $jobStats;
-            $scanState['error'] = $errorMessage;
-            app_log('error', 'scan', 'Job failed', ['job' => $job['name'], 'status' => $status]);
-            break;
+    $persisted = ['found' => 0, 'new' => 0, 'new_links' => []];
+    if (!empty($jobLinks)) {
+        $persisted = save_links_batch($jobLinks);
+        $found += $persisted['found'];
+        $new += $persisted['new'];
+        if (!empty($persisted['new_links'])) {
+            $newLinks = array_merge($newLinks, $persisted['new_links']);
         }
-
-        if (!empty($jobLinks)) {
-            $persisted = save_links_batch($jobLinks);
-            $found += $persisted['found'];
-            $new += $persisted['new'];
-            if (!empty($persisted['new_links'])) {
-                $newLinks = array_merge($newLinks, $persisted['new_links']);
-            }
-            $allLinks = array_merge($allLinks, $jobLinks);
-
-            $scanState['found'] = $found;
-            $scanState['new'] = $new;
-            $scanState['newLinks'] = $newLinks;
-            $scanState['allLinks'] = $allLinks;
-        }
-
-        $scanState['jobStats'] = $jobStats;
-        $scanState['bumpedAny'] = $bumpedAny;
-
+        $allLinks = array_merge($allLinks, $jobLinks);
         if ($scanProgressStmt) {
-            try {
-                $scanProgressStmt->execute([$found, $new, $scanId]);
-            } catch (Throwable $e) {}
+            try { $scanProgressStmt->execute([$found, $new, $scanId]); } catch (Throwable $e) {}
         }
     }
-} catch (Throwable $e) {
-    $hasError = true;
-    $errorMessage = 'Unhandled exception: ' . $e->getMessage();
-    $scanState['error'] = $errorMessage;
-    app_log('error', 'scan', 'Unhandled exception', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+
+    $jobStats[$payload['name'] ?? $jobRow['job_name'] ?? ('job#'.$jobId)] = [
+        'status' => $status,
+        'count' => $cnt,
+        'saved' => count($jobLinks)
+    ];
+
+    if ($status === 200) {
+        $updateJobStmt->execute(['done', $cnt, $persisted['new'], null, $jobId]);
+    } else {
+        $jobErrorMessage = "HTTP {$status} на шаге " . ($payload['name'] ?? $jobRow['job_name'] ?? '');
+        $updateJobStmt->execute(['error', $cnt, $persisted['new'], $jobErrorMessage, $jobId]);
+        $hasError = true;
+        $errorMessage = $jobErrorMessage;
+        break;
+    }
+
+    if ((microtime(true) - $loopStart) >= $MAX_RUNTIME_SEC) {
+        break;
+    }
 }
 
+$remainingJobs = count_pending_scan_jobs($scanId);
 $scanState['found'] = $found;
 $scanState['new'] = $new;
-$scanState['newLinks'] = $newLinks;
-$scanState['allLinks'] = $allLinks;
+$scanState['newLinks'] = array_merge($scanState['newLinks'], $newLinks);
+$scanState['allLinks'] = array_merge($scanState['allLinks'], $allLinks);
 $scanState['jobStats'] = $jobStats;
-$scanState['bumpedAny'] = $bumpedAny;
-if ($errorMessage) {
-    $scanState['error'] = $errorMessage;
-}
 
 if ($cancelledByUser) {
-    $scanState['status'] = 'cancelled';
+    mark_remaining_jobs_cancelled($scanId);
+    finalize_scan($scanState, 'cancelled', $errorMessage);
+    echo json_encode([
+        'ok' => false,
+        'scan_id' => $scanId,
+        'found' => $found,
+        'new' => $new,
+        'bumped_any' => $bumpedAny,
+        'job_stats' => $jobStats,
+        'status' => 'cancelled',
+        'error' => $scanState['error'],
+        'pending_jobs' => $remainingJobs
+    ], JSON_UNESCAPED_UNICODE);
+    return;
 }
-$finalStatus = $cancelledByUser ? 'cancelled' : ($hasError ? 'error' : 'done');
-if ($cancelledByUser && !$errorMessage) {
-    $errorMessage = 'cancelled by user';
-}
-finalize_scan($scanState, $finalStatus, $errorMessage);
 
-// ----------------------- Response to caller -----------------------
-header('Content-Type: application/json; charset=utf-8');
+if ($hasError) {
+    finalize_scan($scanState, 'error', $errorMessage);
+    echo json_encode([
+        'ok' => false,
+        'scan_id' => $scanId,
+        'found' => $found,
+        'new' => $new,
+        'bumped_any' => $bumpedAny,
+        'job_stats' => $jobStats,
+        'status' => 'error',
+        'error' => $errorMessage,
+        'pending_jobs' => $remainingJobs
+    ], JSON_UNESCAPED_UNICODE);
+    return;
+}
+
+if ($remainingJobs > 0) {
+    try {
+        $stmt = $pdo->prepare("UPDATE scans SET status='paused', found_links=?, new_links=?, error=NULL WHERE id=?");
+        $stmt->execute([$found, $new, $scanId]);
+    } catch (Throwable $e) {}
+    $scanState['status'] = 'paused';
+    $scanState['finalized'] = true;
+    echo json_encode([
+        'ok' => true,
+        'scan_id' => $scanId,
+        'found' => $found,
+        'new' => $new,
+        'bumped_any' => $bumpedAny,
+        'job_stats' => $jobStats,
+        'status' => 'paused',
+        'error' => null,
+        'pending_jobs' => $remainingJobs
+    ], JSON_UNESCAPED_UNICODE);
+    return;
+}
+
+finalize_scan($scanState, 'done', null);
+
 echo json_encode([
-    'ok' => ($finalStatus === 'done'),
+    'ok' => true,
     'scan_id' => $scanId,
     'found' => $found,
     'new' => $new,
     'bumped_any' => $bumpedAny,
     'job_stats' => $jobStats,
-    'status' => $scanState['status'] ?? $finalStatus,
-    'error' => $scanState['error'] ?? $errorMessage,
+    'status' => 'done',
+    'error' => null,
+    'pending_jobs' => 0
 ], JSON_UNESCAPED_UNICODE);
+return;

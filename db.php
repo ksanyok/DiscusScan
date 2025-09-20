@@ -155,10 +155,34 @@ function install_schema(PDO $pdo): void {
             error TEXT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     ");
-    
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS scan_jobs (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            scan_id BIGINT NOT NULL,
+            position INT NOT NULL,
+            job_name VARCHAR(255),
+            payload LONGTEXT,
+            status VARCHAR(20) DEFAULT 'pending',
+            started_at TIMESTAMP NULL,
+            finished_at TIMESTAMP NULL,
+            links_total INT DEFAULT 0,
+            links_new INT DEFAULT 0,
+            error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NULL,
+            CONSTRAINT fk_scan_jobs_scan FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE,
+            UNIQUE KEY uniq_scan_job (scan_id, position),
+            INDEX idx_scan_jobs_status (scan_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    ");
+
     // Schema migrations
     try { $pdo->exec("ALTER TABLE links ADD COLUMN content_updated_at TIMESTAMP NULL AFTER last_seen"); } catch (Throwable $e) {}
-    
+    try { $pdo->exec("ALTER TABLE scan_jobs ADD COLUMN links_total INT DEFAULT 0"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE scan_jobs ADD COLUMN links_new INT DEFAULT 0"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE scan_jobs ADD COLUMN error TEXT"); } catch (Throwable $e) {}
+    try { $pdo->exec("ALTER TABLE scan_jobs ADD COLUMN updated_at TIMESTAMP NULL"); } catch (Throwable $e) {}
+
     // domains (семплированные домены для оркестрации)
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS domains (

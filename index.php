@@ -43,6 +43,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='cancel_sc
     }
     $stmt = pdo()->prepare("UPDATE scans SET status='cancelled', finished_at=NOW(), error='cancelled by user' WHERE id=?");
     $stmt->execute([(int)$scan['id']]);
+    try {
+        pdo()->prepare("UPDATE scan_jobs SET status='cancelled', finished_at=NOW(), error='cancelled by user' WHERE scan_id=? AND status IN ('pending','running')")
+            ->execute([(int)$scan['id']]);
+    } catch (Throwable $e) {}
     app_log('info','scan','cancel_requested',['scan_id'=>(int)$scan['id'],'user'=>$_SESSION['user']??null]);
     json_out(['ok'=>true,'id'=>(int)$scan['id']]);
 }
@@ -112,6 +116,13 @@ if (isset($_GET['ajax'])) {
         } elseif ($row['started_at']) {
             $dur = time() - strtotime($row['started_at']);
         }
+        $pendingJobs = 0;
+        try {
+            $stmt = pdo()->prepare("SELECT COUNT(*) FROM scan_jobs WHERE scan_id=? AND status IN ('pending','running')");
+            $stmt->execute([(int)$row['id']]);
+            $pendingJobs = (int)$stmt->fetchColumn();
+        } catch (Throwable $e) {}
+
         json_out(['ok'=>true,'scan'=>[
             'id'=>(int)$row['id'],
             'started_at'=>$row['started_at'],
@@ -120,7 +131,8 @@ if (isset($_GET['ajax'])) {
             'found'=>(int)$row['found_links'],
             'new'=>(int)$row['new_links'],
             'status'=>$row['status'],
-            'error'=>$row['error']
+            'error'=>$row['error'],
+            'pending_jobs'=>$pendingJobs
         ]]);
     } elseif ($ajax==='daily') {
         $rows = pdo()->query("SELECT DATE(first_found) d, COUNT(*) c, COUNT(DISTINCT source_id) u FROM links WHERE first_found >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) GROUP BY DATE(first_found)")->fetchAll(PDO::FETCH_ASSOC);
@@ -452,7 +464,7 @@ function updateScanButtons(){
   if(scanResumeBtn){
     if(pendingScan){
       scanResumeBtn.style.display='none';
-    } else if(lastScanStatus && ['error','cancelled'].includes(lastScanStatus)){
+    } else if(lastScanStatus && ['error','cancelled','paused'].includes(lastScanStatus)){
       scanResumeBtn.style.display='';
     } else {
       scanResumeBtn.style.display='none';
@@ -551,6 +563,8 @@ async function pollScanStatusLoop(){
       settleScan({status:'error', data:scan});
     } else if(scan.status === 'cancelled'){
       settleScan({status:'cancelled', data:scan});
+    } else if(scan.status === 'paused'){
+      settleScan({status:'paused', data:scan});
     }
   } catch(e){
     console.error('pollScanStatus failed', e);
@@ -617,6 +631,17 @@ function settleScan(result){
     scanStatusText.textContent = `Процесс остановлен. Успели сохранить: ${totalFound} (новых ${totalNew}).`;
     scanErrorBox.textContent = data.error ? data.error : 'Отменено пользователем.';
     scanErrorBox.hidden = false;
+    scanOverlayContinue.hidden = false;
+    scanOverlayContinue.disabled = false;
+  } else if(result.status === 'paused'){
+    const totalFound = scanFoundEl.textContent;
+    const totalNew = scanNewEl.textContent;
+    const pending = data.pending_jobs ?? 0;
+    scanOverlayTitle.textContent = 'Мониторинг приостановлен';
+    scanStatusText.textContent = pending
+      ? `Осталось задач: ${pending}. Нажмите «Продолжить», чтобы продолжить обработку.`
+      : `Пауза. Успели сохранить: ${totalFound} (новых ${totalNew}).`;
+    scanErrorBox.hidden = true;
     scanOverlayContinue.hidden = false;
     scanOverlayContinue.disabled = false;
   } else if(result.status === 'skipped'){
@@ -765,7 +790,7 @@ function formatShortDate(val){
 }
 
 // SCAN HISTORY
-const scanStatusLabels = { done:'Готово', running:'Выполняется', started:'Старт', error:'Ошибка', cancelled:'Отменён' };
+const scanStatusLabels = { done:'Готово', running:'Выполняется', started:'Старт', paused:'Пауза', error:'Ошибка', cancelled:'Отменён' };
 async function loadScanHistory(){
   try{
     const j=await fetchJson('index.php?ajax=scans'); if(!j.ok)return;
@@ -780,7 +805,7 @@ async function loadScanHistory(){
     j.scans.forEach((s, idx)=>{
       let statusClass = '';
       if(['error','cancelled'].includes(s.status)){ statusClass = 'history-error'; }
-      else if(['running','started'].includes(s.status)){ statusClass = 'history-running'; }
+      else if(['running','started','paused'].includes(s.status)){ statusClass = 'history-running'; }
       else if(s.status === 'done'){ statusClass = 'history-done'; }
       const statusTitle = s.error ? ` title="${escapeHtml(s.error)}"` : '';
       const label = scanStatusLabels[s.status] || s.status;
