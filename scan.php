@@ -273,7 +273,7 @@ function extract_links_from_plain_list(string $body): array {
         $url = trim($parts[0] ?? '');
         if (!preg_match('~^https?://~i', $url)) continue;
         $title = trim($parts[1] ?? '');
-        $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
+            $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
         if ($domain === '') continue;
         $out[] = ['url' => $url, 'title' => $title, 'domain' => $domain];
     }
@@ -333,10 +333,24 @@ function extract_jsonld_dates($data): array {
     return $result;
 }
 
-function detect_content_updated_at(string $url, int $timeout = 12): ?string {
+function detect_content_updated_at(string $url, int $timeout = 9): ?string {
     static $cache = [];
+    static $fetchCount = 0;
+    static $fetchLimit = null;
+    if ($fetchLimit === null) {
+        $fetchLimit = (int)get_setting('content_meta_fetch_limit', 80);
+        if ($fetchLimit < 20) $fetchLimit = 20;
+    }
     if (isset($cache[$url])) {
         return $cache[$url];
+    }
+
+    if ($fetchCount >= $fetchLimit) {
+        return $cache[$url] = null;
+    }
+    $fetchCount++;
+    if ($fetchCount === $fetchLimit) {
+        app_log('info', 'scan', 'content_meta_limit_reached', ['limit' => $fetchLimit]);
     }
 
     $headers = [];
@@ -349,8 +363,8 @@ function detect_content_updated_at(string $url, int $timeout = 12): ?string {
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_MAXREDIRS => 4,
-        CURLOPT_CONNECTTIMEOUT => 8,
+        CURLOPT_MAXREDIRS => 3,
+        CURLOPT_CONNECTTIMEOUT => 6,
         CURLOPT_TIMEOUT => $timeout,
         CURLOPT_USERAGENT => 'DiscusScan/1.0 (+https://github.com/oleksandr/DiscusScan)',
         CURLOPT_ACCEPT_ENCODING => '',
@@ -376,8 +390,8 @@ function detect_content_updated_at(string $url, int $timeout = 12): ?string {
         $cache[$url] = null;
         return null;
     }
-    if (strlen($html) > 600000) {
-        $html = substr($html, 0, 600000);
+    if (strlen($html) > 300000) {
+        $html = substr($html, 0, 300000);
     }
     $lastModifiedHeader = $headers['last-modified'] ?? null;
     curl_close($ch);
@@ -656,15 +670,20 @@ function save_links_batch(array &$links): array {
         $row = $selectLink->fetch(PDO::FETCH_ASSOC);
 
         $existingContentDate = is_array($row) ? ($row['content_updated_at'] ?? null) : null;
-        $contentUpdatedAt = null;
-        $shouldFetchMeta = !$row || !$existingContentDate;
+        $existingTs = $existingContentDate ? strtotime($existingContentDate) : null;
+        $timesSeenBefore = is_array($row) ? (int)($row['times_seen'] ?? 0) : 0;
+        $staleThresholdDays = 180;
+        $stale = $existingTs ? ((time() - $existingTs) > ($staleThresholdDays * 86400)) : false;
+        $refreshDue = $stale && ((($timesSeenBefore + 1) % 5) === 0);
+        $shouldFetchMeta = !$row || !$existingContentDate || $refreshDue;
 
+        $contentUpdatedAt = null;
         if ($shouldFetchMeta) {
             $contentUpdatedAt = detect_content_updated_at($url);
         }
 
         $finalContentDate = $existingContentDate;
-        if ($contentUpdatedAt && (!$existingContentDate || strtotime($contentUpdatedAt) > strtotime((string)$existingContentDate))) {
+        if ($contentUpdatedAt && (!$existingContentDate || strtotime($contentUpdatedAt) > ($existingTs ?: 0))) {
             $finalContentDate = $contentUpdatedAt;
         }
 
@@ -938,9 +957,35 @@ if ($scanId) {
 $scanState['status'] = 'running';
 $hasError = false;
 $errorMessage = null;
+$cancelledByUser = false;
+$statusCheckStmt = null;
+if ($scanId) {
+    try {
+        $statusCheckStmt = pdo()->prepare("SELECT status FROM scans WHERE id=? LIMIT 1");
+    } catch (Throwable $e) {
+        $statusCheckStmt = null;
+    }
+}
 
 try {
     foreach ($jobs as $job) {
+        if ($statusCheckStmt) {
+            try {
+                $statusCheckStmt->execute([$scanId]);
+                $externalStatus = $statusCheckStmt->fetchColumn();
+                if ($externalStatus === 'cancelled') {
+                    $cancelledByUser = true;
+                    $scanState['status'] = 'cancelled';
+                    $scanState['error'] = 'cancelled by user';
+                    break;
+                }
+            } catch (Throwable $e) {}
+        }
+
+        if ($cancelledByUser) {
+            break;
+        }
+
         [$status, $cnt, $rawLinks, $bumped] = run_openai_job(
             $job['name'], $job['sys'], $job['user'],
             $requestUrl, $requestHeaders, $schema,
@@ -989,22 +1034,21 @@ try {
             break;
         }
 
-        if (empty($jobLinks)) {
-            continue;
+        if (!empty($jobLinks)) {
+            $persisted = save_links_batch($jobLinks);
+            $found += $persisted['found'];
+            $new += $persisted['new'];
+            if (!empty($persisted['new_links'])) {
+                $newLinks = array_merge($newLinks, $persisted['new_links']);
+            }
+            $allLinks = array_merge($allLinks, $jobLinks);
+
+            $scanState['found'] = $found;
+            $scanState['new'] = $new;
+            $scanState['newLinks'] = $newLinks;
+            $scanState['allLinks'] = $allLinks;
         }
 
-        $persisted = save_links_batch($jobLinks);
-        $found += $persisted['found'];
-        $new += $persisted['new'];
-        if (!empty($persisted['new_links'])) {
-            $newLinks = array_merge($newLinks, $persisted['new_links']);
-        }
-        $allLinks = array_merge($allLinks, $jobLinks);
-
-        $scanState['found'] = $found;
-        $scanState['new'] = $new;
-        $scanState['newLinks'] = $newLinks;
-        $scanState['allLinks'] = $allLinks;
         $scanState['jobStats'] = $jobStats;
         $scanState['bumpedAny'] = $bumpedAny;
 
@@ -1031,13 +1075,19 @@ if ($errorMessage) {
     $scanState['error'] = $errorMessage;
 }
 
-$finalStatus = $hasError ? 'error' : 'done';
+if ($cancelledByUser) {
+    $scanState['status'] = 'cancelled';
+}
+$finalStatus = $cancelledByUser ? 'cancelled' : ($hasError ? 'error' : 'done');
+if ($cancelledByUser && !$errorMessage) {
+    $errorMessage = 'cancelled by user';
+}
 finalize_scan($scanState, $finalStatus, $errorMessage);
 
 // ----------------------- Response to caller -----------------------
 header('Content-Type: application/json; charset=utf-8');
 echo json_encode([
-    'ok' => !$hasError,
+    'ok' => ($finalStatus === 'done'),
     'scan_id' => $scanId,
     'found' => $found,
     'new' => $new,

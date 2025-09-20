@@ -36,6 +36,16 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='activate_
     pdo()->exec("UPDATE sources SET is_active=1 WHERE id={$id}");
     json_out(['ok'=>true,'id'=>$id]);
 }
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['action'] ?? '')==='cancel_scan') {
+    $scan = pdo()->query("SELECT id FROM scans WHERE status IN ('running','started') ORDER BY id DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    if(!$scan){
+        json_out(['ok'=>false,'error'=>'no_running']);
+    }
+    $stmt = pdo()->prepare("UPDATE scans SET status='cancelled', finished_at=NOW(), error='cancelled by user' WHERE id=?");
+    $stmt->execute([(int)$scan['id']]);
+    app_log('info','scan','cancel_requested',['scan_id'=>(int)$scan['id'],'user'=>$_SESSION['user']??null]);
+    json_out(['ok'=>true,'id'=>(int)$scan['id']]);
+}
 
 // AJAX endpoints
 if (isset($_GET['ajax'])) {
@@ -223,6 +233,7 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .btn.small{ padding:8px 12px; border-radius:10px; font-size:13px; }
     .btn-ghost.small{ padding:8px 12px; }
     .quick-actions .btn{ width:100%; justify-content:center; }
+    .btn.danger{background:linear-gradient(135deg,#ff8a8a,#ff5757);color:#2a0e08;font-weight:600;}
     .history-error{color:#ff7b7b;font-weight:600}
     .history-running{color:#f7c948;font-weight:600}
     .history-done{color:#2ecc71;font-weight:600}
@@ -264,6 +275,7 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     <div class="scan-control">
       <button class="btn primary" id="scanBtn" type="button">🚀 Запустить скан</button>
       <button class="btn" id="scanResumeBtn" type="button" style="display:none;">↻ Продолжить</button>
+      <button class="btn danger" id="scanCancelBtn" type="button" style="display:none;">⛔ Прервать</button>
       <div class="guard-badge" id="guardInfo">Guard: —</div>
       <div class="auto-refresh-toggle"><label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="autoRefresh" style="margin:0"> <span>Автообновление</span></label></div>
     </div>
@@ -415,6 +427,7 @@ let scanSettled = false;
 let scanStartTs = null;
 let scanTimerInterval = null;
 let scanPollTimer = null;
+let cancelRequestPending = false;
 const SCAN_POLL_INTERVAL = 2000;
 
 const scanBtn = document.getElementById('scanBtn');
@@ -430,17 +443,29 @@ const scanErrorBox = document.getElementById('scanErrorBox');
 const scanOverlayContinue = document.getElementById('scanOverlayContinue');
 const scanOverlayHide = document.getElementById('scanOverlayHide');
 const scanOverlayClose = document.getElementById('scanOverlayClose');
+const scanCancelBtn = document.getElementById('scanCancelBtn');
 
 scanOverlayHide.hidden = true;
 scanOverlayClose.hidden = true;
 
-function updateResumeVisibility(){
-  if(!scanResumeBtn) return;
-  if(pendingScan){ scanResumeBtn.style.display='none'; return; }
-  if(lastScanStatus && !['done','skipped'].includes(lastScanStatus)){
-    scanResumeBtn.style.display='';
-  } else {
-    scanResumeBtn.style.display='none';
+function updateScanButtons(){
+  if(scanResumeBtn){
+    if(pendingScan){
+      scanResumeBtn.style.display='none';
+    } else if(lastScanStatus && ['error','cancelled'].includes(lastScanStatus)){
+      scanResumeBtn.style.display='';
+    } else {
+      scanResumeBtn.style.display='none';
+    }
+  }
+  if(scanCancelBtn){
+    const running = pendingScan || (lastScanStatus && ['running','started'].includes(lastScanStatus));
+    if(running){
+      scanCancelBtn.style.display='';
+      scanCancelBtn.disabled = cancelRequestPending;
+    } else {
+      scanCancelBtn.style.display='none';
+    }
   }
 }
 
@@ -460,6 +485,7 @@ function showScanOverlay(title, status){
   scanOverlayContinue.hidden = true;
   scanOverlayHide.hidden = true;
   scanOverlayClose.hidden = true;
+  scanOverlayHide.textContent = 'Свернуть';
 }
 
 function hideScanOverlay(){
@@ -523,6 +549,8 @@ async function pollScanStatusLoop(){
       settleScan({status:'done', data:scan});
     } else if(scan.status === 'error'){
       settleScan({status:'error', data:scan});
+    } else if(scan.status === 'cancelled'){
+      settleScan({status:'cancelled', data:scan});
     }
   } catch(e){
     console.error('pollScanStatus failed', e);
@@ -582,6 +610,15 @@ function settleScan(result){
     scanErrorBox.hidden = false;
     scanOverlayContinue.hidden = false;
     scanOverlayContinue.disabled = false;
+  } else if(result.status === 'cancelled'){
+    const totalFound = scanFoundEl.textContent;
+    const totalNew = scanNewEl.textContent;
+    scanOverlayTitle.textContent = 'Мониторинг остановлен';
+    scanStatusText.textContent = `Процесс остановлен. Успели сохранить: ${totalFound} (новых ${totalNew}).`;
+    scanErrorBox.textContent = data.error ? data.error : 'Отменено пользователем.';
+    scanErrorBox.hidden = false;
+    scanOverlayContinue.hidden = false;
+    scanOverlayContinue.disabled = false;
   } else if(result.status === 'skipped'){
     scanOverlayTitle.textContent = 'Запуск пропущен';
     let reason = 'Скан не был запущен.';
@@ -599,7 +636,8 @@ function settleScan(result){
 
   if(data.id) lastScanId = data.id;
   if(result.status) lastScanStatus = result.status;
-  updateResumeVisibility();
+  cancelRequestPending = false;
+  updateScanButtons();
   setTimeout(()=>{ refreshAll(); }, 800);
 }
 
@@ -639,12 +677,13 @@ function startManualScan(auto=false){
   scanSettled = false;
   currentScanId = null;
   scanStartTs = Date.now();
+  cancelRequestPending = false;
   resetScanOverlayMetrics();
   showScanOverlay(auto ? 'Повторный запуск…' : 'Мониторинг запускается…', 'Подготавливаем запросы.');
   startScanTimer();
   scanBtn.disabled = true;
   if(scanResumeBtn) scanResumeBtn.disabled = true;
-  updateResumeVisibility();
+  updateScanButtons();
   triggerManualScan();
   scheduleScanPolling();
   setTimeout(()=>{ if(pendingScan) pollScanStatusLoop(); }, 800);
@@ -655,7 +694,39 @@ scanOverlayClose.addEventListener('click', hideScanOverlay);
 scanOverlayContinue.addEventListener('click', ()=> startManualScan(true));
 scanBtn.addEventListener('click', ()=> startManualScan(false));
 if(scanResumeBtn) scanResumeBtn.addEventListener('click', ()=> startManualScan(true));
-updateResumeVisibility();
+if(scanCancelBtn){
+  scanCancelBtn.addEventListener('click', async()=>{
+    if(scanCancelBtn.disabled) return;
+    if(!confirm('Прервать текущий скан?')) return;
+    scanCancelBtn.disabled = true;
+    cancelRequestPending = true;
+    try {
+      const res = await fetch('index.php', { method:'POST', body:new URLSearchParams({action:'cancel_scan'}) });
+      const text = await res.text();
+      let j = null;
+      try { j = JSON.parse(text); } catch(e){ console.error('cancel_scan parse', e, text); }
+      if(j && j.ok){
+        showScanOverlay('Прерываем мониторинг…', 'Запрос отправлен, ждём подтверждения.');
+        scanSpinner.style.display = 'none';
+        pendingScan = true;
+        pollScanStatusLoop();
+        scheduleScanPolling();
+      } else {
+        scanCancelBtn.disabled = false;
+        cancelRequestPending = false;
+        updateScanButtons();
+        const msg = j && j.error ? j.error : 'Не удалось отменить скан.';
+        alert(msg);
+      }
+    } catch(e){
+      console.error('cancel scan failed', e);
+      scanCancelBtn.disabled = false;
+      cancelRequestPending = false;
+      updateScanButtons();
+    }
+  });
+}
+updateScanButtons();
 
 // METRICS
 async function loadMetrics(){
@@ -694,7 +765,7 @@ function formatShortDate(val){
 }
 
 // SCAN HISTORY
-const scanStatusLabels = { done:'Готово', running:'Выполняется', started:'Старт', error:'Ошибка' };
+const scanStatusLabels = { done:'Готово', running:'Выполняется', started:'Старт', error:'Ошибка', cancelled:'Отменён' };
 async function loadScanHistory(){
   try{
     const j=await fetchJson('index.php?ajax=scans'); if(!j.ok)return;
@@ -703,11 +774,14 @@ async function loadScanHistory(){
     if(!j.scans.length){
       lastScanId = null;
       lastScanStatus = null;
-      updateResumeVisibility();
+      updateScanButtons();
       return;
     }
     j.scans.forEach((s, idx)=>{
-      const statusClass = s.status === 'error' ? 'history-error' : (s.status === 'running' ? 'history-running' : (s.status === 'done' ? 'history-done' : ''));
+      let statusClass = '';
+      if(['error','cancelled'].includes(s.status)){ statusClass = 'history-error'; }
+      else if(['running','started'].includes(s.status)){ statusClass = 'history-running'; }
+      else if(s.status === 'done'){ statusClass = 'history-done'; }
       const statusTitle = s.error ? ` title="${escapeHtml(s.error)}"` : '';
       const label = scanStatusLabels[s.status] || s.status;
       const tr=document.createElement('tr');
@@ -716,7 +790,7 @@ async function loadScanHistory(){
     });
     lastScanId = j.scans[0].id;
     lastScanStatus = j.scans[0].status;
-    updateResumeVisibility();
+    updateScanButtons();
   } catch(e){ console.error('loadScanHistory failed', e);} }
 
 // DAILY TREND
