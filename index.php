@@ -241,6 +241,7 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .scan-metric__label{display:block;font-size:11px;margin-top:4px;letter-spacing:.4px;color:var(--muted);text-transform:uppercase}
     .scan-log{font-size:12px;color:#ff9c9c;background:rgba(255,82,82,.12);border:1px solid rgba(255,82,82,.32);border-radius:12px;padding:12px;margin-bottom:18px;white-space:pre-line}
     .scan-actions{display:flex;justify-content:flex-end;gap:12px}
+    .scan-dialog button[hidden]{display:none!important}
     @keyframes spin{to{transform:rotate(360deg);}}
   </style>
 </head>
@@ -372,10 +373,10 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     </div>
     <div class="scan-log" id="scanErrorBox" hidden></div>
     <div class="scan-actions">
-      <button type="button" class="btn primary" id="scanOverlayContinue" hidden>Продолжить</button>
-      <button type="button" class="btn" id="scanOverlayHide">Скрыть</button>
+      <button type="button" class="btn primary" id="scanOverlayContinue" hidden>Повторить поиск</button>
+      <button type="button" class="btn" id="scanOverlayHide">Свернуть</button>
     </div>
-</div>
+  </div>
 </div>
 <div id="modalRoot"></div>
 <?php
@@ -414,7 +415,7 @@ let scanSettled = false;
 let scanStartTs = null;
 let scanTimerInterval = null;
 let scanPollTimer = null;
-const SCAN_POLL_INTERVAL = 4000;
+const SCAN_POLL_INTERVAL = 2000;
 
 const scanBtn = document.getElementById('scanBtn');
 const scanResumeBtn = document.getElementById('scanResumeBtn');
@@ -429,6 +430,9 @@ const scanErrorBox = document.getElementById('scanErrorBox');
 const scanOverlayContinue = document.getElementById('scanOverlayContinue');
 const scanOverlayHide = document.getElementById('scanOverlayHide');
 const scanOverlayClose = document.getElementById('scanOverlayClose');
+
+scanOverlayHide.hidden = true;
+scanOverlayClose.hidden = true;
 
 function updateResumeVisibility(){
   if(!scanResumeBtn) return;
@@ -454,11 +458,15 @@ function showScanOverlay(title, status){
   scanSpinner.style.display = '';
   scanErrorBox.hidden = true;
   scanOverlayContinue.hidden = true;
+  scanOverlayHide.hidden = true;
+  scanOverlayClose.hidden = true;
 }
 
 function hideScanOverlay(){
   scanOverlay.classList.remove('active');
   scanOverlay.setAttribute('aria-hidden','true');
+  scanOverlayHide.hidden = true;
+  scanOverlayClose.hidden = true;
 }
 
 function updateScanTimer(){
@@ -499,9 +507,11 @@ async function pollScanStatusLoop(){
     if(scan.id !== currentScanId){ return; }
     if(typeof scan.found === 'number') scanFoundEl.textContent = scan.found;
     if(typeof scan.new === 'number') scanNewEl.textContent = scan.new;
-    if(scan.status === 'running'){
+    if(scan.status === 'running' || scan.status === 'started'){
+      const totalFound = typeof scan.found === 'number' ? scan.found : scanFoundEl.textContent;
+      const totalNew = typeof scan.new === 'number' ? scan.new : scanNewEl.textContent;
       scanOverlayTitle.textContent = 'Мониторинг выполняется…';
-      scanStatusText.textContent = 'Собираем свежие обсуждения…';
+      scanStatusText.textContent = `Собираем свежие обсуждения… Найдено: ${totalFound} (новых ${totalNew}).`;
       scanSpinner.style.display = '';
       if(scan.started_at){
         const parsed = new Date(scan.started_at.replace(' ','T'));
@@ -551,15 +561,23 @@ function settleScan(result){
     scanSpinner.style.display = 'none';
   }
 
+  scanOverlayHide.hidden = false;
+  scanOverlayClose.hidden = false;
+  scanOverlayHide.textContent = 'Закрыть';
+
   if(result.status === 'done'){
+    const totalFound = scanFoundEl.textContent;
+    const totalNew = scanNewEl.textContent;
     scanOverlayTitle.textContent = 'Мониторинг завершён';
-    scanStatusText.textContent = 'Новые ссылки сохранены.';
+    scanStatusText.textContent = `Новые ссылки сохранены. Итог: ${totalFound} (новых ${totalNew}).`;
     scanErrorBox.hidden = true;
     scanOverlayContinue.hidden = true;
     setTimeout(()=>{ hideScanOverlay(); }, 2500);
   } else if(result.status === 'error'){
     scanOverlayTitle.textContent = 'Мониторинг прерван';
-    scanStatusText.textContent = 'Часть результатов сохранена. Можно повторить поиск.';
+    const totalFound = scanFoundEl.textContent;
+    const totalNew = scanNewEl.textContent;
+    scanStatusText.textContent = `Часть результатов сохранена: ${totalFound} (новых ${totalNew}). Можно повторить поиск.`;
     scanErrorBox.textContent = data.error ? data.error : 'Неизвестная ошибка. Проверьте логи.';
     scanErrorBox.hidden = false;
     scanOverlayContinue.hidden = false;
@@ -629,6 +647,7 @@ function startManualScan(auto=false){
   updateResumeVisibility();
   triggerManualScan();
   scheduleScanPolling();
+  setTimeout(()=>{ if(pendingScan) pollScanStatusLoop(); }, 800);
 }
 
 scanOverlayHide.addEventListener('click', hideScanOverlay);
