@@ -338,7 +338,7 @@ function detect_content_updated_at(string $url, int $timeout = 9): ?string {
     static $fetchCount = 0;
     static $fetchLimit = null;
     if ($fetchLimit === null) {
-        $fetchLimit = (int)get_setting('content_meta_fetch_limit', 80);
+        $fetchLimit = (int)get_setting('content_meta_fetch_limit', 40);
         if ($fetchLimit < 20) $fetchLimit = 20;
     }
     if (isset($cache[$url])) {
@@ -651,6 +651,11 @@ function save_links_batch(array &$links): array {
     $updateLinkWithContent = $pdo->prepare("UPDATE links SET title=?, last_seen=NOW(), times_seen=?, content_updated_at=? WHERE id=?");
     $insertLink = $pdo->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status, content_updated_at) VALUES (?,?,?,NOW(),NOW(),1,'new',?)");
 
+    static $contentMetaEnabled = null;
+    if ($contentMetaEnabled === null) {
+        $contentMetaEnabled = (bool)get_setting('content_meta_enabled', true);
+    }
+
     foreach ($links as $idx => $it) {
         $url = $it['url'];
         $title = $it['title'];
@@ -672,19 +677,22 @@ function save_links_batch(array &$links): array {
         $existingContentDate = is_array($row) ? ($row['content_updated_at'] ?? null) : null;
         $existingTs = $existingContentDate ? strtotime($existingContentDate) : null;
         $timesSeenBefore = is_array($row) ? (int)($row['times_seen'] ?? 0) : 0;
-        $staleThresholdDays = 180;
-        $stale = $existingTs ? ((time() - $existingTs) > ($staleThresholdDays * 86400)) : false;
-        $refreshDue = $stale && ((($timesSeenBefore + 1) % 5) === 0);
-        $shouldFetchMeta = !$row || !$existingContentDate || $refreshDue;
-
-        $contentUpdatedAt = null;
-        if ($shouldFetchMeta) {
-            $contentUpdatedAt = detect_content_updated_at($url);
-        }
-
         $finalContentDate = $existingContentDate;
-        if ($contentUpdatedAt && (!$existingContentDate || strtotime($contentUpdatedAt) > ($existingTs ?: 0))) {
-            $finalContentDate = $contentUpdatedAt;
+
+        if ($contentMetaEnabled) {
+            $staleThresholdDays = 180;
+            $stale = $existingTs ? ((time() - $existingTs) > ($staleThresholdDays * 86400)) : false;
+            $refreshDue = $stale && ((($timesSeenBefore + 1) % 5) === 0);
+            $shouldFetchMeta = !$row || !$existingContentDate || $refreshDue;
+
+            $contentUpdatedAt = null;
+            if ($shouldFetchMeta) {
+                $contentUpdatedAt = detect_content_updated_at($url);
+            }
+
+            if ($contentUpdatedAt && (!$existingContentDate || strtotime($contentUpdatedAt) > ($existingTs ?: 0))) {
+                $finalContentDate = $contentUpdatedAt;
+            }
         }
 
         if ($row) {
