@@ -119,6 +119,33 @@ try {
     $scanId = (int)pdo()->lastInsertId();
 } catch (Throwable $e) {}
 
+$scanState = [
+    'scanId' => $scanId,
+    'found' => 0,
+    'new' => 0,
+    'newLinks' => [],
+    'allLinks' => [],
+    'jobStats' => [],
+    'bumpedAny' => false,
+    'finalized' => false,
+    'status' => 'started',
+    'error' => null
+];
+
+register_shutdown_function(function () use (&$scanState) {
+    if (!empty($scanState['finalized']) || empty($scanState['scanId'])) {
+        return;
+    }
+    $err = error_get_last();
+    $message = $scanState['error'] ?? null;
+    if ($err) {
+        $message = 'Shutdown: ' . ($err['message'] ?? 'unknown') . ' @ ' . ($err['file'] ?? '?') . ':' . ($err['line'] ?? '?');
+    } elseif (!$message) {
+        $message = 'Скан прерван (shutdown)';
+    }
+    finalize_scan($scanState, 'error', $message);
+});
+
 // ----------------------- OpenAI client helpers -----------------------
 $MAX_OUTPUT_TOKENS   = (int)get_setting('openai_max_output_tokens', 4096);
 $OPENAI_HTTP_TIMEOUT = (int)get_setting('openai_timeout_sec', 300);
@@ -463,6 +490,124 @@ function save_links_batch(array $links): array {
     return ['found' => $found, 'new' => $new, 'new_links' => $newLinks];
 }
 
+function notify_telegram_scan(array $state, string $status, ?string $errorMessage): void {
+    $tgToken = (string)get_setting('telegram_token', '');
+    $tgChat  = (string)get_setting('telegram_chat_id', '');
+    if ($tgToken === '' || $tgChat === '') {
+        return;
+    }
+
+    $found = (int)($state['found'] ?? 0);
+    $new = (int)($state['new'] ?? 0);
+    $newLinks = $state['newLinks'] ?? [];
+    $allLinks = $state['allLinks'] ?? [];
+    $jobStats = $state['jobStats'] ?? [];
+
+    $domainsTotal = count(array_unique(array_map(fn($l)=>$l['domain'], $allLinks)));
+    $domainsNew   = count(array_unique(array_map(fn($l)=>$l['domain'], $newLinks)));
+
+    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://')
+        . ($_SERVER['HTTP_HOST'] ?? 'localhost')
+        . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
+    $panelUrl = $baseUrl . '/index.php';
+    $esc = function(string $s): string { return htmlspecialchars(mb_substr($s,0,160), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
+
+    if ($status === 'done') {
+        $message  = $new > 0
+            ? "🚀 <b>Мониторинг: найдено {$new} новых ссылок</b>\n"
+            : "📡 <b>Мониторинг завершён</b>\n";
+        $message .= "🗂 Всего найдено за проход: <b>{$found}</b>\n";
+        $message .= "🌐 Домены (все/новые): <b>{$domainsTotal}</b> / <b>{$domainsNew}</b>\n";
+    } else {
+        $message  = "⚠️ <b>Мониторинг прерван</b>\n";
+        $message .= "🗂 Успели сохранить: <b>{$found}</b> ссылок\n";
+        $message .= "🌐 Домены (все/новые): <b>{$domainsTotal}</b> / <b>{$domainsNew}</b>\n";
+        if ($errorMessage) {
+            $msg = mb_substr($errorMessage, 0, 400);
+            $message .= "\n❗️ <b>Ошибка:</b> " . $esc($msg) . "\n";
+        }
+        $message .= "\n➡️ Зайдите в панель и нажмите «Продолжить», чтобы перезапустить.\n";
+    }
+
+    if ($new > 0) {
+        $sample = array_slice($newLinks, 0, 3);
+        $message .= "\n🔥 <b>Новые примеры:</b>\n";
+        foreach ($sample as $s) {
+            $u = $s['url'];
+            $t = $s['title'] ?: $s['domain'];
+            $d = $s['domain'];
+            $message .= "• <a href=\"".$esc($u)."\">".$esc($t)."</a> <code>".$esc($d)."</code>\n";
+        }
+        if ($new > 3) {
+            $rest = $new - 3;
+            $message .= "… и ещё {$rest} на панели\n";
+        }
+    } elseif ($status === 'done') {
+        $message .= "\nНовых ссылок нет за этот проход.\n";
+    }
+
+    if (!empty($jobStats)) {
+        $message .= "\n📊 <b>Скоупы:</b>\n";
+        foreach ($jobStats as $jn => $st) {
+            $saved = (int)($st['saved'] ?? 0);
+            $raw = (int)($st['count'] ?? 0);
+            $http = (int)($st['status'] ?? 0);
+            $message .= "· " . $esc($jn) . ": " . $saved . "/" . $raw . " (HTTP " . $http . ")\n";
+        }
+    }
+
+    $message .= "\n🕒 " . date('Y-m-d H:i');
+    $replyMarkup = json_encode([
+        'inline_keyboard' => [ [ ['text' => '📊 Открыть панель', 'url' => $panelUrl] ] ]
+    ], JSON_UNESCAPED_UNICODE);
+
+    $tgUrl = "https://api.telegram.org/bot{$tgToken}/sendMessage";
+    $chT = curl_init($tgUrl);
+    curl_setopt_array($chT, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POSTFIELDS => [
+            'chat_id' => $tgChat,
+            'text' => $message,
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => 1,
+            'reply_markup' => $replyMarkup
+        ],
+        CURLOPT_TIMEOUT => 15
+    ]);
+    curl_exec($chT);
+    curl_close($chT);
+}
+
+function finalize_scan(array &$state, string $status, ?string $errorMessage = null): void {
+    if (!empty($state['finalized'])) {
+        return;
+    }
+
+    $scanId = $state['scanId'] ?? null;
+    if ($scanId) {
+        try {
+            $stmt = pdo()->prepare("UPDATE scans SET finished_at=NOW(), status=?, found_links=?, new_links=?, error=? WHERE id=?");
+            $stmt->execute([
+                $status,
+                (int)($state['found'] ?? 0),
+                (int)($state['new'] ?? 0),
+                $errorMessage,
+                (int)$scanId
+            ]);
+        } catch (Throwable $e) {}
+    }
+
+    if ($status === 'done') {
+        set_setting('last_scan_at', date('Y-m-d H:i:s'));
+    }
+
+    notify_telegram_scan($state, $status, $errorMessage);
+    $state['finalized'] = true;
+    $state['status'] = $status;
+    $state['error'] = $errorMessage;
+}
+
 // --- NEW: fetch languages & regions settings ---
 $searchLangs = get_setting('search_languages', []);
 if (is_string($searchLangs)) { $tmp = json_decode($searchLangs, true); if (is_array($tmp)) $searchLangs = $tmp; }
@@ -589,142 +734,113 @@ if ($scanId) {
     }
 }
 
-foreach ($jobs as $job) {
-    [$status, $cnt, $rawLinks, $bumped] = run_openai_job(
-        $job['name'], $job['sys'], $job['user'],
-        $requestUrl, $requestHeaders, $schema,
-        $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog, $job['country'] ?? null, $job['max_tool_calls'] ?? null
-    );
-    $bumpedAny = $bumpedAny || $bumped;
+$scanState['status'] = 'running';
+$hasError = false;
+$errorMessage = null;
 
-    $jobLinks = [];
-    foreach ($rawLinks as $it) {
-        $url = canonicalize_url(arr_get($it, 'url', ''));
-        if ($url === '' || isset($seenUrls[$url])) {
-            continue;
-        }
-
-        $domain = normalize_host(arr_get($it, 'domain', ''));
-        if ($domain === '') {
-            $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
-        }
-        if ($domain === '') {
-            continue;
-        }
-
-        $seenUrls[$url] = 1;
-        $title = trim((string)arr_get($it, 'title', ''));
-        $jobLinks[] = [
-            'url' => $url,
-            'title' => $title,
-            'domain' => $domain,
-            '__job' => $job['name'],
-            '__purpose' => $job['purpose'] ?? null
-        ];
-    }
-
-    $jobStats[$job['name']] = ['status' => $status, 'count' => $cnt, 'saved' => count($jobLinks)];
-    if (empty($jobLinks)) {
-        continue;
-    }
-
-    $persisted = save_links_batch($jobLinks);
-    $found += $persisted['found'];
-    $new += $persisted['new'];
-    if (!empty($persisted['new_links'])) {
-        $newLinks = array_merge($newLinks, $persisted['new_links']);
-    }
-    $allLinks = array_merge($allLinks, $jobLinks);
-
-    if ($scanProgressStmt) {
-        try {
-            $scanProgressStmt->execute([$found, $new, $scanId]);
-        } catch (Throwable $e) {}
-    }
-}
-
-// Update scans row + last_scan_at setting
 try {
-    $stmt = pdo()->prepare("UPDATE scans SET finished_at=NOW(), status='done', found_links=?, new_links=? WHERE id=?");
-    $stmt->execute([ (int)$found, (int)$new, (int)$scanId ]);
-} catch (Throwable $e) {}
-set_setting('last_scan_at', date('Y-m-d H:i:s'));
+    foreach ($jobs as $job) {
+        [$status, $cnt, $rawLinks, $bumped] = run_openai_job(
+            $job['name'], $job['sys'], $job['user'],
+            $requestUrl, $requestHeaders, $schema,
+            $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog, $job['country'] ?? null, $job['max_tool_calls'] ?? null
+        );
+        $bumpedAny = $bumpedAny || $bumped;
+        $scanState['bumpedAny'] = $bumpedAny;
 
-// ----------------------- Telegram notification (optional) -----------------------
-$tgToken = (string)get_setting('telegram_token', '');
-$tgChat  = (string)get_setting('telegram_chat_id', '');
-if ($tgToken !== '' && $tgChat !== '') {
-    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://')
-             . ($_SERVER['HTTP_HOST'] ?? 'localhost')
-             . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
-    $panelUrl = $baseUrl . '/index.php';
-    $esc = function(string $s): string { return htmlspecialchars(mb_substr($s,0,160), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
+        $jobLinks = [];
+        foreach ($rawLinks as $it) {
+            $url = canonicalize_url(arr_get($it, 'url', ''));
+            if ($url === '' || isset($seenUrls[$url])) {
+                continue;
+            }
 
-    $domainsTotal = count(array_unique(array_map(fn($l)=>$l['domain'],$allLinks)));
-    $domainsNew   = count(array_unique(array_map(fn($l)=>$l['domain'],$newLinks)));
+            $domain = normalize_host(arr_get($it, 'domain', ''));
+            if ($domain === '') {
+                $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
+            }
+            if ($domain === '') {
+                continue;
+            }
 
-    $message  = $new > 0
-        ? "🚀 <b>Мониторинг: найдено {$new} новых ссылок</b>\n"
-        : "📡 <b>Мониторинг завершён</b>\n";
-    $message .= "🗂 Всего найдено за проход: <b>{$found}</b>\n";
-    $message .= "🌐 Домены (все/новые): <b>{$domainsTotal}</b> / <b>{$domainsNew}</b>\n";
-
-    if ($new > 0) {
-        $sample = array_slice($newLinks, 0, 3);
-        $message .= "\n🔥 <b>Новые примеры:</b>\n";
-        foreach ($sample as $s) {
-            $u = $s['url']; $t = $s['title'] ?: $s['domain']; $d = $s['domain'];
-            $message .= "• <a href=\"".$esc($u)."\">".$esc($t)."</a> <code>".$esc($d)."</code>\n";
+            $seenUrls[$url] = 1;
+            $title = trim((string)arr_get($it, 'title', ''));
+            $jobLinks[] = [
+                'url' => $url,
+                'title' => $title,
+                'domain' => $domain,
+                '__job' => $job['name'],
+                '__purpose' => $job['purpose'] ?? null
+            ];
         }
-        if ($new > 3) {
-            $rest = $new - 3;
-            $message .= "… и ещё {$rest} на панели\n";
+
+        $jobStats[$job['name']] = ['status' => $status, 'count' => $cnt, 'saved' => count($jobLinks)];
+        $scanState['jobStats'] = $jobStats;
+
+        if ($status !== 200) {
+            $hasError = true;
+            $errorMessage = "HTTP {$status} на шаге {$job['name']}";
+            $jobStats[$job['name']]['error'] = $errorMessage;
+            $scanState['jobStats'] = $jobStats;
+            $scanState['error'] = $errorMessage;
+            app_log('error', 'scan', 'Job failed', ['job' => $job['name'], 'status' => $status]);
+            break;
         }
-    } else {
-        $message .= "\nНовых ссылок нет за этот проход.\n";
+
+        if (empty($jobLinks)) {
+            continue;
+        }
+
+        $persisted = save_links_batch($jobLinks);
+        $found += $persisted['found'];
+        $new += $persisted['new'];
+        if (!empty($persisted['new_links'])) {
+            $newLinks = array_merge($newLinks, $persisted['new_links']);
+        }
+        $allLinks = array_merge($allLinks, $jobLinks);
+
+        $scanState['found'] = $found;
+        $scanState['new'] = $new;
+        $scanState['newLinks'] = $newLinks;
+        $scanState['allLinks'] = $allLinks;
+        $scanState['jobStats'] = $jobStats;
+        $scanState['bumpedAny'] = $bumpedAny;
+
+        if ($scanProgressStmt) {
+            try {
+                $scanProgressStmt->execute([$found, $new, $scanId]);
+            } catch (Throwable $e) {}
+        }
     }
-
-    // Краткая статистика по джобам
-    if (!empty($jobStats)) {
-        $message .= "\n📊 <b>Скоупы:</b>\n";
-        foreach ($jobStats as $jn=>$st) {
-            $saved = (int)($st['saved'] ?? 0);
-            $raw = (int)($st['count'] ?? 0);
-            $message .= "· " . $esc($jn) . ": " . $saved . "/" . $raw . " (HTTP " . ($st['status'] ?? 0) . ")\n";
-        }
-    }
-
-    $message .= "\n🕒 " . date('Y-m-d H:i');
-
-    $replyMarkup = json_encode([
-        'inline_keyboard' => [ [ ['text' => '📊 Открыть панель', 'url' => $panelUrl] ] ]
-    ], JSON_UNESCAPED_UNICODE);
-
-    $tgUrl = "https://api.telegram.org/bot{$tgToken}/sendMessage";
-    $chT = curl_init($tgUrl);
-    curl_setopt_array($chT, [
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POSTFIELDS => [
-            'chat_id' => $tgChat,
-            'text' => $message,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => 1,
-            'reply_markup' => $replyMarkup
-        ],
-        CURLOPT_TIMEOUT => 15
-    ]);
-    curl_exec($chT);
-    curl_close($chT);
+} catch (Throwable $e) {
+    $hasError = true;
+    $errorMessage = 'Unhandled exception: ' . $e->getMessage();
+    $scanState['error'] = $errorMessage;
+    app_log('error', 'scan', 'Unhandled exception', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
 }
+
+$scanState['found'] = $found;
+$scanState['new'] = $new;
+$scanState['newLinks'] = $newLinks;
+$scanState['allLinks'] = $allLinks;
+$scanState['jobStats'] = $jobStats;
+$scanState['bumpedAny'] = $bumpedAny;
+if ($errorMessage) {
+    $scanState['error'] = $errorMessage;
+}
+
+$finalStatus = $hasError ? 'error' : 'done';
+finalize_scan($scanState, $finalStatus, $errorMessage);
 
 // ----------------------- Response to caller -----------------------
 header('Content-Type: application/json; charset=utf-8');
 echo json_encode([
-    'ok' => true,
+    'ok' => !$hasError,
     'scan_id' => $scanId,
     'found' => $found,
     'new' => $new,
     'bumped_any' => $bumpedAny,
     'job_stats' => $jobStats,
+    'status' => $scanState['status'] ?? $finalStatus,
+    'error' => $scanState['error'] ?? $errorMessage,
 ], JSON_UNESCAPED_UNICODE);

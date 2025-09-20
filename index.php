@@ -74,7 +74,7 @@ if (isset($_GET['ajax'])) {
             ]
         ]);
     } elseif ($ajax==='scans') {
-        $rows = pdo()->query("SELECT id, started_at, finished_at, found_links, new_links, status FROM scans ORDER BY id DESC LIMIT 12")->fetchAll();
+        $rows = pdo()->query("SELECT id, started_at, finished_at, found_links, new_links, status, error FROM scans ORDER BY id DESC LIMIT 12")->fetchAll();
         $out = [];
         foreach ($rows as $r) {
             $dur = null;
@@ -86,10 +86,32 @@ if (isset($_GET['ajax'])) {
                 'duration_sec'=>$dur,
                 'found'=>(int)$r['found_links'],
                 'new'=>(int)$r['new_links'],
-                'status'=>$r['status']
+                'status'=>$r['status'],
+                'error'=>$r['error']
             ];
         }
         json_out(['ok'=>true,'scans'=>$out]);
+    } elseif ($ajax==='scan_status') {
+        $row = pdo()->query("SELECT id, started_at, finished_at, found_links, new_links, status, error FROM scans ORDER BY id DESC LIMIT 1")->fetch();
+        if (!$row) {
+            json_out(['ok'=>false,'error'=>'no_scans']);
+        }
+        $dur = null;
+        if ($row['finished_at']) {
+            $dur = strtotime($row['finished_at']) - strtotime($row['started_at']);
+        } elseif ($row['started_at']) {
+            $dur = time() - strtotime($row['started_at']);
+        }
+        json_out(['ok'=>true,'scan'=>[
+            'id'=>(int)$row['id'],
+            'started_at'=>$row['started_at'],
+            'finished_at'=>$row['finished_at'],
+            'duration_sec'=>$dur,
+            'found'=>(int)$row['found_links'],
+            'new'=>(int)$row['new_links'],
+            'status'=>$row['status'],
+            'error'=>$row['error']
+        ]]);
     } elseif ($ajax==='daily') {
         $rows = pdo()->query("SELECT DATE(first_found) d, COUNT(*) c, COUNT(DISTINCT source_id) u FROM links WHERE first_found >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) GROUP BY DATE(first_found)")->fetchAll(PDO::FETCH_ASSOC);
         $map = []; foreach($rows as $r){ $map[$r['d']] = $r; }
@@ -201,6 +223,25 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .btn.small{ padding:8px 12px; border-radius:10px; font-size:13px; }
     .btn-ghost.small{ padding:8px 12px; }
     .quick-actions .btn{ width:100%; justify-content:center; }
+    .history-error{color:#ff7b7b;font-weight:600}
+    .history-running{color:#f7c948;font-weight:600}
+    .history-done{color:#2ecc71;font-weight:600}
+    .scan-overlay{position:fixed;inset:0;background:rgba(7,12,28,.76);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
+    .scan-overlay.active{display:flex}
+    .scan-dialog{width:min(520px,100%);background:#0f1d3a;border:1px solid var(--border);border-radius:20px;padding:24px;position:relative;box-shadow:0 18px 48px rgba(0,0,0,.55)}
+    .scan-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+    .scan-status{display:flex;align-items:center;gap:14px}
+    .scan-status h3{margin:0;font-size:20px}
+    .scan-status p{margin:4px 0 0;font-size:13px;color:var(--muted)}
+    .scan-close{background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:2px 6px}
+    .scan-spinner{width:38px;height:38px;border-radius:50%;border:3px solid rgba(255,255,255,.14);border-top-color:#7ea2ff;animation:spin 1s linear infinite}
+    .scan-progress{display:flex;gap:14px;margin:22px 0}
+    .scan-metric{flex:1;padding:12px;border-radius:14px;background:rgba(255,255,255,.05);text-align:center}
+    .scan-metric__value{display:block;font-size:26px;font-weight:700}
+    .scan-metric__label{display:block;font-size:11px;margin-top:4px;letter-spacing:.4px;color:var(--muted);text-transform:uppercase}
+    .scan-log{font-size:12px;color:#ff9c9c;background:rgba(255,82,82,.12);border:1px solid rgba(255,82,82,.32);border-radius:12px;padding:12px;margin-bottom:18px;white-space:pre-line}
+    .scan-actions{display:flex;justify-content:flex-end;gap:12px}
+    @keyframes spin{to{transform:rotate(360deg);}}
   </style>
 </head>
 <body>
@@ -220,7 +261,8 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
   <!-- Scan control + history -->
   <section class="card glass" id="scanControl">
     <div class="scan-control">
-      <button class="btn primary" id="scanBtn" data-url="scan.php?manual=1" type="button">🚀 Запустить скан</button>
+      <button class="btn primary" id="scanBtn" type="button">🚀 Запустить скан</button>
+      <button class="btn" id="scanResumeBtn" type="button" style="display:none;">↻ Продолжить</button>
       <div class="guard-badge" id="guardInfo">Guard: —</div>
       <div class="auto-refresh-toggle"><label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="autoRefresh" style="margin:0"> <span>Автообновление</span></label></div>
     </div>
@@ -302,7 +344,46 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
 
 </main>
 <?php include 'footer.php'; ?>
+<div id="scanOverlay" class="scan-overlay" aria-hidden="true">
+  <div class="scan-dialog" role="dialog" aria-modal="true" aria-labelledby="scanOverlayTitle">
+    <div class="scan-header">
+      <div class="scan-status">
+        <div class="scan-spinner" id="scanSpinner"></div>
+        <div>
+          <h3 id="scanOverlayTitle">Мониторинг запускается…</h3>
+          <p id="scanStatusText">Подготавливаем запросы.</p>
+        </div>
+      </div>
+      <button type="button" class="scan-close" id="scanOverlayClose" aria-label="Скрыть">✕</button>
+    </div>
+    <div class="scan-progress">
+      <div class="scan-metric">
+        <span class="scan-metric__value" id="scanTimer">00:00</span>
+        <span class="scan-metric__label">Время</span>
+      </div>
+      <div class="scan-metric">
+        <span class="scan-metric__value" id="scanFound">0</span>
+        <span class="scan-metric__label">Ссылок</span>
+      </div>
+      <div class="scan-metric">
+        <span class="scan-metric__value" id="scanNew">0</span>
+        <span class="scan-metric__label">Новых</span>
+      </div>
+    </div>
+    <div class="scan-log" id="scanErrorBox" hidden></div>
+    <div class="scan-actions">
+      <button type="button" class="btn primary" id="scanOverlayContinue" hidden>Продолжить</button>
+      <button type="button" class="btn" id="scanOverlayHide">Скрыть</button>
+    </div>
+</div>
+</div>
 <div id="modalRoot"></div>
+<?php
+$initialScan = [
+    'id' => $lastScan ? (int)$lastScan['id'] : null,
+    'status' => $lastScan ? (string)$lastScan['status'] : null
+];
+?>
 <script>
 // Safe JSON fetch wrapper: avoids SyntaxError when server returns HTML
 async function fetchJson(url, opts){
@@ -324,6 +405,239 @@ async function fetchJson(url, opts){
 const fmtDuration = s=> s==null? '—' : (s<60? (s+'s') : ( (s/60).toFixed(1)+'m'));
 const timeAgo = iso=>{ if(!iso) return '—'; const t=new Date(iso.replace(' ','T')); const diff=(Date.now()-t.getTime())/1000; if(diff<60) return Math.floor(diff)+'s ago'; if(diff<3600) return Math.floor(diff/60)+'m ago'; if(diff<86400) return Math.floor(diff/3600)+'h ago'; return Math.floor(diff/86400)+'d ago'; };
 
+const initialScanInfo = <?= json_encode($initialScan, JSON_UNESCAPED_UNICODE); ?>;
+let lastScanId = initialScanInfo.id;
+let lastScanStatus = initialScanInfo.status;
+let currentScanId = null;
+let pendingScan = false;
+let scanSettled = false;
+let scanStartTs = null;
+let scanTimerInterval = null;
+let scanPollTimer = null;
+const SCAN_POLL_INTERVAL = 4000;
+
+const scanBtn = document.getElementById('scanBtn');
+const scanResumeBtn = document.getElementById('scanResumeBtn');
+const scanOverlay = document.getElementById('scanOverlay');
+const scanSpinner = document.getElementById('scanSpinner');
+const scanOverlayTitle = document.getElementById('scanOverlayTitle');
+const scanStatusText = document.getElementById('scanStatusText');
+const scanTimerEl = document.getElementById('scanTimer');
+const scanFoundEl = document.getElementById('scanFound');
+const scanNewEl = document.getElementById('scanNew');
+const scanErrorBox = document.getElementById('scanErrorBox');
+const scanOverlayContinue = document.getElementById('scanOverlayContinue');
+const scanOverlayHide = document.getElementById('scanOverlayHide');
+const scanOverlayClose = document.getElementById('scanOverlayClose');
+
+function updateResumeVisibility(){
+  if(!scanResumeBtn) return;
+  if(pendingScan){ scanResumeBtn.style.display='none'; return; }
+  if(lastScanStatus && !['done','skipped'].includes(lastScanStatus)){
+    scanResumeBtn.style.display='';
+  } else {
+    scanResumeBtn.style.display='none';
+  }
+}
+
+function resetScanOverlayMetrics(){
+  scanFoundEl.textContent = '0';
+  scanNewEl.textContent = '0';
+  scanTimerEl.textContent = '00:00';
+}
+
+function showScanOverlay(title, status){
+  scanOverlay.classList.add('active');
+  scanOverlay.setAttribute('aria-hidden','false');
+  scanOverlayTitle.textContent = title;
+  scanStatusText.textContent = status;
+  scanSpinner.style.display = '';
+  scanErrorBox.hidden = true;
+  scanOverlayContinue.hidden = true;
+}
+
+function hideScanOverlay(){
+  scanOverlay.classList.remove('active');
+  scanOverlay.setAttribute('aria-hidden','true');
+}
+
+function updateScanTimer(){
+  if(!scanStartTs){ scanTimerEl.textContent='00:00'; return; }
+  const diff = Math.max(0, Math.floor((Date.now() - scanStartTs)/1000));
+  const m = Math.floor(diff/60);
+  const s = diff % 60;
+  scanTimerEl.textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+}
+
+function startScanTimer(){
+  if(scanTimerInterval) clearInterval(scanTimerInterval);
+  updateScanTimer();
+  scanTimerInterval = setInterval(updateScanTimer, 1000);
+}
+
+function stopScanTimer(){
+  if(scanTimerInterval){ clearInterval(scanTimerInterval); scanTimerInterval = null; }
+}
+
+async function pollScanStatusLoop(){
+  if(!pendingScan) return;
+  try {
+    const j = await fetchJson('index.php?ajax=scan_status');
+    if(!j.ok || !j.scan) return;
+    const scan = j.scan;
+    if(!currentScanId){
+      if(lastScanId && scan.id === lastScanId && scan.status !== 'running'){ return; }
+      currentScanId = scan.id;
+      if(scan.started_at){
+        const parsed = new Date(scan.started_at.replace(' ','T'));
+        if(!Number.isNaN(parsed.getTime())){
+          scanStartTs = parsed.getTime();
+          startScanTimer();
+        }
+      }
+    }
+    if(scan.id !== currentScanId){ return; }
+    if(typeof scan.found === 'number') scanFoundEl.textContent = scan.found;
+    if(typeof scan.new === 'number') scanNewEl.textContent = scan.new;
+    if(scan.status === 'running'){
+      scanOverlayTitle.textContent = 'Мониторинг выполняется…';
+      scanStatusText.textContent = 'Собираем свежие обсуждения…';
+      scanSpinner.style.display = '';
+      if(scan.started_at){
+        const parsed = new Date(scan.started_at.replace(' ','T'));
+        if(!Number.isNaN(parsed.getTime())){
+          scanStartTs = parsed.getTime();
+        }
+      }
+    } else if(scan.status === 'done'){
+      settleScan({status:'done', data:scan});
+    } else if(scan.status === 'error'){
+      settleScan({status:'error', data:scan});
+    }
+  } catch(e){
+    console.error('pollScanStatus failed', e);
+  }
+}
+
+function scheduleScanPolling(){
+  if(scanPollTimer) clearInterval(scanPollTimer);
+  setTimeout(()=>{ if(pendingScan) pollScanStatusLoop(); }, 1100);
+  scanPollTimer = setInterval(pollScanStatusLoop, SCAN_POLL_INTERVAL);
+}
+
+function settleScan(result){
+  if(scanSettled) return;
+  scanSettled = true;
+  pendingScan = false;
+  if(scanPollTimer){ clearInterval(scanPollTimer); scanPollTimer=null; }
+  stopScanTimer();
+  scanSpinner.style.display = 'none';
+  scanBtn.disabled = false;
+  if(scanResumeBtn) scanResumeBtn.disabled = false;
+
+  const data = result?.data || {};
+  if(typeof data.found === 'number') scanFoundEl.textContent = data.found;
+  if(typeof data.new === 'number') scanNewEl.textContent = data.new;
+  if(data.started_at){
+    const parsed = new Date(data.started_at.replace(' ','T'));
+    if(!Number.isNaN(parsed.getTime())){
+      scanStartTs = parsed.getTime();
+      updateScanTimer();
+    }
+  }
+
+  if(result.status === 'error' && !scanOverlay.classList.contains('active')){
+    showScanOverlay('Мониторинг прерван', 'Показываем сохранённые результаты.');
+    scanSpinner.style.display = 'none';
+  }
+
+  if(result.status === 'done'){
+    scanOverlayTitle.textContent = 'Мониторинг завершён';
+    scanStatusText.textContent = 'Новые ссылки сохранены.';
+    scanErrorBox.hidden = true;
+    scanOverlayContinue.hidden = true;
+    setTimeout(()=>{ hideScanOverlay(); }, 2500);
+  } else if(result.status === 'error'){
+    scanOverlayTitle.textContent = 'Мониторинг прерван';
+    scanStatusText.textContent = 'Часть результатов сохранена. Можно повторить поиск.';
+    scanErrorBox.textContent = data.error ? data.error : 'Неизвестная ошибка. Проверьте логи.';
+    scanErrorBox.hidden = false;
+    scanOverlayContinue.hidden = false;
+    scanOverlayContinue.disabled = false;
+  } else if(result.status === 'skipped'){
+    scanOverlayTitle.textContent = 'Запуск пропущен';
+    let reason = 'Скан не был запущен.';
+    if(data.reason === 'period_guard') reason = 'Пауза между запусками ещё не прошла.';
+    scanStatusText.textContent = reason;
+    scanErrorBox.hidden = true;
+    scanOverlayContinue.hidden = true;
+    setTimeout(()=>{ hideScanOverlay(); }, 2500);
+  } else {
+    scanOverlayTitle.textContent = 'Скан завершён';
+    scanStatusText.textContent = 'Статус: '+result.status;
+    scanErrorBox.hidden = true;
+    scanOverlayContinue.hidden = true;
+  }
+
+  if(data.id) lastScanId = data.id;
+  if(result.status) lastScanStatus = result.status;
+  updateResumeVisibility();
+  setTimeout(()=>{ refreshAll(); }, 800);
+}
+
+async function triggerManualScan(){
+  try {
+    const res = await fetch('scan.php?manual=1');
+    let payload = null;
+    try { payload = await res.clone().json(); } catch(e) {
+      payload = null;
+    }
+    if(res.ok && payload && payload.skipped){
+      settleScan({status:'skipped', data:payload});
+      return;
+    }
+    if(res.ok && payload && payload.status){
+      settleScan({status:payload.status, data:{
+        id: payload.scan_id || currentScanId || lastScanId,
+        found: payload.found,
+        new: payload.new,
+        error: payload.error
+      }});
+      return;
+    }
+    if(!res.ok){
+      console.warn('scan.php returned status', res.status);
+      scanStatusText.textContent = 'Ожидаем подтверждение от сервера…';
+    }
+  } catch(e){
+    console.error('manual scan request failed', e);
+    scanStatusText.textContent = 'Пробуем завершить запрос…';
+  }
+}
+
+function startManualScan(auto=false){
+  if(pendingScan) return;
+  pendingScan = true;
+  scanSettled = false;
+  currentScanId = null;
+  scanStartTs = Date.now();
+  resetScanOverlayMetrics();
+  showScanOverlay(auto ? 'Повторный запуск…' : 'Мониторинг запускается…', 'Подготавливаем запросы.');
+  startScanTimer();
+  scanBtn.disabled = true;
+  if(scanResumeBtn) scanResumeBtn.disabled = true;
+  updateResumeVisibility();
+  triggerManualScan();
+  scheduleScanPolling();
+}
+
+scanOverlayHide.addEventListener('click', hideScanOverlay);
+scanOverlayClose.addEventListener('click', hideScanOverlay);
+scanOverlayContinue.addEventListener('click', ()=> startManualScan(true));
+scanBtn.addEventListener('click', ()=> startManualScan(false));
+if(scanResumeBtn) scanResumeBtn.addEventListener('click', ()=> startManualScan(true));
+updateResumeVisibility();
+
 // METRICS
 async function loadMetrics(){
   try {
@@ -334,7 +648,7 @@ async function loadMetrics(){
     // guard
     const guardEl = document.getElementById('guardInfo');
     let remain = m.guard_remaining; const btn = document.getElementById('scanBtn');
-    if(remain>0){ btn.disabled=true; guardEl.textContent='guard '+remain+'s'; const iv=setInterval(()=>{remain--; guardEl.textContent='guard '+remain+'s'; if(remain<=0){clearInterval(iv); btn.disabled=false; guardEl.textContent='готов';}},1000);} else { guardEl.textContent='готов'; btn.disabled=false; }
+    if(remain>0){ btn.disabled=true; guardEl.textContent='guard '+remain+'s'; const iv=setInterval(()=>{remain--; guardEl.textContent='guard '+remain+'s'; if(remain<=0){clearInterval(iv); btn.disabled = pendingScan ? true : false; guardEl.textContent='готов';}},1000);} else { guardEl.textContent='готов'; btn.disabled = pendingScan ? true : false; }
     // sparkline
     drawSpark(document.getElementById('spark-total'), m.spark.map(x=>x.c));
   } catch(e){ console.error('loadMetrics failed', e); }
@@ -342,7 +656,30 @@ async function loadMetrics(){
 function drawSpark(svg, data){ if(!svg) return; const w=svg.clientWidth||160; const h=svg.clientHeight||28; const max=Math.max(...data,1); const step=w/(data.length-1); let d=''; data.forEach((v,i)=>{ const x=i*step; const y=h - (v/max)* (h-4) -2; d += (i?'L':'M')+x+','+y;}); svg.setAttribute('viewBox','0 0 '+w+' '+h); svg.innerHTML='<path d="'+d+'" fill="none" stroke="url(#g)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />'+`<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#7ea2ff"/></linearGradient></defs>`; }
 
 // SCAN HISTORY
-async function loadScanHistory(){ try{ const j=await fetchJson('index.php?ajax=scans'); if(!j.ok)return; const tb=document.querySelector('#scanHistoryTbl tbody'); tb.innerHTML=''; j.scans.forEach(s=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${s.id}</td><td>${s.started_at.slice(5,16)}</td><td>${s.finished_at? s.finished_at.slice(5,16):'—'}</td><td>${fmtDuration(s.duration_sec)}</td><td class="${s.new? 'history-new':'history-zero'}">${s.new}</td><td>${s.found}</td><td>${s.status}</td>`; tb.appendChild(tr);}); } catch(e){ console.error('loadScanHistory failed', e);} }
+const scanStatusLabels = { done:'Готово', running:'Выполняется', started:'Старт', error:'Ошибка' };
+async function loadScanHistory(){
+  try{
+    const j=await fetchJson('index.php?ajax=scans'); if(!j.ok)return;
+    const tb=document.querySelector('#scanHistoryTbl tbody');
+    tb.innerHTML='';
+    if(!j.scans.length){
+      lastScanId = null;
+      lastScanStatus = null;
+      updateResumeVisibility();
+      return;
+    }
+    j.scans.forEach((s, idx)=>{
+      const statusClass = s.status === 'error' ? 'history-error' : (s.status === 'running' ? 'history-running' : (s.status === 'done' ? 'history-done' : ''));
+      const statusTitle = s.error ? ` title="${escapeHtml(s.error)}"` : '';
+      const label = scanStatusLabels[s.status] || s.status;
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${s.id}</td><td>${s.started_at.slice(5,16)}</td><td>${s.finished_at? s.finished_at.slice(5,16):'—'}</td><td>${fmtDuration(s.duration_sec)}</td><td class="${s.new? 'history-new':'history-zero'}">${s.new}</td><td>${s.found}</td><td class="${statusClass}"${statusTitle}>${label}</td>`;
+      tb.appendChild(tr);
+    });
+    lastScanId = j.scans[0].id;
+    lastScanStatus = j.scans[0].status;
+    updateResumeVisibility();
+  } catch(e){ console.error('loadScanHistory failed', e);} }
 
 // DAILY TREND
 async function loadDaily(){ try{ const j=await fetchJson('index.php?ajax=daily'); if(!j.ok)return; const wrap=document.getElementById('dailyGrid'); wrap.innerHTML=''; const max=Math.max(...j.days.map(d=>d.c),1); j.days.forEach(d=>{ const col=document.createElement('div'); col.className='daily-col'; const pct = d.c? ((d.c/max)*100):0; col.innerHTML=`<div class="day">${d.d.slice(5)}</div><div style="font-size:12px;color:var(--muted)">${d.c} links / ${d.u} dom</div><div class="bar-wrap"><div class="bar" style="height:100%"><span style="height:${pct||4}%;"></span></div></div>`; wrap.appendChild(col); }); } catch(e){ console.error('loadDaily failed', e);} }
@@ -366,9 +703,6 @@ async function loadCandidates(){ try{ const j=await fetchJson('index.php?ajax=ca
  document.getElementById('activateAllCand').addEventListener('click', async()=>{ if(!confirm('Активировать все кандидаты?')) return; try{ const j=await fetchJson('index.php',{method:'POST',body:new URLSearchParams({action:'activate_candidates'})}); if(j.ok){ loadCandidates(); loadMetrics(); loadTopDomains(); } }catch(e){ console.error('activate all failed', e);} });
  document.getElementById('candTable').addEventListener('click', async e=>{ const btn=e.target.closest('button[data-act-cand]'); if(!btn) return; const id=btn.getAttribute('data-act-cand'); btn.disabled=true; btn.textContent='...'; try{ const j=await fetchJson('index.php',{method:'POST',body:new URLSearchParams({action:'activate_candidate',id})}); if(j.ok){ btn.textContent='OK'; setTimeout(()=>{loadCandidates(); loadMetrics(); loadTopDomains();},500);} else { btn.textContent='ERR'; } } catch(e){ console.error('activate failed', e); btn.textContent='ERR'; }
  });
-
-// Scan button
- document.getElementById('scanBtn').addEventListener('click',()=>{ const u=document.getElementById('scanBtn').dataset.url; window.open(u,'_blank'); setTimeout(()=>{ refreshAll(); }, 4000); });
 
 // Links filters events
  document.getElementById('linksReload').addEventListener('click',()=> loadLinks(true));
