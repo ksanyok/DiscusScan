@@ -257,7 +257,7 @@ function extract_links_from_plain_list(string $body): array {
  * Call OpenAI Responses once with provided sys/user texts.
  * Returns [status,int_links,array links,bool bumped]
  */
-function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log, ?string $country = null): array {
+function run_openai_job(string $jobName, string $sys, string $user, string $requestUrl, array $requestHeaders, array $schema, int $maxTokens, int $timeout, callable $log, ?string $country = null, ?int $maxToolCalls = null): array {
     $model = (string)get_setting('openai_model', 'gpt-5-mini');
     $toolObj = ['type' => 'web_search'];
     if ($country) {
@@ -282,6 +282,10 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
         'tools' => [ $toolObj ],
         'tool_choice' => 'auto'
     ];
+
+    if ($maxToolCalls !== null && $maxToolCalls > 0) {
+        $payload['max_tool_calls'] = $maxToolCalls;
+    }
 
     // --- HTTP (primary) ---
     $ch = curl_init($requestUrl);
@@ -413,6 +417,52 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     return [$status, count($links), $links, $bumped];
 }
 
+function save_links_batch(array $links): array {
+    $found = 0;
+    $new = 0;
+    $newLinks = [];
+
+    if (empty($links)) {
+        return ['found' => 0, 'new' => 0, 'new_links' => []];
+    }
+
+    $pdo = pdo();
+    $selectSource = $pdo->prepare("SELECT id FROM sources WHERE host=? LIMIT 1");
+    $insertSource = $pdo->prepare("INSERT INTO sources (host, url, is_active, note) VALUES (?,?,?,?)");
+    $selectLink = $pdo->prepare("SELECT id, times_seen FROM links WHERE url=? LIMIT 1");
+    $updateLink = $pdo->prepare("UPDATE links SET title=?, last_seen=NOW(), times_seen=? WHERE id=?");
+    $insertLink = $pdo->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status) VALUES (?,?,?,NOW(),NOW(),1,'new')");
+
+    foreach ($links as $it) {
+        $url = $it['url'];
+        $title = $it['title'];
+        $domain = $it['domain'];
+        $purpose = $it['__purpose'] ?? '';
+
+        $selectSource->execute([$domain]);
+        $srcId = $selectSource->fetchColumn();
+        if (!$srcId) {
+            $isDiscovery = ($purpose === 'discovery');
+            $insertSource->execute([$domain, 'https://' . $domain, $isDiscovery ? 0 : 1, $isDiscovery ? 'candidate' : 'discovered']);
+            $srcId = (int)$pdo->lastInsertId();
+        }
+
+        $found++;
+        $selectLink->execute([$url]);
+        $row = $selectLink->fetch();
+        if ($row) {
+            $times = (int)$row['times_seen'] + 1;
+            $updateLink->execute([$title, $times, $row['id']]);
+        } else {
+            $insertLink->execute([$srcId, $url, $title]);
+            $new++;
+            $newLinks[] = ['url' => $url, 'title' => $title, 'domain' => $domain];
+        }
+    }
+
+    return ['found' => $found, 'new' => $new, 'new_links' => $newLinks];
+}
+
 // --- NEW: fetch languages & regions settings ---
 $searchLangs = get_setting('search_languages', []);
 if (is_string($searchLangs)) { $tmp = json_decode($searchLangs, true); if (is_array($tmp)) $searchLangs = $tmp; }
@@ -436,6 +486,12 @@ if ($searchLangs) { $langLine = "Target languages (prioritize when forming queri
 
 $regionLineTpl = function($code){ return $code ? ("Focus on content relevant to country code " . $code . ".\n") : ''; };
 
+// Tool-call limits per scope to cap web_search expansion
+$toolLimitDiscovery = 12;
+$toolLimitPerDomain = 8;
+$toolLimitForums = 12;
+$toolLimitTelegram = 10;
+
 // ----------------------- Build jobs per scope (region-aware) -----------------------
 $jobs = [];
 $nowPref = ($lastScanAt !== '')
@@ -448,13 +504,14 @@ if ($scopeForums) {
     $sys = "You are a discovery agent. Find NEW relevant forums / discussion / community / Q&A / review sites where the target topic is discussed.\n"
          . $langLine
          . "Output STRICT JSON only: {\n  \"links\": [ { \"url\": \"...\", \"title\": \"...\", \"domain\": \"...\" } ]\n}. No prose.\n"
-         . "Return 5–30 unique discussion URLs EACH from a DISTINCT domain NOT in this exclusion list: " . $excludeList . " .\n"
+         . "Return 5–20 unique discussion URLs EACH from a DISTINCT domain NOT in this exclusion list: " . $excludeList . " .\n"
          . "Each URL must clearly be a thread / topic / discussion (contains forum/thread/topic/discussion/comments/support or is a Q&A/issue page).\n"
          . "If you find multiple good domains, include 1 representative URL per domain (not the homepage).\n"
          . "Do NOT invent domains. Skip social networks (t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com).\n"
+         . "Use at most {$toolLimitDiscovery} web_search tool calls; avoid redundant queries.\n"
          . "At the end output ONLY the JSON.";
     $user = "Targets / theme:\n{$prompt}\nGoal: discover new domains hosting relevant discussions. Exclude already known domains. Output representative discussion URLs (one per domain). Fields: url,title,domain.";
-    $jobs[] = ['name'=>'discover_forums','sys'=>$sys,'user'=>$user,'country'=>null,'purpose'=>'discovery'];
+    $jobs[] = ['name'=>'discover_forums','sys'=>$sys,'user'=>$user,'country'=>null,'purpose'=>'discovery','max_tool_calls'=>$toolLimitDiscovery];
 }
 
 $MAX_DOMAIN_JOBS = 25; // limit per scan for cost control
@@ -471,10 +528,11 @@ foreach ($searchRegions as $regCode) {
                  . $langLine . $regionLine
                  . $nowPref . "\n"
                  . "Domain: {$h}. Use web_search with diverse queries (site:{$h} plus topical keywords, forum/thread/topic/discussion/support/comments/review/issue).\n"
-                 . "Return ONLY unique canonical URLs from {$h}. 5–40 URLs if available. Exclude homepages, tag indexes, pure landing/marketing pages.\n"
+                 . "Return ONLY unique canonical URLs from {$h}. 5–25 URLs if available. Exclude homepages, tag indexes, pure landing/marketing pages.\n"
+                 . "Use at most {$toolLimitPerDomain} web_search tool calls focused on this domain.\n"
                  . "STRICT JSON only at end.";
             $user = "Targets / theme:\n{$prompt}\nConstraints:\n- Only domain {$h}\n- Real threads (discussion / topic / question / issue / review)\n- Output fields: url,title,domain";
-            $jobs[] = ['name'=>'domain:'.$h.($regCode?":$regCode":''),'sys'=>$sys,'user'=>$user,'country'=>$regCode,'purpose'=>'per_domain'];
+            $jobs[] = ['name'=>'domain:'.$h.($regCode?":$regCode":''),'sys'=>$sys,'user'=>$user,'country'=>$regCode,'purpose'=>'per_domain','max_tool_calls'=>$toolLimitPerDomain];
         }
     }
 
@@ -489,10 +547,11 @@ foreach ($searchRegions as $regCode) {
              . $nowPref . "\n"
              . "Search via site:t.me queries (channels and groups). Do NOT include or query any other domains.\n"
              . $modeLine . "\n"
-             . "Return 10–100 unique post URLs.\n"
+             . "Return 10–40 unique post URLs.\n"
+             . "Use at most {$toolLimitTelegram} web_search tool calls (site:t.me queries only).\n"
              . "At the end, output ONLY the JSON per schema.";
         $user = "Targets:\n{$prompt}\nConstraints:\n- Domain MUST be t.me\n- Unique canonical post URLs only\n- Output fields: url, title, domain.";
-        $jobs[] = ['name' => 'telegram' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode,'purpose'=>'telegram'];
+        $jobs[] = ['name' => 'telegram' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode,'purpose'=>'telegram','max_tool_calls'=>$toolLimitTelegram];
     }
 
     // FORUMS SCOPE (keep as broad multi-forum aggregator) — only if we still want a broad sweep
@@ -504,84 +563,83 @@ foreach ($searchRegions as $regCode) {
              . "Include only real discussions: URL patterns like /forum, /forums, /topic, /thread, /discussion, /comments, /support, /r/, question pages on Stack Overflow/StackExchange, GitHub Issues/Discussions, and product community portals.\n"
              . "EXCLUDE Telegram and social networks entirely (do not include or query t.me, vk.com, facebook.com, x.com, twitter.com, instagram.com, tiktok.com, youtube.com). Never use site:t.me in this scope.\n"
              . "Avoid homepages, marketing/landing pages, pricing, docs, blogs.\n"
-             . "Use at least 12–16 diverse queries mixing target keywords with operators (forum, topic, thread, discussion, support, comments, reddit, stackoverflow, review) and language/geo variants if provided.\n"
-             . "Return 10–100 unique discussion URLs.\n"
+             . "Use up to 12 diverse queries mixing target keywords with operators (forum, topic, thread, discussion, support, comments, reddit, stackoverflow, review) and language/geo variants if provided.\n"
+             . "Return 10–40 unique discussion URLs.\n"
+             . "Use at most {$toolLimitForums} web_search tool calls overall; prioritize high-signal queries.\n"
              . "At the end, output ONLY the JSON per schema.";
         $user = "Targets:\n{$prompt}\nOutput fields: url, title, domain. Unique URLs only.";
-        $jobs[] = ['name' => 'forums' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode,'purpose'=>'forums'];
+        $jobs[] = ['name' => 'forums' . ($regCode?":$regCode":''), 'sys' => $sys, 'user' => $user, 'country'=>$regCode,'purpose'=>'forums','max_tool_calls'=>$toolLimitForums];
     }
 }
 
-// ----------------------- Execute jobs & aggregate -----------------------
+// ----------------------- Execute jobs & persist incrementally -----------------------
+$seenUrls = [];
 $allLinks = [];
 $bumpedAny = false;
 $jobStats = [];
+$found = 0;
+$new = 0;
+$newLinks = [];
+$scanProgressStmt = null;
+if ($scanId) {
+    try {
+        $scanProgressStmt = pdo()->prepare("UPDATE scans SET status='running', found_links=?, new_links=? WHERE id=?");
+    } catch (Throwable $e) {
+        $scanProgressStmt = null;
+    }
+}
 
 foreach ($jobs as $job) {
-    [$status, $cnt, $links, $bumped] = run_openai_job(
+    [$status, $cnt, $rawLinks, $bumped] = run_openai_job(
         $job['name'], $job['sys'], $job['user'],
         $requestUrl, $requestHeaders, $schema,
-        $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog, $job['country'] ?? null
+        $MAX_OUTPUT_TOKENS, $OPENAI_HTTP_TIMEOUT, $appLog, $job['country'] ?? null, $job['max_tool_calls'] ?? null
     );
     $bumpedAny = $bumpedAny || $bumped;
-    $jobStats[$job['name']] = ['status' => $status, 'count' => $cnt];
 
-    foreach ($links as $it) { $it['__job'] = $job['name']; $it['__purpose'] = $job['purpose'] ?? null; $allLinks[] = $it; }
-}
+    $jobLinks = [];
+    foreach ($rawLinks as $it) {
+        $url = canonicalize_url(arr_get($it, 'url', ''));
+        if ($url === '' || isset($seenUrls[$url])) {
+            continue;
+        }
 
-// ----------------------- Local post-processing -----------------------
-$seen = [];
-$links = [];
-foreach ($allLinks as $it) {
-    $url = canonicalize_url(arr_get($it, 'url', ''));
-    if ($url === '') continue;
+        $domain = normalize_host(arr_get($it, 'domain', ''));
+        if ($domain === '') {
+            $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
+        }
+        if ($domain === '') {
+            continue;
+        }
 
-    $domain = normalize_host(arr_get($it, 'domain', ''));
-    if ($domain === '') {
-        $domain = normalize_host(parse_url($url, PHP_URL_HOST) ?: '');
-    }
-    if ($domain === '') continue;
-
-    if (isset($seen[$url])) continue;
-    $seen[$url] = 1;
-
-    $title = trim((string)arr_get($it, 'title', ''));
-    $links[] = ['url' => $url, 'title' => $title, 'domain' => $domain, '__job' => $it['__job'] ?? null, '__purpose'=>$it['__purpose'] ?? null];
-}
-
-// ----------------------- Save results -----------------------
-$found = 0; $new = 0; $newLinks = [];
-foreach ($links as $it) {
-    $url = $it['url'];
-    $title = $it['title'];
-    $domain = $it['domain'];
-
-    // Ensure source exists (we honor is_active only on search time; saving is always allowed)
-    $stmt = pdo()->prepare("SELECT id FROM sources WHERE host=? LIMIT 1");
-    $stmt->execute([$domain]);
-    $srcId = $stmt->fetchColumn();
-    if (!$srcId) {
-        $purpose = $it['__purpose'] ?? '';
-        $isDiscovery = ($purpose === 'discovery');
-        $ins = pdo()->prepare("INSERT INTO sources (host, url, is_active, note) VALUES (?,?,?,?)");
-        $ins->execute([$domain, 'https://' . $domain, $isDiscovery ? 0 : 1, $isDiscovery ? 'candidate' : 'discovered']);
-        $srcId = (int)pdo()->lastInsertId();
+        $seenUrls[$url] = 1;
+        $title = trim((string)arr_get($it, 'title', ''));
+        $jobLinks[] = [
+            'url' => $url,
+            'title' => $title,
+            'domain' => $domain,
+            '__job' => $job['name'],
+            '__purpose' => $job['purpose'] ?? null
+        ];
     }
 
-    // Upsert link
-    $found++;
-    $q = pdo()->prepare("SELECT id, times_seen FROM links WHERE url=? LIMIT 1");
-    $q->execute([$url]);
-    $row = $q->fetch();
-    if ($row) {
-        $times = (int)$row['times_seen'] + 1;
-        $u = pdo()->prepare("UPDATE links SET title=?, last_seen=NOW(), times_seen=? WHERE id=?");
-        $u->execute([$title, $times, $row['id']]);
-    } else {
-        $ins = pdo()->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status) VALUES (?,?,?,NOW(),NOW(),1,'new')");
-        $ins->execute([$srcId, $url, $title]);
-        $new++;
-        $newLinks[] = ['url'=>$url,'title'=>$title,'domain'=>$domain];
+    $jobStats[$job['name']] = ['status' => $status, 'count' => $cnt, 'saved' => count($jobLinks)];
+    if (empty($jobLinks)) {
+        continue;
+    }
+
+    $persisted = save_links_batch($jobLinks);
+    $found += $persisted['found'];
+    $new += $persisted['new'];
+    if (!empty($persisted['new_links'])) {
+        $newLinks = array_merge($newLinks, $persisted['new_links']);
+    }
+    $allLinks = array_merge($allLinks, $jobLinks);
+
+    if ($scanProgressStmt) {
+        try {
+            $scanProgressStmt->execute([$found, $new, $scanId]);
+        } catch (Throwable $e) {}
     }
 }
 
@@ -602,7 +660,7 @@ if ($tgToken !== '' && $tgChat !== '') {
     $panelUrl = $baseUrl . '/index.php';
     $esc = function(string $s): string { return htmlspecialchars(mb_substr($s,0,160), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); };
 
-    $domainsTotal = count(array_unique(array_map(fn($l)=>$l['domain'],$links)));
+    $domainsTotal = count(array_unique(array_map(fn($l)=>$l['domain'],$allLinks)));
     $domainsNew   = count(array_unique(array_map(fn($l)=>$l['domain'],$newLinks)));
 
     $message  = $new > 0
@@ -630,7 +688,9 @@ if ($tgToken !== '' && $tgChat !== '') {
     if (!empty($jobStats)) {
         $message .= "\n📊 <b>Скоупы:</b>\n";
         foreach ($jobStats as $jn=>$st) {
-            $message .= "· " . $esc($jn) . ": " . ($st['count'] ?? 0) . " (HTTP " . ($st['status'] ?? 0) . ")\n";
+            $saved = (int)($st['saved'] ?? 0);
+            $raw = (int)($st['count'] ?? 0);
+            $message .= "· " . $esc($jn) . ": " . $saved . "/" . $raw . " (HTTP " . ($st['status'] ?? 0) . ")\n";
         }
     }
 
