@@ -134,6 +134,7 @@ function install_schema(PDO $pdo): void {
             title TEXT,
             first_found TIMESTAMP NULL,
             last_seen TIMESTAMP NULL,
+            content_updated_at TIMESTAMP NULL,
             times_seen INT DEFAULT 0,
             status VARCHAR(30) DEFAULT 'new',
             FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
@@ -154,6 +155,9 @@ function install_schema(PDO $pdo): void {
             error TEXT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     ");
+    
+    // Schema migrations
+    try { $pdo->exec("ALTER TABLE links ADD COLUMN content_updated_at TIMESTAMP NULL AFTER last_seen"); } catch (Throwable $e) {}
     
     // domains (семплированные домены для оркестрации)
     $pdo->exec("

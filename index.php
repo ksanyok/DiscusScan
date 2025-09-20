@@ -132,7 +132,7 @@ if (isset($_GET['ajax'])) {
         if ($range==='24h') $conds[] = 'l.first_found >= NOW() - INTERVAL 24 HOUR';
         elseif ($range==='7d') $conds[] = 'l.first_found >= NOW() - INTERVAL 7 DAY';
         $where = $conds ? ('WHERE '.implode(' AND ',$conds)) : '';
-        $sql = "SELECT l.id,l.url,l.title,l.first_found,l.last_seen,l.times_seen,l.status,s.host FROM links l JOIN sources s ON s.id=l.source_id $where ORDER BY COALESCE(l.last_seen,l.first_found) DESC LIMIT $limit OFFSET $offset";
+        $sql = "SELECT l.id,l.url,l.title,l.first_found,l.last_seen,l.content_updated_at,l.times_seen,l.status,s.host FROM links l JOIN sources s ON s.id=l.source_id $where ORDER BY COALESCE(l.content_updated_at,l.last_seen,l.first_found) DESC LIMIT $limit OFFSET $offset";
         $stmt = pdo()->prepare($sql); $stmt->execute($params); $rows=$stmt->fetchAll();
         // check if more
         $sql2 = "SELECT COUNT(*) FROM links l JOIN sources s ON s.id=l.source_id $where"; $stmt2=pdo()->prepare($sql2); $stmt2->execute($params); $total=(int)$stmt2->fetchColumn();
@@ -168,7 +168,7 @@ $totalSites = (int)pdo()->query("SELECT COUNT(*) FROM sources WHERE is_active=1"
 $totalLinks = (int)pdo()->query("SELECT COUNT(*) FROM links")->fetchColumn();
 $lastFound = $lastScan ? (int)$lastScan['found_links'] : 0;
 $lastScanAtFmt = $lastScan && $lastScan['finished_at'] ? date('Y-m-d H:i', strtotime($lastScan['finished_at'])) : '—';
-$recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s.id=l.source_id ORDER BY COALESCE(l.last_seen,l.first_found) DESC LIMIT 10")->fetchAll();
+$recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s.id=l.source_id ORDER BY COALESCE(l.content_updated_at,l.last_seen,l.first_found) DESC LIMIT 10")->fetchAll();
 ?>
 <!doctype html>
 <html lang="ru">
@@ -304,10 +304,10 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     </div>
     <div class="table-wrap" style="max-height:380px">
       <table class="links-list" id="linksTable">
-        <thead><tr><th>Домен</th><th>Заголовок</th><th>URL</th><th>Найдено</th><th>Обн.</th><th>Пок.</th></tr></thead>
+        <thead><tr><th>Домен</th><th>Заголовок</th><th>URL</th><th>Найдено</th><th>Контент</th><th>Обновл.</th><th>Пок.</th></tr></thead>
         <tbody>
           <?php foreach($recentLinks as $l): ?>
-            <tr class="link-row"><td><?=e($l['host'])?></td><td class="ellipsis" style="max-width:220px;"><?=e($l['title'] ?: '—')?></td><td class="ellipsis" style="max-width:320px;"><a href="<?=e($l['url'])?>" target="_blank" rel="noopener"><?=e($l['url'])?></a></td><td><?= $l['first_found']?date('d.m H:i',strtotime($l['first_found'])):'—'?></td><td><?= $l['last_seen']?date('d.m H:i',strtotime($l['last_seen'])):'—'?></td><td><?= (int)$l['times_seen']?></td></tr>
+            <tr class="link-row"><td><?=e($l['host'])?></td><td class="ellipsis" style="max-width:220px;"><?=e($l['title'] ?: '—')?></td><td class="ellipsis" style="max-width:320px;"><a href="<?=e($l['url'])?>" target="_blank" rel="noopener"><?=e($l['url'])?></a></td><td><?= $l['first_found']?date('d.m H:i',strtotime($l['first_found'])):'—'?></td><td><?= $l['content_updated_at']?date('d.m H:i',strtotime($l['content_updated_at'])):'—'?></td><td><?= $l['last_seen']?date('d.m H:i',strtotime($l['last_seen'])):'—'?></td><td><?= (int)$l['times_seen']?></td></tr>
           <?php endforeach; ?>
         </tbody>
       </table>
@@ -674,6 +674,25 @@ async function loadMetrics(){
 }
 function drawSpark(svg, data){ if(!svg) return; const w=svg.clientWidth||160; const h=svg.clientHeight||28; const max=Math.max(...data,1); const step=w/(data.length-1); let d=''; data.forEach((v,i)=>{ const x=i*step; const y=h - (v/max)* (h-4) -2; d += (i?'L':'M')+x+','+y;}); svg.setAttribute('viewBox','0 0 '+w+' '+h); svg.innerHTML='<path d="'+d+'" fill="none" stroke="url(#g)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />'+`<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#7ea2ff"/></linearGradient></defs>`; }
 
+function formatShortDate(val){
+  if(!val) return '—';
+  let normalized = String(val).trim().replace('T',' ').replace('Z','');
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})[\s](\d{2}):(\d{2})/);
+  if(match){
+    const [, , mm, dd, hh, min] = match;
+    return `${dd}.${mm} ${hh}:${min}`;
+  }
+  const parsed = new Date(val);
+  if(!Number.isNaN(parsed.getTime())){
+    const dd = String(parsed.getDate()).padStart(2,'0');
+    const mm = String(parsed.getMonth()+1).padStart(2,'0');
+    const hh = String(parsed.getHours()).padStart(2,'0');
+    const mins = String(parsed.getMinutes()).padStart(2,'0');
+    return `${dd}.${mm} ${hh}:${mins}`;
+  }
+  return normalized.length > 16 ? normalized.slice(0,16) : normalized;
+}
+
 // SCAN HISTORY
 const scanStatusLabels = { done:'Готово', running:'Выполняется', started:'Старт', error:'Ошибка' };
 async function loadScanHistory(){
@@ -709,11 +728,55 @@ async function loadTopDomains(){ try{ const j=await fetchJson('index.php?ajax=to
 
 // RECENT LINKS + filters
 let linksOffset=0; let linksTotal=0; let linksRange='24h'; let linksDomain=''; let linksQ='';
-async function loadLinks(reset=false){ try{ if(reset){ linksOffset=0; } const params=new URLSearchParams({ajax:'links', offset:linksOffset, range:linksRange}); if(linksDomain) params.append('domain',linksDomain); if(linksQ) params.append('q',linksQ); const j=await fetchJson('index.php?'+params.toString()); if(!j.ok)return; linksTotal=j.total; document.getElementById('linksTotal').textContent='Всего: '+linksTotal; const tb=document.querySelector('#linksTable tbody'); if(reset) tb.innerHTML=''; j.links.forEach(l=>{ const tr=document.createElement('tr'); tr.className='link-row'; tr.dataset.id=l.id; tr.innerHTML=`<td>${escapeHtml(l.host)}</td><td class="ellipsis" style="max-width:240px;">${escapeHtml(l.title||'—')}</td><td class="ellipsis" style="max-width:340px;"><a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.url)}</a></td><td>${l.first_found? l.first_found.slice(5,16):'—'}</td><td>${l.last_seen? l.last_seen.slice(5,16):'—'}</td><td>${l.times_seen||1}</td>`; tb.appendChild(tr); }); linksOffset += j.links.length; document.getElementById('linksOffsetInfo').textContent = linksOffset + ' / ' + linksTotal; const moreBtn=document.getElementById('linksMore'); moreBtn.disabled = linksOffset >= linksTotal; } catch(e){ console.error('loadLinks failed', e);} }
+async function loadLinks(reset=false){
+  try{
+    if(reset){ linksOffset=0; }
+    const params=new URLSearchParams({ajax:'links', offset:linksOffset, range:linksRange});
+    if(linksDomain) params.append('domain',linksDomain);
+    if(linksQ) params.append('q',linksQ);
+    const j=await fetchJson('index.php?'+params.toString());
+    if(!j.ok)return;
+    linksTotal=j.total;
+    document.getElementById('linksTotal').textContent='Всего: '+linksTotal;
+    const tb=document.querySelector('#linksTable tbody');
+    if(reset) tb.innerHTML='';
+    j.links.forEach(l=>{
+      const tr=document.createElement('tr');
+      tr.className='link-row';
+      tr.dataset.id=l.id;
+      const first=formatShortDate(l.first_found);
+      const content=formatShortDate(l.content_updated_at);
+      const seen=formatShortDate(l.last_seen);
+      tr.innerHTML=`<td>${escapeHtml(l.host)}</td>`+
+        `<td class="ellipsis" style="max-width:240px;">${escapeHtml(l.title||'—')}</td>`+
+        `<td class="ellipsis" style="max-width:340px;"><a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.url)}</a></td>`+
+        `<td>${first}</td>`+
+        `<td>${content}</td>`+
+        `<td>${seen}</td>`+
+        `<td>${l.times_seen||1}</td>`;
+      tb.appendChild(tr);
+    });
+    linksOffset += j.links.length;
+    document.getElementById('linksOffsetInfo').textContent = linksOffset + ' / ' + linksTotal;
+    const moreBtn=document.getElementById('linksMore');
+    moreBtn.disabled = linksOffset >= linksTotal;
+  } catch(e){ console.error('loadLinks failed', e);} }
 
 // INLINE link detail toggle
 const linksTable=document.getElementById('linksTable');
-linksTable.addEventListener('click',e=>{ const row=e.target.closest('.link-row'); if(!row) return; const next=row.nextElementSibling; if(next && next.classList.contains('link-detail')){ next.remove(); return; } if(next && next.classList.contains('link-row')){} else if(next){ next.remove(); } const detail=document.createElement('tr'); detail.className='link-detail'; detail.innerHTML=`<td colspan="6" style="font-size:12px;padding:10px 12px;">ID: ${row.dataset.id} • <a href="sources.php" style="text-decoration:none">Домены</a> • <span class="muted-inline">Подробнее функционал позже</span></td>`; row.parentNode.insertBefore(detail,row.nextSibling); });
+linksTable.addEventListener('click', e => {
+  const row = e.target.closest('.link-row');
+  if(!row) return;
+  const next = row.nextElementSibling;
+  if(next && next.classList.contains('link-detail')){ next.remove(); return; }
+  if(next && next.classList.contains('link-row')){
+    // keep table compact
+  } else if(next){ next.remove(); }
+  const detail = document.createElement('tr');
+  detail.className = 'link-detail';
+  detail.innerHTML = `<td colspan="7" style="font-size:12px;padding:10px 12px;">ID: ${row.dataset.id} • <a href="sources.php" style="text-decoration:none">Домены</a> • <span class="muted-inline">Подробнее функционал позже</span></td>`;
+  row.parentNode.insertBefore(detail, row.nextSibling);
+});
 
 // CANDIDATES
 async function loadCandidates(){ try{ const j=await fetchJson('index.php?ajax=candidates'); if(!j.ok)return; const tb=document.querySelector('#candTable tbody'); tb.innerHTML=''; if(!j.candidates.length){ tb.innerHTML='<tr><td colspan="5" style="font-size:12px;color:var(--muted)">Нет кандидатов</td></tr>'; return; } j.candidates.forEach(c=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${escapeHtml(c.host)}</td><td>${c.link_count}</td><td>${c.first_found? c.first_found.slice(5,16):'—'}</td><td class="ellipsis" style="max-width:200px;">${escapeHtml(c.note||'candidate')}</td><td><button class="btn small" data-act-cand="${c.id}">Активировать</button></td>`; tb.appendChild(tr); }); } catch(e){ console.error('loadCandidates failed', e);} }

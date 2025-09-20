@@ -280,6 +280,182 @@ function extract_links_from_plain_list(string $body): array {
     return $out;
 }
 
+function normalize_datetime_guess(?string $value): ?string {
+    if (!is_string($value)) return null;
+    $value = trim(html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    if ($value === '') return null;
+    // Replace "T" separator if needed and collapse whitespace
+    $normalized = preg_replace('/\s+/u', ' ', str_replace('T', ' ', $value));
+    $ts = strtotime($normalized);
+    if ($ts === false) {
+        $ts = strtotime($value);
+    }
+    if ($ts === false || $ts < strtotime('2000-01-01')) {
+        return null;
+    }
+    return date('Y-m-d H:i:s', $ts);
+}
+
+function extract_jsonld_dates($data): array {
+    $result = ['modified' => null, 'published' => null];
+    $stack = [$data];
+    $targetKeysModified = ['datemodified', 'modified', 'dateupdated', 'uploadDate'];
+    $targetKeysPublished = ['datepublished', 'datecreated', 'dateposted', 'uploadDate', 'published'];
+
+    while ($stack) {
+        $current = array_pop($stack);
+        if (is_object($current)) {
+            $current = (array)$current;
+        }
+        if (!is_array($current)) {
+            continue;
+        }
+        foreach ($current as $key => $value) {
+            if (is_array($value) || is_object($value)) {
+                $stack[] = $value;
+                continue;
+            }
+            if (!is_string($key) || !is_string($value)) {
+                continue;
+            }
+            $lk = strtolower($key);
+            if ($result['modified'] === null && in_array($lk, $targetKeysModified, true)) {
+                $result['modified'] = $value;
+            }
+            if ($result['published'] === null && in_array($lk, $targetKeysPublished, true)) {
+                $result['published'] = $value;
+            }
+            if ($result['modified'] !== null && $result['published'] !== null) {
+                return $result;
+            }
+        }
+    }
+    return $result;
+}
+
+function detect_content_updated_at(string $url, int $timeout = 12): ?string {
+    static $cache = [];
+    if (isset($cache[$url])) {
+        return $cache[$url];
+    }
+
+    $headers = [];
+    $ch = curl_init($url);
+    if (!$ch) {
+        $cache[$url] = null;
+        return null;
+    }
+
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 4,
+        CURLOPT_CONNECTTIMEOUT => 8,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_USERAGENT => 'DiscusScan/1.0 (+https://github.com/oleksandr/DiscusScan)',
+        CURLOPT_ACCEPT_ENCODING => '',
+        CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$headers) {
+            $len = strlen($header);
+            $header = trim($header);
+            if ($header === '') {
+                return $len;
+            }
+            if (strpos($header, ':') !== false) {
+                [$key, $val] = array_map('trim', explode(':', $header, 2));
+                if ($key !== '') {
+                    $headers[strtolower($key)] = $val;
+                }
+            }
+            return $len;
+        }
+    ]);
+
+    $html = curl_exec($ch);
+    if ($html === false) {
+        curl_close($ch);
+        $cache[$url] = null;
+        return null;
+    }
+    if (strlen($html) > 600000) {
+        $html = substr($html, 0, 600000);
+    }
+    $lastModifiedHeader = $headers['last-modified'] ?? null;
+    curl_close($ch);
+
+    if (!mb_detect_encoding($html, 'UTF-8', true)) {
+        $html = @mb_convert_encoding($html, 'UTF-8', 'auto');
+    }
+
+    $candidates = [];
+    $addCandidate = function (?string $value, int $score) use (&$candidates) {
+        $dt = normalize_datetime_guess($value);
+        if ($dt !== null) {
+            $candidates[] = ['date' => $dt, 'score' => $score];
+        }
+    };
+
+    $metaPatterns = [
+        ['/<meta[^>]+property=["\']article:modified_time["\'][^>]*content=["\']([^"\']+)["\']/i', 1],
+        ['/<meta[^>]+property=["\']og:updated_time["\'][^>]*content=["\']([^"\']+)["\']/i', 2],
+        ['/<meta[^>]+name=["\']last-modified["\'][^>]*content=["\']([^"\']+)["\']/i', 3],
+        ['/<meta[^>]+itemprop=["\']dateModified["\'][^>]*content=["\']([^"\']+)["\']/i', 4],
+        ['/<meta[^>]+itemprop=["\']dateUpdated["\'][^>]*content=["\']([^"\']+)["\']/i', 5],
+        ['/<meta[^>]+property=["\']article:published_time["\'][^>]*content=["\']([^"\']+)["\']/i', 25],
+        ['/<meta[^>]+itemprop=["\']datePublished["\'][^>]*content=["\']([^"\']+)["\']/i', 26],
+        ['/<meta[^>]+property=["\']og:published_time["\'][^>]*content=["\']([^"\']+)["\']/i', 27],
+    ];
+
+    foreach ($metaPatterns as [$pattern, $score]) {
+        if (preg_match($pattern, $html, $m)) {
+            $addCandidate($m[1] ?? null, $score);
+        }
+    }
+
+    if (preg_match('/<time[^>]+itemprop=["\']dateModified["\'][^>]*datetime=["\']([^"\']+)["\']/i', $html, $m)) {
+        $addCandidate($m[1] ?? null, 6);
+    }
+    if (preg_match('/<time[^>]+class=["\'][^"\']*(updated|modified)[^"\']*["\'][^>]*datetime=["\']([^"\']+)["\']/i', $html, $m)) {
+        $addCandidate($m[2] ?? null, 7);
+    }
+
+    if (preg_match_all('/<script[^>]+type=["\']application\/ld\+json["\'][^>]*>(.*?)<\/script>/is', $html, $scripts)) {
+        foreach ($scripts[1] as $block) {
+            $json = trim(html_entity_decode($block, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            $data = json_decode($json, true);
+            if ($data === null) {
+                continue;
+            }
+            $dates = extract_jsonld_dates($data);
+            if (!empty($dates['modified'])) {
+                $addCandidate($dates['modified'], 8);
+            }
+            if (!empty($dates['published'])) {
+                $addCandidate($dates['published'], 28);
+            }
+        }
+    }
+
+    if ($lastModifiedHeader) {
+        $addCandidate($lastModifiedHeader, 40);
+    }
+
+    if (empty($candidates)) {
+        $cache[$url] = null;
+        return null;
+    }
+
+    usort($candidates, function ($a, $b) {
+        if ($a['score'] === $b['score']) {
+            return strcmp($b['date'], $a['date']);
+        }
+        return $a['score'] <=> $b['score'];
+    });
+
+    $best = $candidates[0]['date'];
+    $cache[$url] = $best;
+    return $best;
+}
+
 /**
  * Call OpenAI Responses once with provided sys/user texts.
  * Returns [status,int_links,array links,bool bumped]
@@ -444,7 +620,7 @@ function run_openai_job(string $jobName, string $sys, string $user, string $requ
     return [$status, count($links), $links, $bumped];
 }
 
-function save_links_batch(array $links): array {
+function save_links_batch(array &$links): array {
     $found = 0;
     $new = 0;
     $newLinks = [];
@@ -456,11 +632,12 @@ function save_links_batch(array $links): array {
     $pdo = pdo();
     $selectSource = $pdo->prepare("SELECT id FROM sources WHERE host=? LIMIT 1");
     $insertSource = $pdo->prepare("INSERT INTO sources (host, url, is_active, note) VALUES (?,?,?,?)");
-    $selectLink = $pdo->prepare("SELECT id, times_seen FROM links WHERE url=? LIMIT 1");
+    $selectLink = $pdo->prepare("SELECT id, times_seen, content_updated_at FROM links WHERE url=? LIMIT 1");
     $updateLink = $pdo->prepare("UPDATE links SET title=?, last_seen=NOW(), times_seen=? WHERE id=?");
-    $insertLink = $pdo->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status) VALUES (?,?,?,NOW(),NOW(),1,'new')");
+    $updateLinkWithContent = $pdo->prepare("UPDATE links SET title=?, last_seen=NOW(), times_seen=?, content_updated_at=? WHERE id=?");
+    $insertLink = $pdo->prepare("INSERT INTO links (source_id, url, title, first_found, last_seen, times_seen, status, content_updated_at) VALUES (?,?,?,NOW(),NOW(),1,'new',?)");
 
-    foreach ($links as $it) {
+    foreach ($links as $idx => $it) {
         $url = $it['url'];
         $title = $it['title'];
         $domain = $it['domain'];
@@ -476,15 +653,35 @@ function save_links_batch(array $links): array {
 
         $found++;
         $selectLink->execute([$url]);
-        $row = $selectLink->fetch();
+        $row = $selectLink->fetch(PDO::FETCH_ASSOC);
+
+        $existingContentDate = is_array($row) ? ($row['content_updated_at'] ?? null) : null;
+        $contentUpdatedAt = null;
+        $shouldFetchMeta = !$row || !$existingContentDate;
+
+        if ($shouldFetchMeta) {
+            $contentUpdatedAt = detect_content_updated_at($url);
+        }
+
+        $finalContentDate = $existingContentDate;
+        if ($contentUpdatedAt && (!$existingContentDate || strtotime($contentUpdatedAt) > strtotime((string)$existingContentDate))) {
+            $finalContentDate = $contentUpdatedAt;
+        }
+
         if ($row) {
             $times = (int)$row['times_seen'] + 1;
-            $updateLink->execute([$title, $times, $row['id']]);
+            if ($finalContentDate !== $existingContentDate && $finalContentDate !== null) {
+                $updateLinkWithContent->execute([$title, $times, $finalContentDate, $row['id']]);
+            } else {
+                $updateLink->execute([$title, $times, $row['id']]);
+            }
         } else {
-            $insertLink->execute([$srcId, $url, $title]);
+            $insertLink->execute([$srcId, $url, $title, $finalContentDate]);
             $new++;
-            $newLinks[] = ['url' => $url, 'title' => $title, 'domain' => $domain];
+            $newLinks[] = ['url' => $url, 'title' => $title, 'domain' => $domain, 'content_updated_at' => $finalContentDate];
         }
+
+        $links[$idx]['content_updated_at'] = $finalContentDate;
     }
 
     return ['found' => $found, 'new' => $new, 'new_links' => $newLinks];
@@ -536,7 +733,11 @@ function notify_telegram_scan(array $state, string $status, ?string $errorMessag
             $u = $s['url'];
             $t = $s['title'] ?: $s['domain'];
             $d = $s['domain'];
-            $message .= "• <a href=\"".$esc($u)."\">".$esc($t)."</a> <code>".$esc($d)."</code>\n";
+            $updated = '';
+            if (!empty($s['content_updated_at'])) {
+                $updated = ' · ' . $esc(date('d.m H:i', strtotime($s['content_updated_at'])));
+            }
+            $message .= "• <a href=\"".$esc($u)."\">".$esc($t)."</a> <code>".$esc($d)."</code>" . $updated . "\n";
         }
         if ($new > 3) {
             $rest = $new - 3;
@@ -769,6 +970,7 @@ try {
                 'url' => $url,
                 'title' => $title,
                 'domain' => $domain,
+                'content_updated_at' => null,
                 '__job' => $job['name'],
                 '__purpose' => $job['purpose'] ?? null
             ];
