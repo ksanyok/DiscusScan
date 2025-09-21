@@ -253,20 +253,9 @@ function is_discussion_url(string $url, string $domain, string $title = ''): boo
     $full = $path . ($query ? '?' . $query : '') . ($fragment ? '#' . $fragment : '');
     $titleLower = strtolower($title);
 
-    $positiveTokens = [
-        'forum', 'forums', '/forum', '/forums', 'thread', '/thread', '/threads',
-        'topic', '/topic', '/topics', 'discussion', '/discussion', '/discussions',
-        'board', 'viewtopic', 'showthread', 'message', '/messages', 'community',
-        'communities', 'comment', 'comments', 'question', '/questions', 'answers',
-        'issue', 'issues', 'support', '/support/', 'help-center',
-        'topicid', 'threadid', 'boardid', 'topic=', 'thread=', 'discussion=', 'commentid=',
-        'view=thread', 'view=topic', 'mode=threaded'
-    ];
-    foreach ($positiveTokens as $needle) {
-        if ($needle === '') continue;
-        if (strpos($full, $needle) !== false) {
-            return true;
-        }
+    $ext = strtolower(pathinfo(parse_url($url, PHP_URL_PATH) ?? '', PATHINFO_EXTENSION));
+    if (in_array($ext, ['pdf','jpg','jpeg','png','gif','webp','svg','mp4','mp3'], true)) {
+        return false;
     }
 
     $domainPatterns = [
@@ -279,7 +268,8 @@ function is_discussion_url(string $url, string $domain, string $title = ''): boo
         'github.com' => '~\/(discussions|issues|pull)\/\d+~',
         'groups.google.com' => '~\/g\/[^\/]+\/c\/~',
         'discord.com' => '~\/channels\/\d+\/\d+\/\d+~',
-        'discordapp.com' => '~\/channels\/\d+\/\d+\/\d+~'
+        'discordapp.com' => '~\/channels\/\d+\/\d+\/\d+~',
+        't.me' => '~\/(c\/\d+\/\d+|[a-z0-9_]{3,}/\d+)~'
     ];
     foreach ($domainPatterns as $end => $regex) {
         if ($host === $end || (strlen($host) > strlen($end) && substr($host, -strlen($end) - 1) === '.' . $end)) {
@@ -289,31 +279,59 @@ function is_discussion_url(string $url, string $domain, string $title = ''): boo
         }
     }
 
-    if (preg_match('~(forum|forums|discuss|discussion|community|board|support|ask)~', $host)) {
-        if ($path && $path !== '/') {
-            return true;
-        }
+    if ($host === 't.me' || (strlen($host) > 4 && substr($host, -4) === '.t.me')) {
+        return false;
     }
 
-    if ($titleLower !== '') {
-        $titleHits = ['forum', 'thread', 'discussion', 'topic', 'q&a', 'question', 'answers', 'форум', 'обсужд', 'тема', 'ответ'];
-        $hasTitleToken = false;
-        foreach ($titleHits as $needle) {
-            if (strpos($titleLower, $needle) !== false) {
-                $hasTitleToken = true;
-                break;
-            }
-        }
-        if ($hasTitleToken && preg_match('~\d{3,}~', $url)) {
-            return true;
-        }
-    }
-
-    $negativeTokens = ['blog', 'article', 'news', 'press', 'insight', 'story', 'stories', 'case-study', 'whitepaper', 'docs/', 'documentation', 'knowledge-base', 'kb/', 'wiki', 'video', 'podcast'];
+    $negativeTokens = ['blog', 'article', 'news', 'press', 'insight', 'story', 'stories', 'case-study', 'whitepaper', 'docs/', 'documentation', 'knowledge-base', 'kb/', 'wiki', 'video', 'podcast', 'events'];
     foreach ($negativeTokens as $neg) {
         if ($neg !== '' && strpos($full, $neg) !== false) {
             return false;
         }
+    }
+
+    $score = 0;
+
+    if (preg_match('~(forum|forums|discuss|discussion|board|stack|answers|community|support|help|club)~', $host)) {
+        $score += 1;
+    }
+
+    $pathSignals = [
+        '~/(forum|forums)/~',
+        '~/(topic|thread|discussion|question|issue|post)s?(/|-)~',
+        '~/(discussion|thread|topic)s?\b~',
+        '~/(board|boards?)/\d~',
+        '~/(comments?)/\d~',
+        '~view(topic|thread)~',
+        '~showthread~'
+    ];
+    foreach ($pathSignals as $rx) {
+        if (preg_match($rx, $path)) {
+            $score += 1;
+            break;
+        }
+    }
+
+    if (preg_match('~(topic|thread|discussion|comment|post|question|issue)=(\d+|[a-z0-9_-]{3,})~', $query)) {
+        $score += 1;
+    }
+
+    if (preg_match('~\d{3,}~', $path)) {
+        $score += 1;
+    }
+
+    if ($titleLower !== '') {
+        $titleHits = ['forum', 'thread', 'discussion', 'topic', 'q&a', 'question', 'answers', 'форум', 'обсужд', 'тема', 'ответ'];
+        foreach ($titleHits as $needle) {
+            if (strpos($titleLower, $needle) !== false) {
+                $score += 1;
+                break;
+            }
+        }
+    }
+
+    if ($score >= 2) {
+        return true;
     }
 
     return false;
