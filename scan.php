@@ -245,6 +245,80 @@ function extract_links_from_plain_list(string $body): array {
     return $out;
 }
 
+function is_discussion_url(string $url, string $domain, string $title = ''): bool {
+    $host = strtolower(trim($domain));
+    $path = strtolower((string)parse_url($url, PHP_URL_PATH));
+    $query = strtolower((string)parse_url($url, PHP_URL_QUERY));
+    $fragment = strtolower((string)parse_url($url, PHP_URL_FRAGMENT));
+    $full = $path . ($query ? '?' . $query : '') . ($fragment ? '#' . $fragment : '');
+    $titleLower = strtolower($title);
+
+    $positiveTokens = [
+        'forum', 'forums', '/forum', '/forums', 'thread', '/thread', '/threads',
+        'topic', '/topic', '/topics', 'discussion', '/discussion', '/discussions',
+        'board', 'viewtopic', 'showthread', 'message', '/messages', 'community',
+        'communities', 'comment', 'comments', 'question', '/questions', 'answers',
+        'issue', 'issues', 'support', '/support/', 'help-center',
+        'topicid', 'threadid', 'boardid', 'topic=', 'thread=', 'discussion=', 'commentid=',
+        'view=thread', 'view=topic', 'mode=threaded'
+    ];
+    foreach ($positiveTokens as $needle) {
+        if ($needle === '') continue;
+        if (strpos($full, $needle) !== false) {
+            return true;
+        }
+    }
+
+    $domainPatterns = [
+        'reddit.com' => '~\/r\/[^\/]+\/comments\/~',
+        'old.reddit.com' => '~\/r\/[^\/]+\/comments\/~',
+        'stackoverflow.com' => '~\/questions\/\d+~',
+        'stackexchange.com' => '~\/questions\/\d+~',
+        'superuser.com' => '~\/questions\/\d+~',
+        'serverfault.com' => '~\/questions\/\d+~',
+        'github.com' => '~\/(discussions|issues|pull)\/\d+~',
+        'groups.google.com' => '~\/g\/[^\/]+\/c\/~',
+        'discord.com' => '~\/channels\/\d+\/\d+\/\d+~',
+        'discordapp.com' => '~\/channels\/\d+\/\d+\/\d+~'
+    ];
+    foreach ($domainPatterns as $end => $regex) {
+        if ($host === $end || (strlen($host) > strlen($end) && substr($host, -strlen($end) - 1) === '.' . $end)) {
+            if (preg_match($regex, $path)) {
+                return true;
+            }
+        }
+    }
+
+    if (preg_match('~(forum|forums|discuss|discussion|community|board|support|ask)~', $host)) {
+        if ($path && $path !== '/') {
+            return true;
+        }
+    }
+
+    if ($titleLower !== '') {
+        $titleHits = ['forum', 'thread', 'discussion', 'topic', 'q&a', 'question', 'answers', 'форум', 'обсужд', 'тема', 'ответ'];
+        $hasTitleToken = false;
+        foreach ($titleHits as $needle) {
+            if (strpos($titleLower, $needle) !== false) {
+                $hasTitleToken = true;
+                break;
+            }
+        }
+        if ($hasTitleToken && preg_match('~\d{3,}~', $url)) {
+            return true;
+        }
+    }
+
+    $negativeTokens = ['blog', 'article', 'news', 'press', 'insight', 'story', 'stories', 'case-study', 'whitepaper', 'docs/', 'documentation', 'knowledge-base', 'kb/', 'wiki', 'video', 'podcast'];
+    foreach ($negativeTokens as $neg) {
+        if ($neg !== '' && strpos($full, $neg) !== false) {
+            return false;
+        }
+    }
+
+    return false;
+}
+
 function normalize_datetime_guess(?string $value): ?string {
     if (!is_string($value)) return null;
     $value = trim(html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
@@ -1119,7 +1193,10 @@ foreach ($pendingJobs as $jobRow) {
     $jobLinks = [];
     foreach ($rawLinks as $it) {
         $url = canonicalize_url(arr_get($it, 'url', ''));
-        if ($url === '' || isset($seenUrls[$url])) {
+        if ($url === '') {
+            continue;
+        }
+        if (isset($seenUrls[$url])) {
             continue;
         }
         $domain = normalize_host(arr_get($it, 'domain', ''));
@@ -1129,8 +1206,11 @@ foreach ($pendingJobs as $jobRow) {
         if ($domain === '') {
             continue;
         }
-        $seenUrls[$url] = 1;
         $title = trim((string)arr_get($it, 'title', ''));
+        if (!is_discussion_url($url, $domain, $title)) {
+            continue;
+        }
+        $seenUrls[$url] = 1;
         $jobLinks[] = [
             'url' => $url,
             'title' => $title,

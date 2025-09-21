@@ -2,6 +2,16 @@
 require_once __DIR__ . '/db.php';
 require_login();
 
+function freshness_class(?string $timestamp): string {
+    if (!$timestamp) return 'age-old';
+    $ts = strtotime($timestamp);
+    if (!$ts) return 'age-old';
+    $ageDays = (time() - $ts) / 86400;
+    if ($ageDays <= 7) return 'age-fresh';
+    if ($ageDays <= 28) return 'age-recent';
+    return 'age-old';
+}
+
 // --- AJAX: fetch links for a domain (lazy load accordion) ---
 if (isset($_GET['links']) && ctype_digit($_GET['links'])) {
     $sid = (int)$_GET['links'];
@@ -13,7 +23,7 @@ if (isset($_GET['links']) && ctype_digit($_GET['links'])) {
         echo json_encode(['ok'=>false,'error'=>'not_found']);
         exit;
     }
-    $stmt = pdo()->prepare("SELECT id,url,title,first_found,last_seen,times_seen,status FROM links WHERE source_id=? ORDER BY COALESCE(last_seen,first_found) DESC LIMIT 500");
+    $stmt = pdo()->prepare("SELECT id,url,title,first_found,last_seen,content_updated_at,times_seen,status FROM links WHERE source_id=? ORDER BY COALESCE(content_updated_at,last_seen,first_found) DESC LIMIT 500");
     $stmt->execute([$sid]);
     $links = $stmt->fetchAll(PDO::FETCH_ASSOC);
     header('Content-Type: application/json; charset=utf-8');
@@ -49,7 +59,7 @@ if (isset($_GET['toggle']) && ctype_digit($_GET['toggle'])) {
 }
 
 // --- Domains summary list ---
-$domains = pdo()->query("\n    SELECT s.id, s.host, s.is_active, s.note, COUNT(l.id) AS links_count,\n           MAX(COALESCE(l.last_seen, l.first_found)) AS last_seen\n    FROM sources s\n    LEFT JOIN links l ON l.source_id = s.id\n    GROUP BY s.id, s.host, s.is_active, s.note\n    ORDER BY links_count DESC, s.host ASC\n")->fetchAll(PDO::FETCH_ASSOC);
+$domains = pdo()->query("\n    SELECT s.id, s.host, s.is_active, s.note, COUNT(l.id) AS links_count,\n           MAX(COALESCE(l.content_updated_at, l.last_seen, l.first_found)) AS last_content\n    FROM sources s\n    LEFT JOIN links l ON l.source_id = s.id\n    GROUP BY s.id, s.host, s.is_active, s.note\n    ORDER BY links_count DESC, s.host ASC\n")->fetchAll(PDO::FETCH_ASSOC);
 
 // --- Non-JS fallback: ?source=ID shows links at bottom ---
 $legacyLinks = [];$legacyHost=null;
@@ -57,7 +67,7 @@ if (isset($_GET['source']) && ctype_digit($_GET['source'])) {
     $sid=(int)$_GET['source'];
     $legacyHost = pdo()->query("SELECT host FROM sources WHERE id={$sid}")->fetchColumn();
     if ($legacyHost) {
-        $stmt=pdo()->prepare("SELECT id,url,title,first_found,last_seen,times_seen,status FROM links WHERE source_id=? ORDER BY COALESCE(last_seen,first_found) DESC LIMIT 500");
+        $stmt=pdo()->prepare("SELECT id,url,title,first_found,last_seen,content_updated_at,times_seen,status FROM links WHERE source_id=? ORDER BY COALESCE(content_updated_at,last_seen,first_found) DESC LIMIT 500");
         $stmt->execute([$sid]);
         $legacyLinks=$stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -80,6 +90,9 @@ if (isset($_GET['source']) && ctype_digit($_GET['source'])) {
     .domains-table th{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);}
     .domains-table tbody tr.domain-row{cursor:pointer;}
     .domains-table tbody tr.domain-row:hover{background:rgba(255,255,255,.04);}
+    .domains-table tbody tr.domain-row.age-fresh:hover{background:rgba(46,204,113,0.18);}
+    .domains-table tbody tr.domain-row.age-recent:hover{background:rgba(255,179,71,0.18);}
+    .domains-table tbody tr.domain-row.age-old:hover{background:rgba(255,255,255,0.05);}
     .expander-cell{width:32px;text-align:center;font-size:16px;user-select:none;}
     .badge{display:inline-block;padding:2px 8px;border-radius:30px;font-size:11px;font-weight:600;letter-spacing:.5px;line-height:1;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);}
     .badge.active{background:linear-gradient(135deg,#2e8b57,#3fae72);border-color:#2e8b57;color:#fff;}
@@ -144,11 +157,11 @@ if (isset($_GET['source']) && ctype_digit($_GET['source'])) {
               $badgeClass = $d['is_active'] ? 'active' : 'paused';
               if (!$d['is_active'] && stripos((string)$d['note'],'candidate')!==false) $badgeClass='candidate';
             ?>
-            <tr class="domain-row" data-id="<?=$d['id']?>" data-host="<?=e($d['host'])?>">
+            <tr class="domain-row <?= freshness_class($d['last_content'] ?? null) ?>" data-id="<?=$d['id']?>" data-host="<?=e($d['host'])?>" data-updated="<?= e($d['last_content'] ?? '') ?>">
               <td class="expander-cell" aria-label="Expand">▸</td>
               <td style="font-weight:600;white-space:nowrap;"><?=e($d['host'])?></td>
               <td class="links-col"><span class="pill" style="background:rgba(255,255,255,.08);"><?=$d['links_count']?></span></td>
-              <td><?= $d['last_seen'] ? date('Y-m-d H:i', strtotime($d['last_seen'])) : '—' ?></td>
+              <td><?= !empty($d['last_content']) ? date('Y-m-d H:i', strtotime($d['last_content'])) : '—' ?></td>
               <td style="max-width:160px;" class="ellipsis" title="<?=e($d['note'] ?? '')?>"><?= $d['note'] ? e($d['note']) : '—' ?></td>
               <td><span class="badge <?=$badgeClass?>" data-status="<?=$d['is_active']?>"><?= $d['is_active'] ? 'Active' : ($badgeClass==='candidate'?'Candidate':'Paused') ?></span></td>
               <td><button class="toggle-btn js-toggle" data-id="<?=$d['id']?>"><?= $d['is_active'] ? 'Пауза' : 'Включить' ?></button></td>
@@ -171,13 +184,15 @@ if (isset($_GET['source']) && ctype_digit($_GET['source'])) {
         <div class="links-panel">
           <?php if($legacyLinks): ?>
             <table>
-              <thead><tr><th>Заголовок</th><th>URL</th><th>Найдено</th><th>Обновлено</th><th>Пок.</th></tr></thead>
+              <thead><tr><th>Заголовок</th><th>URL</th><th>Найдено</th><th>Контент</th><th>Видели</th><th>Пок.</th></tr></thead>
               <tbody>
                 <?php foreach($legacyLinks as $l): ?>
-                  <tr>
+                  <?php $linkFresh = freshness_class($l['content_updated_at'] ?? $l['last_seen'] ?? $l['first_found']); ?>
+                  <tr class="<?=$linkFresh?>">
                     <td class="ellipsis" style="max-width:300px;"><?=e($l['title'] ?: '—')?></td>
                     <td class="ellipsis" style="max-width:380px;"><a href="<?=e($l['url'])?>" target="_blank" rel="noopener"><?=e($l['url'])?></a></td>
                     <td><?= $l['first_found'] ? date('Y-m-d H:i', strtotime($l['first_found'])) : '—' ?></td>
+                    <td><?= $l['content_updated_at'] ? date('Y-m-d H:i', strtotime($l['content_updated_at'])) : '—' ?></td>
                     <td><?= $l['last_seen'] ? date('Y-m-d H:i', strtotime($l['last_seen'])) : '—' ?></td>
                     <td><?= (int)$l['times_seen'] ?></td>
                   </tr>
@@ -193,9 +208,35 @@ if (isset($_GET['source']) && ctype_digit($_GET['source'])) {
 </main>
 <?php include 'footer.php'; ?>
 <script>
+function freshnessClassFromDate(value){
+  if(!value) return 'age-old';
+  const normalized = String(value).replace(' ','T');
+  const parsed = new Date(normalized);
+  if(Number.isNaN(parsed.getTime())) return 'age-old';
+  const ageDays = (Date.now() - parsed.getTime())/86400000;
+  if(ageDays <= 7) return 'age-fresh';
+  if(ageDays <= 28) return 'age-recent';
+  return 'age-old';
+}
+
+function applyFreshnessClass(row, iso){
+  if(!row) return;
+  row.classList.remove('age-fresh','age-recent','age-old');
+  const cls = freshnessClassFromDate(iso);
+  row.classList.add(cls);
+  if(iso){
+    row.dataset.updated = iso;
+  } else {
+    delete row.dataset.updated;
+  }
+}
+
 // Filter domains
 const filterInput = document.getElementById('domainFilter');
 const table = document.getElementById('domainsTable');
+Array.from(table.querySelectorAll('tr.domain-row')).forEach(row=>{
+  applyFreshnessClass(row, row.dataset.updated || null);
+});
 filterInput.addEventListener('input', ()=>{
   const q = filterInput.value.trim().toLowerCase();
   table.querySelectorAll('tbody tr.domain-row').forEach(tr=>{
@@ -214,11 +255,21 @@ function loadLinks(id, panel){
   fetch('sources.php?links='+id).then(r=>r.json()).then(data=>{
     if(!data.ok){ panel.innerHTML='<div class="empty-msg">Ошибка загрузки</div>'; return; }
     if(!data.links.length){ panel.innerHTML='<div class="empty-msg">Нет ссылок для этого домена</div>'; return; }
-    let html = '<table><thead><tr><th style="width:34%;">Заголовок</th><th style="width:36%;">URL</th><th>Найдено</th><th>Обновлено</th><th>Пок.</th></tr></thead><tbody>';
+    let html = '<table><thead><tr><th style="width:34%;">Заголовок</th><th style="width:36%;">URL</th><th>Найдено</th><th>Контент</th><th>Видели</th><th>Пок.</th></tr></thead><tbody>';
     data.links.forEach(l=>{
       const title = escapeHtml(l.title || '—');
       const url = escapeHtml(l.url);
-      html += `<tr><td class="ellipsis" title="${title}">${title}</td><td class="ellipsis"><a href="${url}" target="_blank" rel="noopener">${url}</a></td><td>${l.first_found?fmtDate(l.first_found):'—'}</td><td>${l.last_seen?fmtDate(l.last_seen):'—'}</td><td>${l.times_seen||1}</td></tr>`;
+      const updatedCore = l.content_updated_at || l.last_seen || l.first_found || '';
+      const freshClass = freshnessClassFromDate(updatedCore);
+      const updatedAttr = escapeHtml(updatedCore);
+      html += `<tr class="${freshClass}" data-updated="${updatedAttr}">`
+        + `<td class="ellipsis" title="${title}">${title}</td>`
+        + `<td class="ellipsis"><a href="${url}" target="_blank" rel="noopener">${url}</a></td>`
+        + `<td>${l.first_found?fmtDate(l.first_found):'—'}</td>`
+        + `<td>${l.content_updated_at?fmtDate(l.content_updated_at):'—'}</td>`
+        + `<td>${l.last_seen?fmtDate(l.last_seen):'—'}</td>`
+        + `<td>${l.times_seen||1}</td>`
+        + `</tr>`;
     });
     html += '</tbody></table>';
     panel.innerHTML = html;

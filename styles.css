@@ -89,6 +89,13 @@ a:hover{ color:var(--link-hover) }
 .table a{ text-decoration:none; border-bottom:1px dashed rgba(255,255,255,.25) }
 .table a:hover{ border-bottom-color:transparent }
 
+tr.age-fresh{background:rgba(46,204,113,0.12);}
+tr.age-fresh:hover{background:rgba(46,204,113,0.18);}
+tr.age-recent{background:rgba(255,179,71,0.12);}
+tr.age-recent:hover{background:rgba(255,179,71,0.18);}
+tr.age-old{background:rgba(255,255,255,0.02);}
+tr.age-old:hover{background:rgba(255,255,255,0.05);}
+
 /* Layout */
 .container{ max-width:1400px; width:100%; margin:24px auto; padding:0 22px}
 .cards{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:16px}

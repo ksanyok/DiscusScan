@@ -13,6 +13,16 @@ function json_out($arr){
     echo json_encode($arr, JSON_UNESCAPED_UNICODE); exit;
 }
 
+function freshness_class(?string $timestamp): string {
+    if (!$timestamp) return 'age-old';
+    $ts = strtotime($timestamp);
+    if (!$ts) return 'age-old';
+    $ageDays = (time() - $ts) / 86400;
+    if ($ageDays <= 7) return 'age-fresh';
+    if ($ageDays <= 28) return 'age-recent';
+    return 'age-old';
+}
+
 // If this is an ajax/json request, don't display PHP warnings in response body
 if (isset($_GET['ajax']) || (isset($_POST['action']) && $_POST['action'])) {
     @ini_set('display_errors','0');
@@ -212,6 +222,10 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .history-table th,.history-table td{padding:4px 6px;font-size:12px}
     .history-new{color:#2ecc71;font-weight:600}
     .history-zero{color:#ffb347;font-weight:600}
+    .history-table td.actions-cell{white-space:nowrap;text-align:right;min-width:90px}
+    .scan-action-btn{background:rgba(91,140,255,0.1);color:#cfe0ff;border:1px solid rgba(91,140,255,0.4);border-radius:8px;padding:3px 8px;font-size:11px;cursor:pointer;transition:background .15s ease, color .15s ease, border-color .15s ease;}
+    .scan-action-btn:hover{background:rgba(91,140,255,0.22);color:#fff;border-color:rgba(91,140,255,0.55);}
+    .scan-action-btn[disabled]{opacity:.55;cursor:default;background:rgba(91,140,255,0.08);}
     .daily-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px}
     .daily-col{padding:10px 10px 12px;border:1px solid var(--border);border-radius:12px;background:#0f1733;display:flex;flex-direction:column;gap:6px}
     .daily-col .day{font-size:13px;font-weight:600}
@@ -228,6 +242,9 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     .links-list th,.links-list td{padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);white-space:nowrap;vertical-align:top}
     .link-row{cursor:pointer}
     .link-row:hover{background:rgba(255,255,255,.05)}
+    .link-row.age-fresh:hover{background:rgba(46,204,113,0.18)}
+    .link-row.age-recent:hover{background:rgba(255,179,71,0.18)}
+    .link-row.age-old:hover{background:rgba(255,255,255,0.05)}
     .link-detail{background:rgba(255,255,255,.04);animation:fadeIn .25s ease}
     @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
     .status-new{background:#13214a;padding:2px 6px;border-radius:6px;font-size:11px}
@@ -293,7 +310,7 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     </div>
     <div class="table-wrap" style="max-height:240px">
       <table class="table history-table" id="scanHistoryTbl">
-        <thead><tr><th>ID</th><th>Старт</th><th>Финиш</th><th>Длит</th><th>New</th><th>Total</th><th>Статус</th></tr></thead>
+        <thead><tr><th>ID</th><th>Старт</th><th>Финиш</th><th>Длит</th><th>New</th><th>Total</th><th>Статус</th><th>Действия</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -328,10 +345,19 @@ $recentLinks = pdo()->query("SELECT l.*, s.host FROM links l JOIN sources s ON s
     </div>
     <div class="table-wrap" style="max-height:380px">
       <table class="links-list" id="linksTable">
-        <thead><tr><th>Домен</th><th>Заголовок</th><th>URL</th><th>Найдено</th><th>Контент</th><th>Обновл.</th><th>Пок.</th></tr></thead>
+        <thead><tr><th>Домен</th><th>Заголовок</th><th>URL</th><th>Найдено</th><th>Контент&nbsp;обновл.</th><th>Последний&nbsp;визит</th><th>Пок.</th></tr></thead>
         <tbody>
           <?php foreach($recentLinks as $l): ?>
-            <tr class="link-row"><td><?=e($l['host'])?></td><td class="ellipsis" style="max-width:220px;"><?=e($l['title'] ?: '—')?></td><td class="ellipsis" style="max-width:320px;"><a href="<?=e($l['url'])?>" target="_blank" rel="noopener"><?=e($l['url'])?></a></td><td><?= $l['first_found']?date('d.m H:i',strtotime($l['first_found'])):'—'?></td><td><?= $l['content_updated_at']?date('d.m H:i',strtotime($l['content_updated_at'])):'—'?></td><td><?= $l['last_seen']?date('d.m H:i',strtotime($l['last_seen'])):'—'?></td><td><?= (int)$l['times_seen']?></td></tr>
+            <?php $freshTs = $l['content_updated_at'] ?: ($l['last_seen'] ?: $l['first_found']); ?>
+            <tr class="link-row <?= freshness_class($freshTs) ?>" data-updated="<?= e($freshTs ?? '') ?>">
+              <td><?=e($l['host'])?></td>
+              <td class="ellipsis" style="max-width:220px;"><?=e($l['title'] ?: '—')?></td>
+              <td class="ellipsis" style="max-width:320px;"><a href="<?=e($l['url'])?>" target="_blank" rel="noopener"><?=e($l['url'])?></a></td>
+              <td><?= $l['first_found']?date('d.m H:i',strtotime($l['first_found'])):'—'?></td>
+              <td><?= $l['content_updated_at']?date('d.m H:i',strtotime($l['content_updated_at'])):'—'?></td>
+              <td><?= $l['last_seen']?date('d.m H:i',strtotime($l['last_seen'])):'—'?></td>
+              <td><?= (int)$l['times_seen']?></td>
+            </tr>
           <?php endforeach; ?>
         </tbody>
       </table>
@@ -751,6 +777,22 @@ if(scanCancelBtn){
     }
   });
 }
+
+const scanHistoryTbl = document.getElementById('scanHistoryTbl');
+if(scanHistoryTbl){
+  scanHistoryTbl.addEventListener('click', e=>{
+    const btn = e.target.closest('.js-scan-action');
+    if(!btn) return;
+    const action = btn.dataset.action;
+    if(action === 'retry'){
+      if(pendingScan){
+        return;
+      }
+      btn.disabled = true;
+      startManualScan(true);
+    }
+  });
+}
 updateScanButtons();
 
 // METRICS
@@ -789,6 +831,29 @@ function formatShortDate(val){
   return normalized.length > 16 ? normalized.slice(0,16) : normalized;
 }
 
+function freshnessClassFromDate(value){
+  if(!value) return 'age-old';
+  const normalized = String(value).replace(' ','T');
+  const parsed = new Date(normalized);
+  if(Number.isNaN(parsed.getTime())) return 'age-old';
+  const ageDays = (Date.now() - parsed.getTime())/86400000;
+  if(ageDays <= 7) return 'age-fresh';
+  if(ageDays <= 28) return 'age-recent';
+  return 'age-old';
+}
+
+function applyFreshnessClass(row, iso){
+  if(!row) return;
+  row.classList.remove('age-fresh','age-recent','age-old');
+  const cls = freshnessClassFromDate(iso);
+  row.classList.add(cls);
+  if(iso){
+    row.dataset.updated = iso;
+  } else {
+    delete row.dataset.updated;
+  }
+}
+
 // SCAN HISTORY
 const scanStatusLabels = { done:'Готово', running:'Выполняется', started:'Старт', paused:'Пауза', error:'Ошибка', cancelled:'Отменён' };
 async function loadScanHistory(){
@@ -809,8 +874,13 @@ async function loadScanHistory(){
       else if(s.status === 'done'){ statusClass = 'history-done'; }
       const statusTitle = s.error ? ` title="${escapeHtml(s.error)}"` : '';
       const label = scanStatusLabels[s.status] || s.status;
+      const actions = ['error','cancelled','paused'].includes(s.status)
+        ? `<button type="button" class="scan-action-btn js-scan-action" data-action="retry" data-id="${s.id}">↻ Повторить</button>`
+        : '';
       const tr=document.createElement('tr');
-      tr.innerHTML=`<td>${s.id}</td><td>${s.started_at.slice(5,16)}</td><td>${s.finished_at? s.finished_at.slice(5,16):'—'}</td><td>${fmtDuration(s.duration_sec)}</td><td class="${s.new? 'history-new':'history-zero'}">${s.new}</td><td>${s.found}</td><td class="${statusClass}"${statusTitle}>${label}</td>`;
+      tr.dataset.id = s.id;
+      tr.dataset.status = s.status;
+      tr.innerHTML=`<td>${s.id}</td><td>${s.started_at.slice(5,16)}</td><td>${s.finished_at? s.finished_at.slice(5,16):'—'}</td><td>${fmtDuration(s.duration_sec)}</td><td class="${s.new? 'history-new':'history-zero'}">${s.new}</td><td>${s.found}</td><td class="${statusClass}"${statusTitle}>${label}</td><td class="actions-cell">${actions || '—'}</td>`;
       tb.appendChild(tr);
     });
     lastScanId = j.scans[0].id;
@@ -853,6 +923,7 @@ async function loadLinks(reset=false){
         `<td>${content}</td>`+
         `<td>${seen}</td>`+
         `<td>${l.times_seen||1}</td>`;
+      applyFreshnessClass(tr, l.content_updated_at || l.last_seen || l.first_found);
       tb.appendChild(tr);
     });
     linksOffset += j.links.length;
@@ -863,6 +934,9 @@ async function loadLinks(reset=false){
 
 // INLINE link detail toggle
 const linksTable=document.getElementById('linksTable');
+Array.from(linksTable.querySelectorAll('tbody tr.link-row')).forEach(row=>{
+  applyFreshnessClass(row, row.dataset.updated || null);
+});
 linksTable.addEventListener('click', e => {
   const row = e.target.closest('.link-row');
   if(!row) return;
